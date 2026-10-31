@@ -35,7 +35,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from models import (
     Codec,
-    CookiePolicy,
     DownloadRequest,
     DrmSystem,
     ErrorCode,
@@ -62,7 +61,6 @@ from security import (
     validate_output_dir,
 )
 from services import downloader as downloader_service
-from services import environment as environment_service
 from services import formats as formats_service
 
 logger = logging.getLogger("bgv.engine")
@@ -621,37 +619,6 @@ def debug_download_counter():
         content={"downloadCount": DOWNLOAD_COUNTER.count},
         headers=PROTOCOL_HEADERS,
     )
-
-
-@app.get("/v1/privacy/selfcheck")
-def privacy_selfcheck():
-    """§6.5：隐私自检信息（M1 只填依赖版本与输出白名单，缓存字段占位）。"""
-    return JSONResponse(
-        content={
-            "listenAddress": "127.0.0.1:8730",
-            "tlsEnabled": False,
-            "authEnabled": False,
-            "activeProxyIds": [],
-            "cookiePolicyDefault": CookiePolicy.LAZY.value,
-            "outputDirAllowlist": OUTPUT_DIR_ALLOWLIST,
-            "cacheDir": os.path.join(
-                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-                "BrowseGuardVid",
-                "cache",
-            ),
-            "cacheTtlHours": 48,
-            "cacheSizeBytes": 0,
-            "lastCleanupAt": None,
-            "dependencyVersions": environment_service.dependency_versions(),
-        },
-        headers=PROTOCOL_HEADERS,
-    )
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    """启动自检（ffmpeg 缺失仅告警，不阻塞）。"""
-    environment_service.startup_selfcheck()
 
 
 @app.post("/v1/tasks", status_code=201)
