@@ -1,0 +1,66 @@
+{
+  "type": "object",
+  "required": [
+    "code",
+    "category",
+    "message",
+    "retryable"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "INVALID_URL",
+        "UNSUPPORTED_SCHEME",
+        "INVALID_OUTPUT_DIR",
+        "INVALID_FORMAT_SELECTOR",
+        "INVALID_POST_ACTION",
+        "SSRF_BLOCKED",
+        "OUTPUT_DIR_REJECTED",
+        "COOKIE_READ_DENIED",
+        "EXTENSION_NOT_ALLOWED",
+        "AUTH_REQUIRED",
+        "UNSUPPORTED_SITE",
+        "DRM_PROTECTED",
+        "NO_MEDIA_FOUND",
+        "FORMAT_UNAVAILABLE",
+        "EXTRACTOR_FAILED",
+        "NETWORK_TIMEOUT",
+        "DNS_FAILURE",
+        "TLS_ERROR",
+        "NETWORK_HTTP_ERROR",
+        "RATE_LIMITED",
+        "DISK_FULL",
+        "WRITE_PERMISSION_DENIED",
+        "MERGE_FAILED",
+        "TRANSCODE_FAILED",
+        "PARTIAL_DOWNLOAD",
+        "ENGINE_BUSY",
+        "TASK_STATE_CONFLICT",
+        "UNKNOWN",
+        "VALIDATION_ERROR",
+        "NOT_FOUND"
+      ]
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "input",
+        "network",
+        "security",
+        "content",
+        "storage",
+        "internal"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "detail": {
+      "type": "object"
+    }
+  }
+}

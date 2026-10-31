@@ -1,0 +1,41 @@
+{
+    "type": "object",
+    "required": [
+        "type"
+    ],
+    "properties": {
+        "type": {
+            "type": "string",
+            "enum": [
+                "merge",
+                "remux",
+                "transcode",
+                "extract_subtitles",
+                "transcribe",
+                "thumbnail",
+                "move"
+            ]
+        },
+        "container": {
+            "type": "string"
+        },
+        "targetCodec": {
+            "type": "string"
+        },
+        "crf": {
+            "type": "integer"
+        },
+        "langs": {
+            "type": "array"
+        },
+        "model": {
+            "type": "string"
+        },
+        "lang": {
+            "type": "string"
+        },
+        "destDir": {
+            "type": "string"
+        }
+    }
+}

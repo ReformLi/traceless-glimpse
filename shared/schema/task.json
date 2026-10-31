@@ -1,0 +1,77 @@
+{
+    "type": "object",
+    "required": [
+        "id",
+        "sourceUrl",
+        "mode",
+        "cookiePolicy",
+        "outputDir",
+        "status",
+        "createdAt",
+        "updatedAt"
+    ],
+    "properties": {
+        "id": {
+            "type": "string"
+        },
+        "sourceUrl": {
+            "type": "string"
+        },
+        "mode": {
+            "type": "string",
+            "enum": [
+                "sniff",
+                "download"
+            ]
+        },
+        "formatSelector": {
+            "type": "object"
+        },
+        "namingTemplate": {
+            "type": "string"
+        },
+        "postActions": {
+            "type": "array"
+        },
+        "proxyId": {
+            "type": "string"
+        },
+        "cookiePolicy": {
+            "type": "string",
+            "enum": [
+                "none",
+                "lazy",
+                "explicit"
+            ]
+        },
+        "outputDir": {
+            "type": "string"
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "queued",
+                "sniffing",
+                "awaiting_selection",
+                "downloading",
+                "merging",
+                "post_processing",
+                "done",
+                "cancelled",
+                "failed"
+            ]
+        },
+        "progress": {
+            "type": "object"
+        },
+        "error": {
+            "type": "object"
+        },
+        "createdAt": {
+            "type": "string"
+        },
+        "updatedAt": {
+            "type": "string"
+        }
+    }
+}

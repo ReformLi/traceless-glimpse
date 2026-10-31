@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "required": [
+    "taskId",
+    "mediaUrl",
+    "type",
+    "container",
+    "estimatedQuality",
+    "drmDetected",
+    "discoveredAt"
+  ],
+  "properties": {
+    "taskId": {
+      "type": "string"
+    },
+    "mediaUrl": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "hls",
+        "dash",
+        "mp4",
+        "audio",
+        "other"
+      ]
+    },
+    "container": {
+      "type": "string"
+    },
+    "estimatedQuality": {
+      "type": "object"
+    },
+    "drmDetected": {
+      "type": "boolean"
+    },
+    "discoveredAt": {
+      "type": "string"
+    },
+    "drmSystem": {
+      "type": "string",
+      "enum": [
+        "widevine",
+        "fairplay",
+        "playready",
+        "unknown"
+      ]
+    },
+    "headersHint": {
+      "type": "object"
+    }
+  }
+}

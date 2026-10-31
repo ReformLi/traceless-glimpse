@@ -1,0 +1,8 @@
+# Python 引擎锁定依赖（== 固定，NFR-07）
+# 版本门：每个 == 版本均已经 pip index versions 确认存在（Python 3.11.9 / 2026-10-30）
+# 间接依赖由 pip 正常解析，不在本文件锁定（已记入阶段汇报偏差）
+fastapi==0.162.0
+pydantic==2.14.2
+uvicorn==0.54.0
+httpx==0.28.1
+pytest==9.2.0

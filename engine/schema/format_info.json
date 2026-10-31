@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "required": [
+    "formatId",
+    "container",
+    "resolution",
+    "bitrateKbps",
+    "codec",
+    "hasAudio",
+    "hasVideo",
+    "fileSizeEstimateBytes",
+    "source"
+  ],
+  "properties": {
+    "formatId": {
+      "type": "string"
+    },
+    "container": {
+      "type": "string"
+    },
+    "resolution": {
+      "type": "object"
+    },
+    "bitrateKbps": {
+      "type": "integer"
+    },
+    "codec": {
+      "type": "object"
+    },
+    "hasAudio": {
+      "type": "boolean"
+    },
+    "hasVideo": {
+      "type": "boolean"
+    },
+    "fileSizeEstimateBytes": {
+      "type": "integer"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "yt-dlp",
+        "manifest",
+        "sniff"
+      ]
+    }
+  }
+}

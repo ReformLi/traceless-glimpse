@@ -1,0 +1,28 @@
+# ---- Gradle ----
+.gradle/
+build/
+
+# ---- IDE ----
+.idea/
+.vscode/
+.trae/
+*.iml
+local.properties
+captures/
+
+# ---- Android 构建残留 ----
+.cxx
+.externalNativeBuild
+
+# ---- Python（engine）----
+engine/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- 日志 ----
+*.log
