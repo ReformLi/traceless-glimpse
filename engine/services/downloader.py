@@ -51,6 +51,13 @@ def _content_length(response: httpx.Response) -> int | None:
     return int(value) if value and value.isdigit() else None
 
 
+def _content_range_total(value: str | None) -> int | None:
+    if not value or "/" not in value:
+        return None
+    total = value.rsplit("/", 1)[1]
+    return int(total) if total.isdigit() else None
+
+
 def download_direct(
     media_url: str,
     output_dir: str | Path,
@@ -61,7 +68,11 @@ def download_direct(
     transport: httpx.BaseTransport | None = None,
     timeout: float = 30.0,
 ) -> Path:
-    """单文件直链下载：逐跳校验后流式写盘，并校验 Content-Length。
+    """单文件直链下载：逐跳校验后流式写 ``.part``，有残留则 Range 续传。
+
+    - 206：从 ``.part`` 现有大小续写；
+    - 200（服务端忽略 Range / ``Accept-Ranges: none``）：降级全量重下，
+      记 ``resume_downgraded`` 审计行（只带 task_id）。
 
     HLS/DASH 不走本函数（交给 yt-dlp）。
     """
@@ -72,24 +83,37 @@ def download_direct(
     out_dir.mkdir(parents=True, exist_ok=True)
     name = filename or Path(urlsplit(final_url).path).name or "download.bin"
     output = out_dir / name
+    part = output.with_suffix(output.suffix + ".part")
+    resume_from = part.stat().st_size if part.is_file() else 0
+    headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
 
     with httpx.Client(
         transport=transport, follow_redirects=False, timeout=timeout, trust_env=False
     ) as client:
-        with client.stream("GET", final_url) as response:
-            if response.status_code != 200:
+        with client.stream("GET", final_url, headers=headers) as response:
+            if response.status_code not in (200, 206):
                 raise DownloadIntegrityError(f"HTTP {response.status_code}")
-            total = _content_length(response)
-            with output.open("wb") as handle:
+            append = response.status_code == 206 and resume_from > 0
+            if resume_from > 0 and response.status_code == 200:
+                logger.info("resume_downgraded task_id=%s", task_id)
+            if response.status_code == 206:
+                total = _content_range_total(response.headers.get("content-range"))
+                length = _content_length(response)
+                if total is None and length is not None:
+                    total = resume_from + length if append else length
+            else:
+                total = _content_length(response)
+            with part.open("ab" if append else "wb") as handle:
                 for chunk in response.iter_bytes():
                     handle.write(chunk)
 
-    if not output.is_file() or output.stat().st_size <= 0:
-        raise DownloadIntegrityError(f"下载产物缺失：{output.name}")
-    if total is not None and output.stat().st_size != total:
+    if not part.is_file() or part.stat().st_size <= 0:
+        raise DownloadIntegrityError(f"下载产物缺失：{part.name}")
+    if total is not None and part.stat().st_size != total:
         raise DownloadIntegrityError(
-            f"下载不完整：{output.stat().st_size}/{total}"
+            f"下载不完整：{part.stat().st_size}/{total}"
         )
+    part.replace(output)
     logger.info("direct_download_complete task_id=%s bytes=%d", task_id, output.stat().st_size)
     return output
 

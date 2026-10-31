@@ -6,6 +6,10 @@
 #   ENGINE_LOG=<引擎控制台日志路径，正斜杠> \
 #   bash scripts/smoke.sh
 #
+# 注意：脚本读取 /v1/_debug/download-counter，启动引擎时必须设置
+#   BGV_ENABLE_DEBUG_ENDPOINTS=1
+# 否则该端点返回 404（M1 起默认关闭）。
+#
 # 依赖：bash + curl.exe + engine/.venv（仅用于从 JSON 取值，不依赖 jq）。
 # 退出码：0 全绿；非 0 为失败用例数。
 

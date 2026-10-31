@@ -23,5 +23,5 @@ python -m venv .venv
 
 - `awaiting_selection` 24h 超时（PROTOCOL §4）：M0 不实现，M1 补。
 - 真实嗅探 / 下载 / 合并 / 转码链路；断点续传与重试。
-- 移除 `/v1/_debug/download-counter`：M0 桩自检端点（只读下载计数器），非协议 v0.1 内容，
-  仅供 `scripts/smoke.sh` 取证；M1 接真实引擎时删除。
+- `/v1/_debug/download-counter`：M1 起默认返回 404，仅 `BGV_ENABLE_DEBUG_ENDPOINTS=1`
+  时开放；`scripts/smoke.sh` 取证时需在启动引擎前设置该变量。

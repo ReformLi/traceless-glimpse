@@ -20,6 +20,7 @@ DRM 任务在 download 入口、审计行之后、下载逻辑之前短路返回
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
@@ -60,8 +61,10 @@ from security import (
     validate_outbound_url,
     validate_output_dir,
 )
+from persistence import get_store
 from services import downloader as downloader_service
 from services import formats as formats_service
+from services.task_worker import TaskWorker
 
 logger = logging.getLogger("bgv.engine")
 
@@ -73,6 +76,11 @@ ENGINE_VERSION = "0.1.0"
 ENGINE_MODE = os.getenv("BGV_ENGINE_MODE", "stub").strip().lower()
 if ENGINE_MODE not in {"stub", "real"}:
     raise RuntimeError(f"BGV_ENGINE_MODE 取值非法：{ENGINE_MODE!r}（仅 stub / real）")
+DEBUG_ENDPOINTS_ENABLED = os.getenv("BGV_ENABLE_DEBUG_ENDPOINTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 PROTOCOL_HEADERS = {"X-Protocol-Version": PROTOCOL_VERSION}
 START_TIME = time.time()
 
@@ -190,9 +198,10 @@ TASKS: dict[str, TaskRecord] = {}
 
 
 def reset_state() -> None:
-    """测试隔离：清任务表 / 计数器。"""
+    """测试隔离：清任务表 / 计数器 / 持久化任务行。"""
     TASKS.clear()
     DOWNLOAD_COUNTER.reset()
+    get_store().clear()
 
 
 def _begin_download(record: TaskRecord) -> None:
@@ -235,8 +244,14 @@ def _format_unavailable_detail(reason: str) -> dict[str, Any]:
 
 
 def _download_real(record: TaskRecord) -> None:
-    """real 模式下载：统一校验器 → yt-dlp（download_media）→ 失败置 FAILED。"""
+    """real 模式下载：统一校验器 → yt-dlp（download_media）→ 失败置 FAILED。
+
+    worker 线程执行；取消由 API 线程直接置 cancelled，本函数在入口与收尾
+    检查终态，避免取消后覆盖状态。
+    """
     task = record.task
+    if task.status is TaskStatus.CANCELLED:
+        return
     if record.sniff is None:
         _fail_task(task, ErrorCode.NO_MEDIA_FOUND)
         return
@@ -274,6 +289,9 @@ def _download_real(record: TaskRecord) -> None:
         logger.warning("download_failed task_id=%s type=%s", task.id, type(exc).__name__)
         _fail_task(task, ErrorCode.UNKNOWN, {"reason": "download_failed"})
         return
+    if task.status is TaskStatus.CANCELLED:
+        logger.info("download_cancelled task_id=%s", task.id)
+        return
     task.progress = Progress(
         phase="done",
         bytesDownloaded=path.stat().st_size,
@@ -288,6 +306,8 @@ def _download_real(record: TaskRecord) -> None:
 def _fail_task(
     task: Task, code: ErrorCode, detail: dict[str, Any] | None = None
 ) -> None:
+    if task.status in TERMINAL_STATES:
+        return  # 取消与失败竞态：终态优先，不覆盖
     task.error = error_payload(code, detail=detail)
     _transition(task, TaskStatus.FAILED)
 
@@ -315,6 +335,7 @@ def _transition(task: Task, nxt: TaskStatus) -> None:
     assert_transition(task.status, nxt)
     task.status = nxt
     task.updatedAt = _now()
+    get_store().upsert(task)
 
 
 def _get_record_or_404(task_id: str) -> TaskRecord:
@@ -539,10 +560,111 @@ def _sniff_real(record: TaskRecord) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 后台 worker 与启动恢复（阶段 5 第 2 步）
+# ---------------------------------------------------------------------------
+
+
+async def _process_task(task_id: str) -> None:
+    """worker 入口：嗅探/下载为阻塞调用，下沉到线程，避免阻塞事件循环。"""
+    record = TASKS.get(task_id)
+    if record is None or ENGINE_MODE != "real":
+        return
+    task = record.task
+    if task.status in TERMINAL_STATES:
+        return
+    if task.status == TaskStatus.DOWNLOADING:
+        if record.sniff is None:
+            _fail_task(task, ErrorCode.INTERNAL_ERROR, {"reason": "missing_sniff"})
+            return
+        await asyncio.to_thread(_download_real, record)
+        return
+    await asyncio.to_thread(_advance, record)
+
+
+DEFAULT_AWAITING_SELECTION_TIMEOUT_SECONDS = 24 * 60 * 60
+
+
+def _awaiting_selection_timeout_seconds() -> float:
+    """§4：awaiting_selection 超时阈值，默认 24h；env 可覆盖（测试用 1s）。"""
+    raw = os.getenv("BGV_AWAITING_SELECTION_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_AWAITING_SELECTION_TIMEOUT_SECONDS)
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("invalid_awaiting_selection_timeout ignored")
+        return float(DEFAULT_AWAITING_SELECTION_TIMEOUT_SECONDS)
+    return value if value > 0 else float(DEFAULT_AWAITING_SELECTION_TIMEOUT_SECONDS)
+
+
+def _parse_timestamp(value: str) -> float:
+    try:
+        return (
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+        )
+    except ValueError:
+        return 0.0
+
+
+def _sweep_awaiting_selection() -> None:
+    """worker 周期扫描：awaiting_selection 超过阈值 → failed + UNKNOWN。"""
+    cutoff = time.time() - _awaiting_selection_timeout_seconds()
+    for record in list(TASKS.values()):
+        task = record.task
+        if task.status is not TaskStatus.AWAITING_SELECTION:
+            continue
+        if _parse_timestamp(task.updatedAt) > cutoff:
+            continue
+        logger.info("awaiting_selection_timeout task_id=%s", task.id)
+        _fail_task(
+            task, ErrorCode.UNKNOWN, {"reason": "awaiting_selection_timeout"}
+        )
+
+
+WORKER = TaskWorker(_process_task, sweep=_sweep_awaiting_selection)
+
+
+def _submit_if_queued(record: TaskRecord) -> bool:
+    """real 模式非阻塞推进：queued 交给 worker；worker 未启动返回 False。"""
+    if record.task.status != TaskStatus.QUEUED:
+        return True
+    if not WORKER.started:
+        return False
+    WORKER.submit(record.task.id)
+    return True
+
+
+def _restore_state() -> None:
+    """启动恢复：从 SQLite 载回任务；活动态由 recover_restart 置 failed。"""
+    TASKS.clear()
+    for task in get_store().recover_restart():
+        scenario = _scenario_for(task.sourceUrl)
+        sniff = _make_sniff(task.id, scenario) if ENGINE_MODE == "stub" else None
+        TASKS[task.id] = TaskRecord(task, scenario, sniff)
+
+
+# ---------------------------------------------------------------------------
 # 应用与端点
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="BrowseGuard Vid Engine (stub)", version=ENGINE_VERSION)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    _restore_state()
+    await WORKER.start()
+    if ENGINE_MODE == "real":
+        for record in list(TASKS.values()):
+            if record.task.status == TaskStatus.QUEUED:
+                WORKER.submit(record.task.id)
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await WORKER.stop()
 
 
 @app.middleware("http")
@@ -610,11 +732,14 @@ def health():
 
 @app.get("/v1/_debug/download-counter")
 def debug_download_counter():
-    """M0 桩自检端点（非协议 v0.1 内容，M1 移除）。
+    """M0 桩自检端点（非协议 v0.1 内容，M1 后默认关闭）。
 
     只读暴露 DOWNLOAD_COUNTER 原值，供 smoke 直接读取「DRM 场景计数器为 0」
-    （§9.3 / §10 的"引擎日志可证"之外的硬读数）。不参与任何协议流程。
+    （§9.3 / §10 的"引擎日志可证"之外的硬读数）。不参与任何协议流程；
+    仅在 ``BGV_ENABLE_DEBUG_ENDPOINTS=1`` 时开放，否则 404。
     """
+    if not DEBUG_ENDPOINTS_ENABLED:
+        raise StarletteHTTPException(status_code=404)
     return JSONResponse(
         content={"downloadCount": DOWNLOAD_COUNTER.count},
         headers=PROTOCOL_HEADERS,
@@ -649,7 +774,12 @@ def create_task(req: TaskCreateRequest):
         sniff=_make_sniff(task.id, _scenario_for(req.sourceUrl)) if ENGINE_MODE == "stub" else None,
     )
     TASKS[task.id] = record
-    return _task_response(task, status_code=201)
+    get_store().upsert(task)
+    response = _task_response(task, status_code=201)
+    # 先序列化响应再入队，保证 201 响应体为 queued（worker 随后推进）
+    if ENGINE_MODE == "real" and WORKER.started:
+        WORKER.submit(task.id)
+    return response
 
 
 @app.get("/v1/tasks")
@@ -665,7 +795,10 @@ def list_tasks(limit: int = Query(default=50, ge=1, le=200), cursor: str | None 
 @app.get("/v1/tasks/{task_id}")
 def get_task(task_id: str):
     record = _get_record_or_404(task_id)
-    _advance(record)
+    if ENGINE_MODE == "stub":
+        _advance(record)  # 桩语义：GET 惰性推进
+    elif not _submit_if_queued(record):
+        _advance(record)  # worker 未启动兜底（正常启动必已启动）
     return _task_response(record.task)
 
 
@@ -740,6 +873,16 @@ def start_download(task_id: str, req: DownloadRequest):
         task.namingTemplate = req.namingTemplate
     if req.postActions is not None:
         task.postActions = req.postActions
+    if ENGINE_MODE == "real":
+        # 非阻塞：先置 downloading 并持久化，下载交给 worker
+        _begin_download(record)
+        record.last_selector_key = _selector_key(req.formatSelector)
+        response = _task_response(task, status_code=202)
+        if WORKER.started:
+            WORKER.submit(task.id)
+        else:
+            _download_real(record)
+        return response
     _do_download(record)
     record.last_selector_key = _selector_key(req.formatSelector)
     return _task_response(task, status_code=202)
