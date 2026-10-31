@@ -6,7 +6,7 @@
 | 项目英文名      | BrowseGuard Vid         |
 | 仓库名        | `browseguard-vid-agent` |
 | Android 包名 | `com.hpu.browseguard`   |
-| 文档版本       | v0.1 草案                 |
+| 文档版本       | v0.2 草案                 |
 | 文档状态       | 待评审                     |
 
 ---

@@ -1,9 +1,14 @@
 """pytest 共享 fixture：每个测试拿到干净的引擎状态。"""
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
-import main
+# 测试基线固定为默认输出白名单，不受本机 shell 环境影响
+os.environ.pop("BGV_OUTPUT_DIR_ALLOWLIST", None)
+
+import main  # noqa: E402 —— 必须在固定环境基线之后导入
 
 
 @pytest.fixture()

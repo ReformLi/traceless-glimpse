@@ -6,3 +6,8 @@ pydantic==2.14.2
 uvicorn==0.54.0
 httpx==0.28.1
 pytest==9.2.0
+# M1 阶段 2：Playwright（浏览器 rev 1228 已缓存于 %LOCALAPPDATA%\ms-playwright；
+# 间接依赖 greenlet / pyee 由 pip 解析）
+playwright==1.61.0
+# M1 阶段 3：yt-dlp（纯库调用 `yt_dlp.YoutubeDL`，无 CLI 透传；wheel 3.2 MB，无新增依赖）
+yt-dlp==2026.10.26

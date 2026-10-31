@@ -1,16 +1,18 @@
-"""BrowseGuard Vid 本地引擎桩（M0）。
+"""BrowseGuard Vid 本地引擎（协议 §6 P0 端点 + §9 四示例）。
 
-只实现协议合同：docs/PROTOCOL.md §6 P0 端点 + §9 四示例。不做真实
-嗅探 / 下载 / 合并：
-- 嗅探结果与格式列表来自 fixture（sourceUrl 路径含 /drm → DRM 场景）；
-- "下载"只推进状态机并计数（_do_download），不发出任何网络请求；
-- DRM 任务在 download 入口、审计行之后、下载逻辑之前短路返回
-  422 DRM_PROTECTED（§3.2：不得尝试下载）。
+两种模式（`BGV_ENGINE_MODE`，默认 stub）：
+- stub：嗅探 / 格式列表来自 fixture（sourceUrl 路径含 /drm → DRM 场景）；
+  "下载"只推进状态机并计数（_do_download），不发出任何网络请求；
+- real：Playwright 嗅探 + yt-dlp 真实解析（formats_from_info / estimate_quality）
+  + download_media 真实下载；所有出站 URL 走统一 SSRF 校验器。
 
-M0 桩语义：
-- 状态惰性推进：GET 任务详情时 queued→sniffing→（mode=sniff ? done
+DRM 任务在 download 入口、审计行之后、下载逻辑之前短路返回
+422 DRM_PROTECTED（§3.2：不得尝试下载）。
+
+状态惰性推进：
+- GET 任务详情时 queued→sniffing→（mode=sniff ? done
   : formatSelector 为空或 DRM ? awaiting_selection : downloading）；
-  downloading→done。
+  real 模式下载同步执行并直达 done / failed，stub 模式 downloading→done。
 - 带 formatSelector 的 download 任务按 §4 由引擎自动领取下载（审计行 +
   _do_download，与 POST /download 同一执行链）；DRM 任务不自动下载（§3.2），
   停 awaiting_selection 等 POST /download 返回 422 DRM_PROTECTED。
@@ -19,9 +21,11 @@ M0 桩语义：
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Query, Request
@@ -44,7 +48,6 @@ from models import (
     PostAction,
     Progress,
     Resolution,
-    SelectionStrategy,
     SniffResult,
     Task,
     TaskCreateRequest,
@@ -58,13 +61,38 @@ from security import (
     validate_outbound_url,
     validate_output_dir,
 )
+from services import downloader as downloader_service
+from services import environment as environment_service
+from services import formats as formats_service
 
 logger = logging.getLogger("bgv.engine")
 
 PROTOCOL_VERSION = "0.1"
 ENGINE_VERSION = "0.1.0"
+
+# 引擎模式开关（M1）：stub = M0 桩（fixture + GET 惰性推进）；real = 真实嗅探链路。
+# 默认 stub，保证既有 56 条契约用例零改动；真实链路用例显式 -m real 运行。
+ENGINE_MODE = os.getenv("BGV_ENGINE_MODE", "stub").strip().lower()
+if ENGINE_MODE not in {"stub", "real"}:
+    raise RuntimeError(f"BGV_ENGINE_MODE 取值非法：{ENGINE_MODE!r}（仅 stub / real）")
 PROTOCOL_HEADERS = {"X-Protocol-Version": PROTOCOL_VERSION}
 START_TIME = time.time()
+
+def _load_output_dir_allowlist() -> list[str]:
+    """BGV_OUTPUT_DIR_ALLOWLIST（os.pathsep 分隔）；默认 %USERPROFILE%\\Videos\\BGV。
+
+    同时保留协议 §6.5 示例路径，保证既有契约用例（/home/user/Videos/BGV）可用。
+    """
+    raw = os.getenv("BGV_OUTPUT_DIR_ALLOWLIST", "").strip()
+    if raw:
+        return [item for item in raw.split(os.pathsep) if item]
+    return [
+        os.path.expanduser(os.path.join("~", "Videos", "BGV")),
+        "/home/user/Videos/BGV",
+    ]
+
+
+OUTPUT_DIR_ALLOWLIST = _load_output_dir_allowlist()
 
 # ---------------------------------------------------------------------------
 # 状态机（协议 §4）
@@ -151,10 +179,12 @@ DOWNLOAD_COUNTER = DownloadCounter()
 class TaskRecord:
     """任务运行态：Task 本体 + fixture 场景 + 幂等键（上次 download 的 selector）。"""
 
-    def __init__(self, task: Task, scenario: str, sniff: SniffResult):
+    def __init__(self, task: Task, scenario: str, sniff: SniffResult | None):
         self.task = task
         self.scenario = scenario  # "normal" | "drm"
-        self.sniff = sniff
+        self.sniff = sniff  # real 模式在首次 GET 时才由 Playwright 产出
+        self.sniffed = sniff is not None
+        self.formats: list[FormatInfo] | None = None  # real 模式 yt-dlp 格式表
         self.last_selector_key: str | None = None
 
 
@@ -162,16 +192,13 @@ TASKS: dict[str, TaskRecord] = {}
 
 
 def reset_state() -> None:
-    """测试隔离：清空任务表与下载计数器（conftest 的 client fixture 调用）。"""
+    """测试隔离：清任务表 / 计数器。"""
     TASKS.clear()
     DOWNLOAD_COUNTER.reset()
 
 
-def _do_download(record: TaskRecord) -> None:
-    """唯一的"真实下载"入口（M0 桩：仅推进状态与计数，无网络 IO）。
-
-    调用链：POST /v1/tasks/{id}/download →（审计行 + DRM 判定之后）→ 本函数。
-    """
+def _begin_download(record: TaskRecord) -> None:
+    """进入 downloading：状态转移 + 初始进度 + 计数器（唯一下载计数点）。"""
     _transition(record.task, TaskStatus.DOWNLOADING)
     record.task.progress = Progress(
         phase="downloading",
@@ -182,6 +209,89 @@ def _do_download(record: TaskRecord) -> None:
         percent=0.0,
     )
     DOWNLOAD_COUNTER.count += 1
+
+
+def _do_download(record: TaskRecord) -> None:
+    """下载入口（同步执行）：stub 只推进状态；real 调 ``download_media``。
+
+    阶段 4 语义：GET 自动领取与 POST /download 均在本线程内阻塞执行。
+    """
+    _begin_download(record)
+    if ENGINE_MODE == "real":
+        _download_real(record)
+
+
+_FORMAT_UNAVAILABLE_MESSAGES = {
+    "exact_format_id_unsupported": "M1 暂不支持精确 formatId",
+    "max_height_required": "max_height 策略必须提供 maxHeight",
+}
+
+
+def _format_unavailable_detail(reason: str) -> dict[str, Any]:
+    """FORMAT_UNAVAILABLE 的脱敏 detail：reason（机器可读）+ message（人可读）。"""
+    detail: dict[str, Any] = {"reason": reason}
+    message = _FORMAT_UNAVAILABLE_MESSAGES.get(reason)
+    if message:
+        detail["message"] = message
+    return detail
+
+
+def _download_real(record: TaskRecord) -> None:
+    """real 模式下载：统一校验器 → yt-dlp（download_media）→ 失败置 FAILED。"""
+    task = record.task
+    if record.sniff is None:
+        _fail_task(task, ErrorCode.NO_MEDIA_FOUND)
+        return
+    try:
+        format_expression = formats_service.ytdlp_format_expression(task.formatSelector)
+    except formats_service.FormatUnavailableError as exc:
+        _fail_task(
+            task,
+            ErrorCode.FORMAT_UNAVAILABLE,
+            _format_unavailable_detail(exc.reason),
+        )
+        return
+    try:
+        if record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
+            # 单文件直链走 download_direct；HLS/DASH 交给 yt-dlp
+            path = downloader_service.download_direct(
+                record.sniff.mediaUrl, task.outputDir, task_id=task.id
+            )
+        else:
+            path = downloader_service.download_media(
+                record.sniff.mediaUrl,
+                task.outputDir,
+                task_id=task.id,
+                format_expression=format_expression,
+            )
+    except SecurityError as exc:
+        logger.warning("download_blocked task_id=%s code=%s", task.id, exc.code)
+        _fail_task(task, ErrorCode(exc.code), exc.detail)
+        return
+    except downloader_service.DownloadIntegrityError as exc:
+        logger.warning("download_integrity_failed task_id=%s reason=%s", task.id, exc)
+        _fail_task(task, ErrorCode.PARTIAL_DOWNLOAD)
+        return
+    except Exception as exc:  # noqa: BLE001 —— 下载失败不得让 API 500
+        logger.warning("download_failed task_id=%s type=%s", task.id, type(exc).__name__)
+        _fail_task(task, ErrorCode.UNKNOWN, {"reason": "download_failed"})
+        return
+    task.progress = Progress(
+        phase="done",
+        bytesDownloaded=path.stat().st_size,
+        bytesTotal=path.stat().st_size,
+        speedBps=0,
+        etaSeconds=0,
+        percent=100.0,
+    )
+    _transition(task, TaskStatus.DONE)
+
+
+def _fail_task(
+    task: Task, code: ErrorCode, detail: dict[str, Any] | None = None
+) -> None:
+    task.error = error_payload(code, detail=detail)
+    _transition(task, TaskStatus.FAILED)
 
 
 # ---------------------------------------------------------------------------
@@ -315,13 +425,26 @@ def _advance(record: TaskRecord) -> None:
     """GET 时按 §4 推进（桩惰性语义）。幂等：终态不动。
 
     - queued → sniffing；
-    - sniffing → mode=sniff ? done
-      : formatSelector 为空或 DRM ? awaiting_selection : downloading（自动领取）；
-    - downloading → done（桩语义：下载瞬时完成）。
+    - sniffing → （real 模式：先做 Playwright 嗅探 + yt-dlp 格式解析）
+      mode=sniff ? done : formatSelector 为空或 DRM ? awaiting_selection
+      : downloading（自动领取）；
+    - downloading → done（stub 语义：下载瞬时完成；real 模式由 _download_real 直达
+      done / failed）。
+
+    real 模式下嗅探与下载在本线程内**阻塞**执行（阶段 4 既有偏差）。
     """
     task = record.task
     if task.status == TaskStatus.QUEUED:
         _transition(task, TaskStatus.SNIFFING)
+    if task.status == TaskStatus.SNIFFING and not record.sniffed:
+        _sniff_real(record)
+        record.sniffed = True
+        if record.sniff is None:
+            task.error = error_payload(
+                ErrorCode.INTERNAL_ERROR, detail={"reason": "sniff_failed"}
+            )
+            _transition(task, TaskStatus.FAILED)
+            return
     if task.status == TaskStatus.SNIFFING:
         if task.mode == TaskMode.SNIFF:
             _transition(task, TaskStatus.DONE)
@@ -348,6 +471,73 @@ def _advance(record: TaskRecord) -> None:
 def _selector_key(selector: FormatSelector) -> str:
     """幂等键：selector 的规范化 JSON（字段定义序稳定）。"""
     return selector.model_dump_json()
+
+
+def _sniff_real(record: TaskRecord) -> None:
+    """real 模式嗅探 + yt-dlp 格式解析：结果写回 record.sniff / record.formats。
+
+    失败（页面无媒体流 / 嗅探异常）→ sniff=None，由调用方置 failed
+    （INTERNAL_ERROR，detail.reason=sniff_failed；不新增错误码）。
+    """
+    from services.sniffer import SniffError, get_sniffer
+
+    task = record.task
+    try:
+        observed = get_sniffer().sniff(task.id, task.sourceUrl)
+    except SniffError as exc:
+        logger.warning("sniff_failed task_id=%s type=%s", task.id, type(exc).__name__)
+        record.sniff = None
+        return
+    if observed is None:
+        logger.warning("sniff_no_media task_id=%s", task.id)
+        record.sniff = None
+        return
+    # DRM 判定（§3.2）：播放列表按 keyformat 三态判定；取不到 manifest（如回环媒体
+    # 被 SSRF 拦截）时保持 false，并记 sniff_manifest_blocked 审计行（只带 task_id）
+    drm_detected, drm_system_name = False, None
+    if observed.container == "m3u8":
+        try:
+            drm_detected, drm_system_name = formats_service.detect_drm(
+                formats_service.fetch_manifest_text(observed.url)
+            )
+        except SecurityError:
+            logger.warning("sniff_manifest_blocked task_id=%s", task.id)
+        except Exception as exc:  # noqa: BLE001 —— 网络/解析异常不改变嗅探结果
+            logger.warning(
+                "sniff_manifest_failed task_id=%s type=%s", task.id, type(exc).__name__
+            )
+
+    # 格式表：出站 URL 先过统一校验器，再交给 yt-dlp 解析（硬约束 ⑤）
+    info: dict[str, Any] | None = None
+    try:
+        validate_outbound_url(observed.url)
+        info = formats_service.extract_info(observed.url)
+        record.formats = formats_service.formats_from_info(task.id, info)
+    except SecurityError:
+        logger.warning("formats_extract_blocked task_id=%s", task.id)
+        record.formats = []
+    except Exception as exc:  # noqa: BLE001 —— 解析失败不阻塞嗅探结果
+        logger.warning(
+            "formats_extract_failed task_id=%s type=%s", task.id, type(exc).__name__
+        )
+        record.formats = []
+
+    quality = (
+        formats_service.estimate_quality(info)
+        if info is not None
+        else EstimatedQuality(height=0, bitrateKbps=0, label="unknown")
+    )
+    record.sniff = SniffResult(
+        taskId=task.id,
+        mediaUrl=observed.url,
+        type=MediaStreamType(observed.kind),
+        container=observed.container,
+        estimatedQuality=quality,
+        drmDetected=drm_detected,
+        drmSystem=DrmSystem(drm_system_name) if drm_system_name else None,
+        headersHint=observed.headers_hint,
+        discoveredAt=_now(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -433,11 +623,42 @@ def debug_download_counter():
     )
 
 
+@app.get("/v1/privacy/selfcheck")
+def privacy_selfcheck():
+    """§6.5：隐私自检信息（M1 只填依赖版本与输出白名单，缓存字段占位）。"""
+    return JSONResponse(
+        content={
+            "listenAddress": "127.0.0.1:8730",
+            "tlsEnabled": False,
+            "authEnabled": False,
+            "activeProxyIds": [],
+            "cookiePolicyDefault": CookiePolicy.LAZY.value,
+            "outputDirAllowlist": OUTPUT_DIR_ALLOWLIST,
+            "cacheDir": os.path.join(
+                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                "BrowseGuardVid",
+                "cache",
+            ),
+            "cacheTtlHours": 48,
+            "cacheSizeBytes": 0,
+            "lastCleanupAt": None,
+            "dependencyVersions": environment_service.dependency_versions(),
+        },
+        headers=PROTOCOL_HEADERS,
+    )
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    """启动自检（ffmpeg 缺失仅告警，不阻塞）。"""
+    environment_service.startup_selfcheck()
+
+
 @app.post("/v1/tasks", status_code=201)
 def create_task(req: TaskCreateRequest):
     """§6.2 创建任务。校验顺序：sourceUrl 出站校验 → outputDir 白名单校验。"""
     validate_outbound_url(req.sourceUrl)
-    validate_output_dir(req.outputDir)
+    validate_output_dir(req.outputDir, allowlist=OUTPUT_DIR_ALLOWLIST)
     task = Task(
         id=_uuid7(),
         sourceUrl=req.sourceUrl,
@@ -457,7 +678,8 @@ def create_task(req: TaskCreateRequest):
     record = TaskRecord(
         task=task,
         scenario=_scenario_for(req.sourceUrl),
-        sniff=_make_sniff(task.id, _scenario_for(req.sourceUrl)),
+        # stub 用 fixture；real 在首次 GET（sniffing 阶段）由 Playwright 产出
+        sniff=_make_sniff(task.id, _scenario_for(req.sourceUrl)) if ENGINE_MODE == "stub" else None,
     )
     TASKS[task.id] = record
     return _task_response(task, status_code=201)
@@ -483,8 +705,9 @@ def get_task(task_id: str):
 @app.get("/v1/tasks/{task_id}/sniff-results")
 def list_sniff_results(task_id: str):
     record = _get_record_or_404(task_id)
+    sniff_items = [] if record.sniff is None else [record.sniff.model_dump(mode="json")]
     return JSONResponse(
-        content={"items": [record.sniff.model_dump(mode="json")]},
+        content={"items": sniff_items},
         headers=PROTOCOL_HEADERS,
     )
 
@@ -495,10 +718,12 @@ def list_formats(task_id: str):
     record = _get_record_or_404(task_id)
     if record.task.status != TaskStatus.AWAITING_SELECTION:
         raise TaskStateConflictError()
+    # real 模式：yt-dlp 真实格式表；stub 模式：fixture
+    formats = (record.formats or []) if ENGINE_MODE == "real" else _formats_for(task_id)
     return JSONResponse(
         content={
             "taskId": task_id,
-            "items": [f.model_dump(mode="json") for f in _formats_for(task_id)],
+            "items": [f.model_dump(mode="json") for f in formats],
         },
         headers=PROTOCOL_HEADERS,
     )
@@ -527,8 +752,21 @@ def start_download(task_id: str, req: DownloadRequest):
     if task.status != TaskStatus.AWAITING_SELECTION:
         raise TaskStateConflictError()
     # DRM 判定：审计行之后、下载逻辑之前
-    if record.sniff.drmDetected:
+    if record.sniff is not None and record.sniff.drmDetected:
         raise DrmProtectedError(record.sniff.drmSystem)
+    # real 模式先做最小映射校验：exact / 缺 maxHeight 显式拒绝（非静默 best）；
+    # stub 模式保留 M0 fixture 契约（不做映射）
+    if ENGINE_MODE == "real":
+        try:
+            formats_service.ytdlp_format_expression(req.formatSelector)
+        except formats_service.FormatUnavailableError as exc:
+            return _error_response(
+                422,
+                error_payload(
+                    ErrorCode.FORMAT_UNAVAILABLE,
+                    _format_unavailable_detail(exc.reason),
+                ),
+            )
     # 应用选择器与可选覆盖（§6.4）
     task.formatSelector = req.formatSelector
     if req.namingTemplate is not None:

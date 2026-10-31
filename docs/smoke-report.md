@@ -9,13 +9,21 @@
 | 执行命令 | `ENGINE_LOG=<engine 控制台日志> bash scripts/smoke.sh` |
 | 结果 | **54 项断言全绿，退出码 0**（`RESULT: ALL GREEN`） |
 
+复现前置条件（smoke 依赖 venv 内的 python 取 JSON，不依赖 jq）：
+
+```powershell
+cd engine
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements-lock.txt
+```
+
 复现：
 
 ```bash
 # 1) 另开终端启动引擎（工作目录必须是 engine/ 或 PYTHONPATH 指向 engine/）
 engine/.venv/Scripts/python.exe engine/main.py > "$TEMP/bgv-engine.log" 2>&1
 
-# 2) 跑 smoke
+# 2) 跑 smoke（PYTHON 默认取 engine/.venv/Scripts/python.exe）
 ENGINE_LOG="$TEMP/bgv-engine.log" bash scripts/smoke.sh
 ```
 
@@ -117,3 +125,21 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
    而 PRD §12（v0.2）锁定「Kotlin + Jetpack Compose」；M3 前需切 Compose 或明确骨架仅占位。
 4. **两个新增错误码未进协议 §5 表**：`VALIDATION_ERROR`、`NOT_FOUND` 仅存在于实现与
    `engine/schema/error_payload.json`，需在 changelog 补条目（见 §5 偏差 2）。
+
+## 7. M1 real 模式已知局限（2026-10-31 阶段 3 记录，不阻塞 M1 验收）
+
+1. **本地回环媒体被 SSRF 统一校验器拒绝**：`127.0.0.1` 按设计拦截，real 模式无法用本地
+   测试媒体服务器跑 API 级 E2E。services 层已用 mock 覆盖 `formats_from_info` /
+   `download_media` / `redirect`；**API 级真实下载 E2E 推迟到 M2**，届时以可控测试域或
+   测试专用配置为入口，不引入生产旁路。
+2. **manifest 取不到时**：`sniff_manifest_blocked` 审计行（仅 `task_id`），`drmDetected=false`。
+3. **real 模式下载为阻塞调用**：阶段 5 后台 worker 前，`GET /v1/tasks/{id}` 与
+   `POST /download` 会同步等待下载完成。
+4. **real 模式 formatSelector 最小映射 / 显式拒绝，非静默 best**（阶段 4 裁决方案 A）：
+   `best → best`、`audio_only → bestaudio`、`max_height → best[height<=N]`。
+   `exact` 返回 422 `FORMAT_UNAVAILABLE`（`detail.reason=exact_format_id_unsupported`，
+   `detail.message="M1 暂不支持精确 formatId"`）；`max_height` 缺 `maxHeight`（≤0）返回
+   422 `FORMAT_UNAVAILABLE`（`detail.reason=max_height_required`），不回落 `best`。
+   API 入口（`POST /download`）在进入 `downloading` 前完成校验；引擎自动领取路径
+   （带 selector 的 download 任务）对应任务置 `failed` + 同一 `detail`。
+   `preferCodec` / `maxSizeBytes` 暂未参与映射，留 M2。
