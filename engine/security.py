@@ -8,11 +8,39 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
 # 输出目录白名单（§6.5 示例值；M0 固定，M1 走配置）
 DEFAULT_OUTPUT_DIR_ALLOWLIST = ["/home/user/Videos/BGV"]
+
+# 媒体产物扩展名白名单（FR-SEC-03）；``.part`` 仅作临时文件，不在此表
+ALLOWED_OUTPUT_EXTENSIONS = frozenset(
+    {
+        ".mp4",
+        ".m4v",
+        ".mkv",
+        ".webm",
+        ".mov",
+        ".flv",
+        ".ts",
+        ".m4a",
+        ".aac",
+        ".mp3",
+        ".opus",
+        ".ogg",
+        ".wav",
+        ".flac",
+    }
+)
+
+# Windows 设备保留名：同名文件即使扩展名合法也无法创建
+_RESERVED_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
 
 # 出站 URL 允许的 scheme（§5 UNSUPPORTED_SCHEME：仅 http/https）
 _ALLOWED_SCHEMES = ("http", "https")
@@ -68,6 +96,19 @@ class InvalidOutputDirError(SecurityError):
 class OutputDirRejectedError(SecurityError):
     def __init__(self):
         super().__init__("OUTPUT_DIR_REJECTED", None)
+
+
+class OutputFilenameRejectedError(SecurityError):
+    """文件名 / 扩展名不安全：复用 ``OUTPUT_DIR_REJECTED``，detail 说明原因。
+
+    不新增协议错误码（避免三端同步升级）；detail 只带扩展名，不含路径。
+    """
+
+    def __init__(self, extension: str, reason: str = "extension_not_allowed"):
+        super().__init__(
+            "OUTPUT_DIR_REJECTED",
+            {"reason": reason, "extension": extension},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +225,47 @@ def validate_output_dir(path: str, allowlist: Optional[list[str]] = None) -> str
         if real == allow_real or real.startswith(allow_real + os.sep):
             return path
     raise OutputDirRejectedError()
+
+
+def prepare_output_dir(path: str | Path) -> Path:
+    """创建（或复用）输出目录，并尽力收紧为 0700（Windows 下为尽力而为）。"""
+    out = Path(path)
+    out.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(out, 0o700)
+    except OSError:
+        pass
+    return out
+
+
+def validate_output_filename(filename: str) -> str:
+    """返回可安全落盘的文件名（取 basename），否则抛 ``OutputFilenameRejectedError``。
+
+    拒绝：空名 / 尾点尾空格 / NUL / Windows 设备保留名 / 非白名单扩展名。
+    目录穿越段在取 basename 时被丢弃，不参与最终路径。
+    """
+    if not isinstance(filename, str):
+        raise OutputFilenameRejectedError("")
+    name = os.path.basename(filename.replace("\\", "/"))
+    if not name.strip() or name in {".", ".."} or "\x00" in name:
+        raise OutputFilenameRejectedError("", "filename_rejected")
+    if name != name.rstrip(" ."):  # Windows 会静默去掉尾点 / 空格
+        raise OutputFilenameRejectedError(Path(name).suffix.lower(), "filename_rejected")
+    if name.split(".", 1)[0].lower() in _RESERVED_STEMS:
+        raise OutputFilenameRejectedError(Path(name).suffix.lower(), "filename_rejected")
+    suffix = Path(name).suffix.lower()
+    if suffix not in ALLOWED_OUTPUT_EXTENSIONS:
+        raise OutputFilenameRejectedError(suffix)
+    return name
+
+
+def validate_output_target(out_dir: str | Path, target: str | Path) -> Path:
+    """产物必须直接位于 out_dir 内（防标题拼出上级路径）。"""
+    out_real = os.path.normcase(os.path.realpath(out_dir))
+    target_real = os.path.normcase(os.path.realpath(target))
+    if os.path.dirname(target_real) != out_real:
+        raise SecurityError("OUTPUT_DIR_REJECTED", {"reason": "output_outside_dir"})
+    return Path(target)
 
 
 # ---------------------------------------------------------------------------

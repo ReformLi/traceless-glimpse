@@ -65,7 +65,7 @@ def test_real_advance_calls_formats_from_info(monkeypatch):
     )
 
     class _FakeSniffer:
-        def sniff(self, task_id: str, source_url: str):
+        def sniff(self, task_id: str, source_url: str, cookie_policy: str = "none"):
             return observed
 
     monkeypatch.setattr(sniffer_service, "get_sniffer", lambda: _FakeSniffer())
@@ -115,7 +115,7 @@ def test_manifest_blocked_logs_audit_line(monkeypatch, caplog):
     )
 
     class _FakeSniffer:
-        def sniff(self, task_id: str, source_url: str):
+        def sniff(self, task_id: str, source_url: str, cookie_policy: str = "none"):
             return observed
 
     monkeypatch.setattr(sniffer_service, "get_sniffer", lambda: _FakeSniffer())

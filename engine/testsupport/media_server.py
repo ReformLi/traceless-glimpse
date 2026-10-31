@@ -13,6 +13,8 @@
 - ``GET /r302-metadata``           302 → ``http://169.254.169.254/latest/meta-data/``
 - ``GET /whoami``                  回显 Cookie / Referer / UA / Range（隔离性验收）
 - ``GET /page.html``               嗅探页（请求 m3u8 并写入 sid Cookie）
+- ``GET /protected.html``          无 ``sid=good-cookie`` 时 403，有则返回嗅探页（惰性 Cookie）
+- ``GET /media/protected.mp4``     无 ``sid=good-cookie`` 时 403，有则返回 sample.mp4
 
 注意：服务器本身在回环，初始 URL 就会被 SSRF 校验器拦截，因此
 「合法起点 → 私网终点」的重定向只能靠 mock transport 的单测覆盖；
@@ -76,6 +78,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "/media/audio_only.m4a", "/media/hls/master.m3u8",
                 "/media/drm/widevine.m3u8", "/media/drm/aes128.m3u8",
                 "/media/evil.exe", "/page.html", "/whoami",
+                "/protected.html", "/media/protected.mp4",
                 "/r302-local", "/r302-private", "/r302-private10", "/r302-metadata",
             ]
             self._send_text(200, "BGV mock media server\n" + "\n".join(routes) + "\n", head_only)
@@ -98,6 +101,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._redirect("http://169.254.169.254/latest/meta-data/", head_only)
         elif path == "/page.html":
             self._serve_file(self.assets / "page.html", allow_range=False, head_only=head_only)
+        elif path == "/protected.html":
+            if not self._has_access_cookie():
+                self._send_text(403, "cookie required", head_only)
+            else:
+                self._serve_file(self.assets / "page.html", allow_range=False, head_only=head_only)
+        elif path == "/media/protected.mp4":
+            if not self._has_access_cookie():
+                self._send_text(403, "cookie required", head_only)
+            else:
+                self._serve_file(
+                    self.assets / "media" / "sample.mp4",
+                    allow_range=True,
+                    head_only=head_only,
+                )
         elif path == "/media/no-range.mp4":
             # 续传降级用例：显式不支持 Range
             self._serve_file(self.assets / "media" / "sample.mp4", allow_range=False, head_only=head_only)
@@ -111,6 +128,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_text(404, "not found", head_only)
 
     # ------------------------------------------------------------------ 发送
+    def _has_access_cookie(self) -> bool:
+        cookie = self.headers.get("Cookie", "")
+        return any(part.strip() == "sid=good-cookie" for part in cookie.split(";"))
+
     def _redirect(self, location: str, head_only: bool) -> None:
         self.send_response(302)
         self.send_header("Location", location)

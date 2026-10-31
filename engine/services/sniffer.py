@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from security import sanitize_headers
+from services import cookies as cookies_service
 
 logger = logging.getLogger("bgv.engine")
 
@@ -74,9 +75,9 @@ class _SniffWorker(threading.Thread):
         self._launch_error: BaseException | None = None
 
     # ------------------------------------------------------------------ 提交
-    def submit(self, task_id: str, source_url: str) -> Future:
+    def submit(self, task_id: str, source_url: str, cookie_policy: str = "none") -> Future:
         future: Future = Future()
-        self._jobs.put((task_id, source_url, future))
+        self._jobs.put((task_id, source_url, cookie_policy, future))
         return future
 
     def shutdown(self) -> None:
@@ -98,9 +99,11 @@ class _SniffWorker(threading.Thread):
                     job = self._jobs.get()
                     if job is None:
                         break
-                    task_id, source_url, future = job
+                    task_id, source_url, cookie_policy, future = job
                     try:
-                        future.set_result(self._sniff(browser, task_id, source_url))
+                        future.set_result(
+                            self._sniff(browser, task_id, source_url, cookie_policy)
+                        )
                     except BaseException as exc:  # noqa: BLE001 —— 透传给调用方
                         future.set_exception(exc)
             finally:
@@ -111,13 +114,14 @@ class _SniffWorker(threading.Thread):
             job = self._jobs.get()
             if job is None:
                 return
-            job[2].set_exception(SniffError(f"playwright 不可用：{type(exc).__name__}"))
+            job[3].set_exception(SniffError(f"playwright 不可用：{type(exc).__name__}"))
 
     # ------------------------------------------------------------------ 单次嗅探
-    def _sniff(self, browser, task_id: str, source_url: str) -> SniffedMedia | None:
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-
+    def _sniff(
+        self, browser, task_id: str, source_url: str, cookie_policy: str = "none"
+    ) -> SniffedMedia | None:
         candidates: list[SniffedMedia] = []
+        rejected: list[str] = []
 
         def _on_request(request) -> None:
             info = _classify(request.url)
@@ -137,21 +141,66 @@ class _SniffWorker(threading.Thread):
                 )
             )
 
+        def _on_response(response) -> None:
+            if response.status in {401, 403} and _classify(response.url):
+                rejected.append(response.url)
+
         context = browser.new_context()
         logger.info("sniff_context_open task_id=%s", task_id)
         try:
             page = context.new_page()
             page.on("request", _on_request)
-            try:
-                page.goto(source_url, wait_until="domcontentloaded", timeout=self._timeout_ms)
-            except PlaywrightTimeoutError:
-                pass  # 超时仍接受已观察到的请求（由 _prefer 决定是否可用）
+            page.on("response", _on_response)
+            if cookie_policy == "explicit":
+                self._load_env_cookies(context, task_id)
+            response = self._goto(page, source_url)
+            retried = False
+            if cookie_policy == "lazy" and self._nav_rejected(response):
+                retried = self._retry_with_cookies(context, task_id)
+                if retried:
+                    candidates.clear()
+                    response = self._goto(page, source_url)
             # 给页面内的二次请求（fetch / 播放器加载）留出观察窗口
             page.wait_for_timeout(self._settle_ms)
+            if cookie_policy == "lazy" and not retried and rejected:
+                # 页面本身 200，但媒体请求被拒：加 Cookie 后整页重载一次
+                retried = self._retry_with_cookies(context, task_id)
+                if retried:
+                    candidates.clear()
+                    rejected.clear()
+                    self._goto(page, source_url)
+                    page.wait_for_timeout(self._settle_ms)
             return _prefer(candidates)
         finally:
             context.close()
             logger.info("sniff_context_close task_id=%s", task_id)
+
+    def _goto(self, page, url: str):
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        try:
+            return page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
+        except PlaywrightTimeoutError:
+            return None  # 超时仍接受已观察到的请求
+
+    @staticmethod
+    def _nav_rejected(response) -> bool:
+        return getattr(response, "status", None) in {401, 403}
+
+    def _load_env_cookies(self, context, task_id: str) -> bool:
+        cookies = cookies_service.load_env_cookies()
+        if not cookies:
+            logger.info("cookie_file_unavailable task_id=%s", task_id)
+            return False
+        context.add_cookies(cookies_service.playwright_cookies(cookies))
+        logger.info("cookie_file_loaded task_id=%s count=%d", task_id, len(cookies))
+        return True
+
+    def _retry_with_cookies(self, context, task_id: str) -> bool:
+        if not self._load_env_cookies(context, task_id):
+            return False
+        logger.info("cookie_lazy_retry task_id=%s", task_id)
+        return True
 
 
 class Sniffer:
@@ -162,12 +211,14 @@ class Sniffer:
         self._start_lock = threading.Lock()
         self._started = False
 
-    def sniff(self, task_id: str, source_url: str) -> SniffedMedia | None:
+    def sniff(
+        self, task_id: str, source_url: str, cookie_policy: str = "none"
+    ) -> SniffedMedia | None:
         with self._start_lock:
             if not self._started:
                 self._worker.start()
                 self._started = True
-        future = self._worker.submit(task_id, source_url)
+        future = self._worker.submit(task_id, source_url, cookie_policy)
         try:
             return future.result(timeout=_SNIFF_TIMEOUT_SECONDS)
         except SniffError:

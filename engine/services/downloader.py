@@ -12,15 +12,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import httpx
 
-from security import SecurityError, validate_outbound_url
+from security import (
+    SecurityError,
+    prepare_output_dir,
+    validate_outbound_url,
+    validate_output_filename,
+    validate_output_target,
+)
+from services import cookies as cookies_service
 from services.formats import validate_download_urls
 from services.redirect import resolve_redirects
 
@@ -58,12 +67,22 @@ def _content_range_total(value: str | None) -> int | None:
     return int(total) if total.isdigit() else None
 
 
+_REJECTION_MARKERS = ("401", "403", "forbidden", "unauthorized")
+
+
+def _looks_like_rejection(exc: BaseException) -> bool:
+    """yt-dlp 把 HTTP 状态塞进 DownloadError 文本；只据此触发一次惰性重试。"""
+    text = str(exc).lower()
+    return any(marker in text for marker in _REJECTION_MARKERS)
+
+
 def download_direct(
     media_url: str,
     output_dir: str | Path,
     *,
     filename: str | None = None,
     task_id: str = "unknown",
+    cookie_policy: str = "none",
     validator: Callable[[str], str] = validate_outbound_url,
     transport: httpx.BaseTransport | None = None,
     timeout: float = 30.0,
@@ -79,33 +98,55 @@ def download_direct(
     validator(media_url)
     final_url = resolve_redirects(media_url, transport=transport, timeout=timeout)
     validator(final_url)
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    name = filename or Path(urlsplit(final_url).path).name or "download.bin"
+    out_dir = prepare_output_dir(output_dir)
+    name = validate_output_filename(filename or Path(urlsplit(final_url).path).name)
     output = out_dir / name
     part = output.with_suffix(output.suffix + ".part")
     resume_from = part.stat().st_size if part.is_file() else 0
     headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
 
+    cookie_header: str | None = None
+    if cookie_policy == "explicit":
+        cookie_header = cookies_service.header_from_env(final_url)
+        if cookie_header:
+            logger.info("cookie_file_loaded task_id=%s", task_id)
+
+    cookie_retry_done = False
     with httpx.Client(
         transport=transport, follow_redirects=False, timeout=timeout, trust_env=False
     ) as client:
-        with client.stream("GET", final_url, headers=headers) as response:
-            if response.status_code not in (200, 206):
-                raise DownloadIntegrityError(f"HTTP {response.status_code}")
-            append = response.status_code == 206 and resume_from > 0
-            if resume_from > 0 and response.status_code == 200:
-                logger.info("resume_downgraded task_id=%s", task_id)
-            if response.status_code == 206:
-                total = _content_range_total(response.headers.get("content-range"))
-                length = _content_length(response)
-                if total is None and length is not None:
-                    total = resume_from + length if append else length
-            else:
-                total = _content_length(response)
-            with part.open("ab" if append else "wb") as handle:
-                for chunk in response.iter_bytes():
-                    handle.write(chunk)
+        while True:
+            request_headers = dict(headers)
+            if cookie_header:
+                request_headers["Cookie"] = cookie_header
+            with client.stream("GET", final_url, headers=request_headers) as response:
+                if (
+                    response.status_code in {401, 403}
+                    and cookie_policy == "lazy"
+                    and not cookie_retry_done
+                ):
+                    cookie_retry_done = True
+                    candidate = cookies_service.header_from_env(final_url)
+                    if candidate:
+                        logger.info("cookie_lazy_retry task_id=%s", task_id)
+                        cookie_header = candidate
+                        continue
+                if response.status_code not in (200, 206):
+                    raise DownloadIntegrityError(f"HTTP {response.status_code}")
+                append = response.status_code == 206 and resume_from > 0
+                if resume_from > 0 and response.status_code == 200:
+                    logger.info("resume_downgraded task_id=%s", task_id)
+                if response.status_code == 206:
+                    total = _content_range_total(response.headers.get("content-range"))
+                    length = _content_length(response)
+                    if total is None and length is not None:
+                        total = resume_from + length if append else length
+                else:
+                    total = _content_length(response)
+                with part.open("ab" if append else "wb") as handle:
+                    for chunk in response.iter_bytes():
+                        handle.write(chunk)
+                break
 
     if not part.is_file() or part.stat().st_size <= 0:
         raise DownloadIntegrityError(f"下载产物缺失：{part.name}")
@@ -124,6 +165,7 @@ def download_media(
     *,
     task_id: str = "unknown",
     format_expression: str = "best",
+    cookie_policy: str = "none",
     validator: Callable[[str], str] = validate_outbound_url,
     ydl_factory: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Path:
@@ -131,22 +173,12 @@ def download_media(
 
     ``format_expression`` 由结构化 formatSelector 映射而来（best /
     bestaudio / best[height<=N]），不接受调用方直接传 shell 字符串。
+
+    ``lazy`` 仅在下载被 401/403 拒绝时使用临时 Cookie 副本重试一次；
+    原 Cookie 文件只读，yt-dlp 的写回只落在副本上。
     """
     validator(media_url)
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    options: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "outtmpl": str(out_dir / "%(title)s.%(ext)s"),
-        "format": format_expression,
-        "socket_timeout": 30,
-    }
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg:
-        options["ffmpeg_location"] = ffmpeg
+    out_dir = prepare_output_dir(output_dir)
 
     factory = ydl_factory
     if factory is None:
@@ -154,19 +186,67 @@ def download_media(
 
         factory = yt_dlp.YoutubeDL
 
-    with factory(options) as ydl:
-        probe = ydl.extract_info(media_url, download=False)
-        rejected = validate_download_urls(probe, validator)
-        if rejected:
-            raise SecurityError("SSRF_BLOCKED", {"host": rejected[0]["host"]})
-        info = ydl.extract_info(media_url, download=True)
-        target = Path(ydl.prepare_filename(info))
+    def _options(cookiefile: Path | None) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "outtmpl": str(out_dir / "%(title)s.%(ext)s"),
+            "format": format_expression,
+            "socket_timeout": 30,
+        }
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            options["ffmpeg_location"] = ffmpeg
+        if cookiefile is not None:
+            options["cookiefile"] = str(cookiefile)
+        return options
+
+    def _attempt(options: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+        with factory(options) as ydl:
+            probe = ydl.extract_info(media_url, download=False)
+            rejected = validate_download_urls(probe, validator)
+            if rejected:
+                raise SecurityError("SSRF_BLOCKED", {"host": rejected[0]["host"]})
+            info = ydl.extract_info(media_url, download=True)
+            return info, Path(ydl.prepare_filename(info))
+
+    with ExitStack() as stack:
+        initial_cookie = None
+        if cookie_policy == "explicit":
+            initial_cookie = stack.enter_context(cookies_service.cookie_file_copy(task_id))
+            if initial_cookie is not None:
+                logger.info("cookie_file_loaded task_id=%s", task_id)
+        try:
+            info, target = _attempt(_options(initial_cookie))
+        except Exception as exc:  # noqa: BLE001 —— 只对 401/403 做一次惰性重试
+            if (
+                cookie_policy != "lazy"
+                or initial_cookie is not None
+                or not _looks_like_rejection(exc)
+            ):
+                raise
+            retry_cookie = stack.enter_context(cookies_service.cookie_file_copy(task_id))
+            if retry_cookie is None:
+                raise
+            logger.info("cookie_lazy_retry task_id=%s", task_id)
+            info, target = _attempt(_options(retry_cookie))
 
     # 下载后再校验一次（防御 yt-dlp 内部派生 / 拼接出的 URL）
     rejected_after = validate_download_urls(info, validator)
     if rejected_after:
         target.unlink(missing_ok=True)
         raise SecurityError("SSRF_BLOCKED", {"host": rejected_after[0]["host"]})
+
+    validate_output_target(out_dir, target)
+    try:
+        validate_output_filename(target.name)
+    except SecurityError:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     if not target.is_file() or target.stat().st_size <= 0:
         raise DownloadIntegrityError(f"产物不存在或为空：{target.name}")

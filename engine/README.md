@@ -19,9 +19,19 @@ python -m venv .venv
   `task.json` / `sniff_result.json` / `format_info.json` / `format_selector.json` / `post_action.json` / `error_payload.json`；
   导出命令：`.\.venv\Scripts\python.exe export_schema.py`。
 
-## 待办（M1）
+## 安全相关环境变量
 
-- `awaiting_selection` 24h 超时（PROTOCOL §4）：M0 不实现，M1 补。
-- 真实嗅探 / 下载 / 合并 / 转码链路；断点续传与重试。
-- `/v1/_debug/download-counter`：M1 起默认返回 404，仅 `BGV_ENABLE_DEBUG_ENDPOINTS=1`
-  时开放；`scripts/smoke.sh` 取证时需在启动引擎前设置该变量。
+- `BGV_COOKIE_FILE`：惰性 Cookie 的引擎侧凭据文件（Netscape cookies.txt）。
+  未设置时 `lazy` / `explicit` 均不读取任何 Cookie；协议层不能指定文件路径。
+- `BGV_OUTPUT_DIR_ALLOWLIST`：输出目录白名单（`os.pathsep` 分隔）。
+- `BGV_ENABLE_DEBUG_ENDPOINTS=1`：开放 `/v1/_debug/download-counter`，默认 404。
+- `BGV_CACHE_DIR`：仅用于 `GET /v1/privacy/selfcheck` 报告的缓存目录；缺省为
+  Windows `%LOCALAPPDATA%\BGV\cache`，其他平台 `$XDG_CACHE_HOME/bgv` 或 `~/.cache/bgv`。
+  当前引擎不写入缓存，故 `cacheSizeBytes` 通常为 0。
+
+## 隐私自检（§6.5）
+
+`GET /v1/privacy/selfcheck` 只读汇总运行环境，不发起出站请求、不读取 Cookie 文件。
+`lastCleanupAt` 暂为 `null`（尚无缓存清理子系统），依赖版本按请求实时探测，
+探测失败时填 `"unavailable"`；取值口径见 `docs/PROTOCOL-CHANGELOG.md`。
+

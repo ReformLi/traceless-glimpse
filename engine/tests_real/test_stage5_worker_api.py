@@ -72,7 +72,7 @@ def test_real_create_returns_before_sniff_completes(client, monkeypatch):
     release = threading.Event()
 
     class _BlockingSniffer:
-        def sniff(self, task_id: str, source_url: str):
+        def sniff(self, task_id: str, source_url: str, cookie_policy: str = "none"):
             entered.set()
             assert release.wait(5), "测试未释放嗅探阻塞"
             return SniffedMedia(

@@ -36,6 +36,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from models import (
     Codec,
+    CookiePolicy,
     DownloadRequest,
     DrmSystem,
     ErrorCode,
@@ -61,8 +62,10 @@ from security import (
     validate_outbound_url,
     validate_output_dir,
 )
+from log_redaction import install_log_redaction
 from persistence import get_store
 from services import downloader as downloader_service
+from services import environment as environment_service
 from services import formats as formats_service
 from services.task_worker import TaskWorker
 
@@ -268,7 +271,10 @@ def _download_real(record: TaskRecord) -> None:
         if record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
             # 单文件直链走 download_direct；HLS/DASH 交给 yt-dlp
             path = downloader_service.download_direct(
-                record.sniff.mediaUrl, task.outputDir, task_id=task.id
+                record.sniff.mediaUrl,
+                task.outputDir,
+                task_id=task.id,
+                cookie_policy=task.cookiePolicy.value,
             )
         else:
             path = downloader_service.download_media(
@@ -276,6 +282,7 @@ def _download_real(record: TaskRecord) -> None:
                 task.outputDir,
                 task_id=task.id,
                 format_expression=format_expression,
+                cookie_policy=task.cookiePolicy.value,
             )
     except SecurityError as exc:
         logger.warning("download_blocked task_id=%s code=%s", task.id, exc.code)
@@ -502,7 +509,9 @@ def _sniff_real(record: TaskRecord) -> None:
 
     task = record.task
     try:
-        observed = get_sniffer().sniff(task.id, task.sourceUrl)
+        observed = get_sniffer().sniff(
+            task.id, task.sourceUrl, task.cookiePolicy.value
+        )
     except SniffError as exc:
         logger.warning("sniff_failed task_id=%s type=%s", task.id, type(exc).__name__)
         record.sniff = None
@@ -654,6 +663,7 @@ app = FastAPI(title="BrowseGuard Vid Engine (stub)", version=ENGINE_VERSION)
 
 @app.on_event("startup")
 async def _startup() -> None:
+    install_log_redaction()
     _restore_state()
     await WORKER.start()
     if ENGINE_MODE == "real":
@@ -726,6 +736,21 @@ def health():
             "protocolVersion": PROTOCOL_VERSION,
             "uptimeSeconds": int(time.time() - START_TIME),
         },
+        headers=PROTOCOL_HEADERS,
+    )
+
+
+@app.get("/v1/privacy/selfcheck")
+def privacy_selfcheck():
+    """§6.5：只读汇总监听地址、策略、输出白名单、缓存与依赖版本。
+
+    不发起网络请求，不读取 Cookie 内容；`lastCleanupAt` 暂为 null（尚无缓存清理子系统）。
+    """
+    return JSONResponse(
+        content=environment_service.selfcheck_payload(
+            output_dir_allowlist=OUTPUT_DIR_ALLOWLIST,
+            cookie_policy_default=CookiePolicy.LAZY.value,
+        ),
         headers=PROTOCOL_HEADERS,
     )
 
@@ -906,5 +931,6 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    install_log_redaction()
     # 协议默认监听 127.0.0.1:8730（§1 表头；本地回环免令牌 §2.3）
     uvicorn.run(app, host="127.0.0.1", port=8730)
