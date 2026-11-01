@@ -170,11 +170,23 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
    **裁决（2026-11-01，4b-2 验收随附）：进 M3 待办，本轮不动。** 若要做，
    **给 `Task` 增可选 `warnings` 字段是唯一向后兼容的做法**（新增必填字段或改 `error` 语义都会打断既有客户端）；
    届时先开 `docs/PROTOCOL-CHANGELOG.md` 条目再动双端 schema，M3 收尾讨论。
+   **收尾② 处置（2026-11-01）：已作为提案 A 入档
+   [docs/PROTOCOL-CHANGELOG.md](file:///E:/code/android/BrowseGuardVid/docs/PROTOCOL-CHANGELOG.md)「M3 收尾裁决」，
+   M3 不实现。入档时复核出一处前提要修正：双端对未知字段都严格拒绝（`BgvJson.ignoreUnknownKeys = false` +
+   Pydantic `extra="forbid"`），所以「新增可选**响应**字段」在 v0.1 严格性下并不向后兼容——引擎先发该字段
+   会让旧客户端解 `GET /v1/tasks/{id}` 直接抛错。上面那句裁决要带提案 A 里的三条出路（发布顺序 /
+   非对称严格性 / 另开只读端点）之一才成立，M4 评审先定这一条再谈 schema。**本条不关闭**，等 M4 实现。
 6. **`download_attempt` 审计行打太早，语义偏差**（详见 §10.5-3）：`main.py:886` 在 `POST /download`
    入口第一行就打，DRM 拒绝 / 409 / 422 都会留下一条 attempt 行，它实际表达的是「请求到达」而不是「开始下载」。
    **裁决（2026-11-01）：本轮不动。** M3 收尾时连同协议 §10 的审计语义一起讨论是否补一条独立的
    `download_rejected`（保留 attempt 的「收到请求」含义、把「真的开始写字节」分出来），
    属文档 + 引擎日志两处改动，需与既有取证脚本的 grep 口径一并调整。
+   **收尾② 处置（2026-11-01）：已作为提案 B 入档
+   [docs/PROTOCOL-CHANGELOG.md](file:///E:/code/android/BrowseGuardVid/docs/PROTOCOL-CHANGELOG.md)「M3 收尾裁决」，
+   M3 不实现。提案把四条拒绝路径（404 / 409 / 422 DRM / 422 FORMAT_UNAVAILABLE）与两条 attempt 入口
+   （HTTP 端点 `main.py:934`、引擎自动领取 `main.py:548`）都列全，并钉住两条边界：`download_attempt`
+   一字不动（§10「DRM 零下载」靠它）、`202` 幂等重放不打 `download_rejected`。
+   **本条不关闭**，等 M4 实施时同步改取证脚本。
 7. **HLS 的 `bytesTotal` 抖动导致 `percent` 非单调**（现象见 §11.5-6）：yt-dlp 按已下分片估算总大小，
    6,261,468 → 4,478,592 → 5.3 MB → 4,461,762 都出现在同一个任务里，界面进度条会往回跳。
    **裁决（2026-11-01，4b-3 验收随附）：引擎侧不改**（上报抖动是上游真实状态，抹平它等于撒谎），
@@ -1133,6 +1145,53 @@ cookie_file mtime before=1793522874.2 after=1793522874.2 changed=False
 3. **不触发回补的模糊拒绝——设计意图，按裁决入码**：「302 跳登录页」「200 但正文是登录墙」两条路径都不重试。
    复核认定为**刻意的凭据最小化**（只在明确的 401/403 拒绝信号下回补，不对登录页猜测性回补），不是缺口；
    该口径已写进 `engine/services/cookies.py` 模块 docstring（不只留在汇报里），M4 若要改判定条件应先立证据。
+
+### 14.2 收尾②：`Task.warnings` / `download_rejected` 走 PROTOCOL-CHANGELOG（只入档，不实现）
+
+**范围口径**：两个都是 M4 才实现的字段/语义，收尾只做「协议变更提案入档」。本轮**只改两份文档**，
+`docs/PROTOCOL.md` 正文、双端 schema、引擎与客户端代码一行未动——`git diff --name-only docs/PROTOCOL.md`
+与 `git diff --name-only engine/ shared/ android/ scripts/` 均输出 0 行，`git diff --stat` 只有
+`docs/PROTOCOL-CHANGELOG.md`（+91）与 `docs/smoke-report.md`（+52，含本节与 §8-5/§8-6 的处置行）——合计 143 插入、0 删除。
+
+**入档内容**（`docs/PROTOCOL-CHANGELOG.md`「M3 收尾裁决」节，提案 A / 提案 B）：
+
+- **提案 A `Task.warnings`**：可选 `warnings: list[TaskWarning]`（`code` / `message` / 脱敏 `detail`），
+  首批 code 全部复用现有审计行名（`selector_degraded` / `output_ext_corrected` / `resume_unsupported` /
+  `resume_missed`），不新造语义、不让 warning 参与状态机。
+- **提案 B `download_rejected`**：`download_rejected task_id=… stage=<entry|state|drm|selector> code=… status=…`，
+  四条拒绝路径（404 / 409 / 422 DRM / 422 FORMAT_UNAVAILABLE）与两条 attempt 入口（HTTP 端点、引擎自动领取）
+  逐一列位；**不新增错误码**，只动日志层。
+
+**入档时的两处复核结论**（比 §8-5/§8-6 原裁决更硬，写进 CHANGELOG 而不是只留汇报）：
+
+1. **§8-5 的「新增可选字段唯一向后兼容」这句要带前提**：双端对未知字段都严格拒绝
+   （Pydantic `StrictModel` = `extra="forbid"`；`BgvJson` = `ignoreUnknownKeys = false`，且客户端
+   **所有**响应解码走这一份 `EngineClient.kt:82`）。所以引擎先在 `Task` 里发 `warnings`，
+   已安装的旧客户端解 `GET /v1/tasks/{id}` 会抛错，表现是「任务查不到」而不是「少一条提示」。
+   M4 必须先在三条出路里选一条（发布顺序约束 / 非对称严格性 / 另开只读诊断端点），再谈动 schema。
+2. **`download_attempt` 一字不能动**：§10「DRM 场景无任何下载尝试（引擎日志可证）」这条验收成立的方式是
+   「有 attempt、其后没有任何下载行为行」；把它挪到真下载之前，这条就变成自证、取证链断裂。
+   所以 B 是**增行**而非改行，`engine/test_drm.py:63` 的「attempt 恰 1 次」断言不受影响；
+   同时钉住 `202` 幂等重放与内部 5xx 不打 `download_rejected`，否则
+   `attempt = 真开始下载 + rejected + 幂等重放` 的恒等式失效。
+
+**§8-5 / §8-6 状态**：都改为「已入档，本条不关闭，等 M4 实施」——提案入档 ≠ 语义落地，
+关闭要等 M4 实现 + 双端 schema 同步 + 取证脚本口径调整之后。
+
+**无回归证据**（本轮无代码改动，复跑只为证明这一点）：
+
+```
+154 passed, 144 deselected                       # stub
+143 passed, 154 deselected, 1 xfailed            # real
+schema 一致性校验通过：6/6 个模型                 # 仍是 6；提案 A 落地后变 7
+```
+
+**工作区卫生记录**：`c1f2be9` 之后 `.gitignore` 第 61 行出现过一条 `.screenshots/`，与本报告口径
+（验收截图必须入库）相反，会让后续取证截图被静默忽略。已删除，删除后 `git diff .gitignore` 空输出、
+`git ls-files .screenshots/ | wc -l` = 33 全部仍 tracked。归因只能排除：`.git/hooks` 无任何非 sample 钩子，
+该行的 mtime 17:56:29 落在 `c1f2be9`（17:43:59）与下一笔提交之间，且插入位置（「验证文件」段）与本文件
+第 108 行「验收截图不在此列——`.screenshots/` 是证据，要入」的注释互相矛盾，不是本会话写的。
+再出现同样状况按本节复核三条命令即可判定，不靠记忆。
 
 
 

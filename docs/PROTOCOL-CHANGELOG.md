@@ -67,3 +67,94 @@
   `ffmpeg` 取 `ffmpeg -version` 首行版本 token。
 - 实现位置：`engine/services/environment.py`、`engine/main.py` `privacy_selfcheck`。
 - 待办：v0.2 协议评审时确认 `lastCleanupAt` 的可空语义及 `"unavailable"` 约定。
+
+## M3 收尾裁决（2026-11-01）
+
+本节两条都是**协议变更提案入档**：M3 不实现，不改 `docs/PROTOCOL.md` 正文，不改双端 schema、不改代码；
+实现与评审归 M4 / v0.2。来源分别是 §8-5（4b-2 随附裁决「进 M3 待办，收尾讨论」）与
+§8-6（`download_attempt` 语义偏差裁决「收尾时讨论是否补一条独立的 `download_rejected`」）。
+
+### 提案 A：给 `Task` 增可选 `warnings` 字段（M4 实现）
+
+**动机**：任务「降级完成了」目前只有引擎日志能证明，任务 JSON 与界面都看不出来。
+最典型的是 4b-2 的 `selector_degraded`——用户选了 720p、元数据不足以判上限、引擎降级 `best` 跑完，
+任务 `status=done`、`error=null`，客户端没有任何地方能说「这个结果是近似来的」。
+
+**建议形状**：`warnings: list[TaskWarning] = []`（可选、默认空数组），
+`TaskWarning = {code, message, detail?}`；`code` 为枚举（蛇形，与既有审计行同名，不新造语义）、
+`message` 为用户可读文案、`detail` 为脱敏对象。
+不新增必填字段、不改 `error` 语义、不让 warning 参与状态机——有 warning 的 `done` 仍是 `done`。
+
+**兼容性硬约束（收尾②复核新发现，必须先定这一条再谈 schema）**：双端对未知字段都是**严格拒绝**——
+引擎侧 `StrictModel` = `extra="forbid"`（`engine/models.py:22`），客户端 `BgvJson` =
+`ignoreUnknownKeys = false`（[shared/.../BgvJson.kt:14](file:///E:/code/android/BrowseGuardVid/shared/src/commonMain/kotlin/com/hpu/browseguard/shared/BgvJson.kt#L14)），
+而客户端**所有**响应解码都走这一份（[android/.../EngineClient.kt:82](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineClient.kt#L82)）。
+因此「新增可选响应字段」在 v0.1 的严格性下**不是向后兼容动作**：引擎一开始在 `Task` 里发 `warnings`，
+已安装的旧客户端解 `GET /v1/tasks/{id}` 会直接抛错，表现是「任务查不到」而不是「少一条提示」。
+§8-5 那句「增可选 `warnings` 是唯一向后兼容的做法」要带这个前提才成立。三条出路，M4 评审选一条：
+
+1. **顺序约束**（改动最小）：先发能识别 `warnings` 的客户端，引擎再开始发；期间引擎只打日志。
+   代价：本机自用场景「先更 App 再更引擎」得写成发布约定，反过来会当场炸查询接口。
+2. **非对称严格性**（真正的协议裁决）：请求侧维持严格拒绝——§10 那条「未知字段 → 400」是为挡
+   `cookieFile` / `browser` 这类敏感字段，不动；响应侧改为忽略未知键。收益是以后加只读字段不必排发布顺序，
+   代价是响应契约漂移不再被客户端立刻发现，改由 `scripts/check_schema.py` 兜。
+3. **不动 `Task`，另开只读诊断端点**（如 `GET /v1/tasks/{id}/diagnostics`）：兼容性最干净，
+   但要新定义端点、鉴权与生命周期（任务删除后诊断信息留多久），成本高于前两条。
+
+**首批 `code` 候选**（全部对应现有日志行，字段化不新造语义）：
+
+| code | 现有审计行 | 现日志级别 | 触发场景 |
+|---|---|---|---|
+| `selector_degraded` | `selector_degraded task_id=… reason=incomplete_metadata requested=…`（[engine/main.py:317](file:///E:/code/android/BrowseGuardVid/engine/main.py#L317)） | WARNING | `max_height` 上限判不了 → 降级 `best` 跑完 |
+| `output_ext_corrected` | [engine/services/downloader.py:154](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L154) | INFO | 正文是真音频，扩展名由 mp4 改 m4a（产物名与用户预期不同） |
+| `resume_unsupported` | [engine/services/downloader.py:275](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L275) | INFO | 服务器不支持 Range，续传降级为全新下载 |
+| `resume_missed` | [engine/services/downloader.py:237](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L237) | INFO | `.part` 名命不中，按全新下载走（§12.8 裁决②） |
+
+`detail` 沿用 §1.7 脱敏口径：不含 Cookie、token、完整 URL query；`resume_missed` 的 `expected` / `found`
+只给文件名，不给路径。
+
+**双端落地清单（M4 按此顺序，收尾②不动它们）**：`engine/models.py`（`Task` + 新 `TaskWarning`）→
+重导 `engine/schema/task.json` → 同步 `shared/schema/task.json` → Kotlin `shared/.../Task.kt` 与 serializer →
+`scripts/check_schema.py` 复跑（当前 6 模型口径会变成 7）→ 界面展示（完成卡片，与 §8-3 的翻译口径同期定）。
+
+**待办**：v0.2 协议评审决定是否在 §3.1 `Task` 表增行；若选出路 2，§10 的未知字段条目需同步改写为非对称严格。
+
+### 提案 B：新增 `download_rejected` 审计行（M4 实现，不新增错误码）
+
+**动机**：`download_attempt` 打在入口第一行，它实际表达的是「请求到达」，不是「开始下载」。
+DRM 拒绝、409、422 都会留下一条 attempt 行（§8-6），于是「attempt 计数」既不能当下载量也不能当拒绝量。
+
+**保持不变的部分（这是提案的前提）**：`download_attempt` 的名称、位置、参数一律不动。协议 §10
+「DRM 场景无任何下载尝试（引擎日志可证）」这条验收，靠的正是「有 attempt、其后没有任何下载行为行」；
+把 attempt 挪到真下载之前，这条就变成自证，取证链断裂。
+
+**新增行形状**：
+
+```
+download_rejected task_id=<id> stage=<entry|state|drm|selector> code=<§5 既有码> status=<HTTP>
+```
+
+只增行、不改既有行，所以 `engine/test_drm.py:63` 那种「attempt 恰 1 次」的断言不受影响。
+
+**触发点（今天实测到的全部拒绝路径；两条入口都要覆盖）**：
+
+| stage | 拒绝 | 位置 |
+|---|---|---|
+| `state` | 404 `NOT_FOUND`（`_get_record_or_404`） | [engine/main.py:935](file:///E:/code/android/BrowseGuardVid/engine/main.py#L935) |
+| `state` | 409 `TASK_STATE_CONFLICT`：终态重下 / 下载中换 selector / 非 `awaiting_selection` | [engine/main.py:937-944](file:///E:/code/android/BrowseGuardVid/engine/main.py#L937) |
+| `drm` | 422 `DRM_PROTECTED` | [engine/main.py:946](file:///E:/code/android/BrowseGuardVid/engine/main.py#L946) |
+| `selector` | 422 `FORMAT_UNAVAILABLE`（exact 不可用 / 判得出上限但无匹配，real 模式） | [engine/main.py:951-966](file:///E:/code/android/BrowseGuardVid/engine/main.py#L951) |
+
+引擎自动领取那一条入口（[engine/main.py:543-550](file:///E:/code/android/BrowseGuardVid/engine/main.py#L543)）
+也打 attempt，但当前不存在拒绝分支（DRM 走 `awaiting_selection`，不算拒绝）；M4 实施时若那条路径新增拒绝，
+必须同样打 `download_rejected`，否则两条入口的账对不平。
+
+**明确不打 `download_rejected` 的两类**：① `202` 幂等重放（同 `formatSelector` 重复 `POST /download`，
+§2.4 语义，是「已在下载」不是拒绝）；② 引擎内部异常导致的 5xx（走异常日志，不混进业务拒绝计数）。
+否则 `attempt = 真开始下载 + rejected + 幂等重放` 这个恒等式会失效。
+
+**不新增错误码**：`DRM_PROTECTED` / `TASK_STATE_CONFLICT` / `NOT_FOUND` / `FORMAT_UNAVAILABLE` 都是 §5 既有码，
+本提案只动日志层，属 §10 审计取证口径的增量。
+
+**待办**：v0.2 决定是否把 `download_rejected` 写进 §10 的审计语义清单；M4 实施时同步调整取证脚本 grep 口径，
+并关闭 §8-6。
