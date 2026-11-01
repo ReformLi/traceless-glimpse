@@ -17,25 +17,32 @@
       ]
     },
     "container": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "targetCodec": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "crf": {
-      "type": "integer"
+      "type": "integer",
+      "x-nullable": true
     },
     "langs": {
-      "type": "array"
+      "type": "array",
+      "x-nullable": true
     },
     "model": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "lang": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "destDir": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     }
   }
 }

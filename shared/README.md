@@ -10,6 +10,10 @@ Kotlin Multiplatform（commonMain + JVM target），用 kotlinx.serialization �
 - **schema 文件命名风格**：小写蛇形，与模型导出顺序一一对应 `engine/schema/`——
   `task.json` / `sniff_result.json` / `format_info.json` / `format_selector.json` / `post_action.json` / `error_payload.json`；
   导出命令：`.\gradlew.bat :shared:exportSchemas`。
+- **可空性标记 `x-nullable: true`**：字段类型允许 `null`（声明带 `?`）时由 `SchemaExporter` 写入，
+  取 `SerialDescriptor.isNullable`；不可空字段不带该键。注意取的是 `isNullable` 而不是
+  `isElementOptional`（有没有默认值）——两者是两条轴，`required` 只跟后者走。
+  对账脚本 `scripts/check_schema.py` 按 required / properties / enum / type / x-nullable 五类比对。
 - Task 模型**不存在** `cookieFile` / `browser` / `userAgent` / `headers` 字段——见 PROTOCOL §1，字段不存在比存在但被校验更可靠。
 
 ## 构建

@@ -25,16 +25,19 @@
             ]
         },
         "formatSelector": {
-            "type": "object"
+            "type": "object",
+            "x-nullable": true
         },
         "namingTemplate": {
-            "type": "string"
+            "type": "string",
+            "x-nullable": true
         },
         "postActions": {
             "type": "array"
         },
         "proxyId": {
-            "type": "string"
+            "type": "string",
+            "x-nullable": true
         },
         "cookiePolicy": {
             "type": "string",
@@ -62,10 +65,12 @@
             ]
         },
         "progress": {
-            "type": "object"
+            "type": "object",
+            "x-nullable": true
         },
         "error": {
-            "type": "object"
+            "type": "object",
+            "x-nullable": true
         },
         "createdAt": {
             "type": "string"

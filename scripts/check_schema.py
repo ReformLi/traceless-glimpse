@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """契约一致性校验：engine/schema/ ↔ shared/schema/（阶段 4 硬要求 1）。
 
-比对四类：
+比对五类：
 1. required 集合
 2. properties 字段名双向差集
 3. enum 取值
 4. 字段基础类型（type）
+5. 字段可空性（`x-nullable`，收尾⑤；缺省按 false 理解）
 
-失败时逐条指认「Kotlin 多出 X / Python 多出 Y / 类型不一致 Z」，退出码非 0。
+失败时逐条指认「Kotlin 多出 X / Python 多出 Y / 类型不一致 Z / 可空性不一致 W」，退出码非 0。
 两侧 schema 均为脚本导出产物（勿手改）：engine/export_schema.py、:shared:exportSchemas。
 """
 from __future__ import annotations
@@ -28,6 +29,9 @@ MODELS = [
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENGINE_SCHEMA_DIR = REPO_ROOT / "engine" / "schema"
 SHARED_SCHEMA_DIR = REPO_ROOT / "shared" / "schema"
+
+# 与两侧导出器同名：这条字段允许出现 JSON null；键缺省即 false
+X_NULLABLE = "x-nullable"
 
 
 def _load(path: Path) -> dict:
@@ -68,7 +72,8 @@ def compare_model(name: str, engine: dict, shared: dict) -> list[str]:
 
         py_type = py_field.get("type")
         kt_type = kt_field.get("type")
-        if py_type != kt_type:
+        type_mismatch = py_type != kt_type
+        if type_mismatch:
             problems.append(
                 f"[{name}].{field} 类型不一致：" f"Python={py_type!r} / Kotlin={kt_type!r}"
             )
@@ -88,12 +93,30 @@ def compare_model(name: str, engine: dict, shared: dict) -> list[str]:
                     f"Kotlin 多出 {_fmt(kt_set - py_set)} / Python 多出 {_fmt(py_set - kt_set)}"
                     + ("" if py_set != kt_set else "（取值集合相同，但声明顺序不同）")
                 )
+
+        if type_mismatch:
+            continue  # 类型本身已经不同，先修类型；可空性差异只会在修好后重新暴露
+
+        py_nullable = bool(py_field.get(X_NULLABLE, False))
+        kt_nullable = bool(kt_field.get(X_NULLABLE, False))
+        if py_nullable != kt_nullable:
+            problems.append(
+                f"[{name}].{field} 可空性不一致：Python={py_nullable} / Kotlin={kt_nullable}"
+            )
     return problems
+
+
+def _marked(doc: dict) -> int:
+    """这份 schema 里带 `x-nullable` 的字段数（守卫导出器是否真把标记发出来）。"""
+    return sum(1 for prop in doc.get("properties", {}).values() if prop.get(X_NULLABLE))
 
 
 def main() -> int:
     problems: list[str] = []
     checked = 0
+    py_marked = 0
+    kt_marked = 0
+    checked_models: list[str] = []
 
     for name in MODELS:
         engine_path = ENGINE_SCHEMA_DIR / f"{name}.json"
@@ -106,17 +129,33 @@ def main() -> int:
             ]
             problems.append(f"[{name}] schema 文件缺失：{missing}")
             continue
-        problems.extend(compare_model(name, _load(engine_path), _load(shared_path)))
+        engine_doc = _load(engine_path)
+        shared_doc = _load(shared_path)
+        problems.extend(compare_model(name, engine_doc, shared_doc))
+        py_marked += _marked(engine_doc)
+        kt_marked += _marked(shared_doc)
+        checked_models.append(name)
         checked += 1
+
+    # 防呆：x-nullable 全仓 0 处不是「恰好都不可空」，而是某一侧导出器根本没接线（含 Kotlin 侧
+    # 漏 import 导致标记静默失效）。协议里 Task.error 这类字段本就可为 null，0 处即异常。
+    if checked == len(MODELS) and kt_marked == 0:
+        problems.append(
+            "x-nullable 标记在两侧导出结果里一处都没有（Python=0 / Kotlin=0），"
+            "但协议存在可空字段（如 Task.error）——判定为导出器未接线，不放行"
+        )
 
     if problems:
         print(f"schema 一致性校验失败（已比对 {checked}/{len(MODELS)} 个模型）：")
         for item in problems:
             print(f"  - {item}")
+        print(f"参考计数：x-nullable 标记命中 Python={py_marked} / Kotlin={kt_marked}")
         return 1
 
-    print(f"schema 一致性校验通过：{checked}/{len(MODELS)} 个模型（required / properties / enum / type 四类全等）")
-    for name in MODELS:
+    print(f"schema 一致性校验通过：{checked}/{len(MODELS)} 个模型")
+    print("  required / properties / enum / type / x-nullable 五类全等")
+    print(f"  x-nullable 标记命中：Python {py_marked} 处 / Kotlin {kt_marked} 处")
+    for name in checked_models:
         print(f"  OK {name}.json")
     return 0
 

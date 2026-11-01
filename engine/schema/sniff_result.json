@@ -45,7 +45,8 @@
         "fairplay",
         "playready",
         "unknown"
-      ]
+      ],
+      "x-nullable": true
     },
     "headersHint": {
       "type": "object"

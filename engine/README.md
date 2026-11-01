@@ -18,6 +18,10 @@ python -m venv .venv
 - **schema 文件命名风格**：小写蛇形，与模型导出顺序一一对应 `shared/schema/`——
   `task.json` / `sniff_result.json` / `format_info.json` / `format_selector.json` / `post_action.json` / `error_payload.json`；
   导出命令：`.\.venv\Scripts\python.exe export_schema.py`。
+- **可空性标记 `x-nullable: true`**：字段类型允许 `null` 时由导出脚本写入，来源是 Pydantic
+  `Optional[...]` 生成的 `anyOf` 里的 `{"type":"null"}` 分支；不可空字段不带该键。
+  它与 `required` 是两条轴——`required` 说「字段必须出现在 JSON 里」，`x-nullable` 说「值可以是 null」。
+  对账脚本 `scripts/check_schema.py` 按 required / properties / enum / type / x-nullable 五类比对。
 
 ## 安全相关环境变量
 

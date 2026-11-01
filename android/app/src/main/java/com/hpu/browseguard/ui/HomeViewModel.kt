@@ -188,7 +188,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: EngineException) {
                 e.failure.toPhaseFailure()
             } catch (e: TimeoutCancellationException) {
-                SniffPhase.Failed("嗅探超时，引擎未在预期时间内完成", null, true)
+                LocalTimeouts.sniff()
             }
             _state.update { it.copy(sniff = phase) }
         }
@@ -236,7 +236,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: EngineException) {
                 e.failure.toDownloadFailure()
             } catch (e: TimeoutCancellationException) {
-                DownloadPhase.Failed("等待引擎解析画质超时", null, true)
+                LocalTimeouts.prepare()
             }
             _state.update { it.copy(download = phase) }
         }
@@ -279,11 +279,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: EngineException) {
                 _state.update { it.copy(download = e.failure.toDownloadFailure()) }
             } catch (e: TimeoutCancellationException) {
-                _state.update {
-                    it.copy(
-                        download = DownloadPhase.Failed("下载未在预期时间内完成，任务仍在引擎侧运行", "NETWORK_TIMEOUT", true),
-                    )
-                }
+                _state.update { it.copy(download = LocalTimeouts.download()) }
             }
         }
     }
@@ -315,7 +311,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun awaitTerminal(baseUrl: String, initial: Task): Task {
         var current = initial
-        withTimeout(SNIFF_TIMEOUT_MS) {
+        withTimeout(LocalTimeouts.SNIFF_MS) {
             while (current.status !in TERMINAL_STATUSES) {
                 delay(POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
@@ -326,7 +322,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun awaitAwaitingSelection(baseUrl: String, initial: Task): Task {
         var current = initial
-        withTimeout(PREPARE_TIMEOUT_MS) {
+        withTimeout(LocalTimeouts.PREPARE_MS) {
             while (current.status != TaskStatus.AWAITING_SELECTION && current.status !in TERMINAL_STATUSES) {
                 delay(POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
@@ -337,7 +333,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun awaitDownloadTerminal(baseUrl: String, initial: Task): Task {
         var current = initial
-        withTimeout(DOWNLOAD_TIMEOUT_MS) {
+        withTimeout(LocalTimeouts.DOWNLOAD_MS) {
             while (current.status !in TERMINAL_STATUSES) {
                 delay(DOWNLOAD_POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
@@ -366,13 +362,39 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val POLL_INTERVAL_MS = 400L
-        const val SNIFF_TIMEOUT_MS = 90_000L
-        const val PREPARE_TIMEOUT_MS = 120_000L
         const val DOWNLOAD_POLL_INTERVAL_MS = 800L
-        const val DOWNLOAD_TIMEOUT_MS = 30 * 60_000L
 
         val TERMINAL_STATUSES = setOf(TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.FAILED)
     }
+}
+
+/**
+ * 客户端本地计时到点的三条失败（嗅探 / 画质解析 / 下载）。
+ *
+ * `code` 一律 `null`：PROTOCOL §5 的码只允许来自引擎响应。本地伪造一个协议码
+ * （下载侧曾写死 `NETWORK_TIMEOUT`）有三个后果——用户把「客户端等不及」误读成网络故障、
+ * 屏上码与引擎审计行对不上、将来按码做重试策略时误判。超时窗口写进文案，
+ * 界面就能自证「这是本地计时，不是引擎报的错」。
+ */
+internal object LocalTimeouts {
+    const val SNIFF_MS = 90_000L
+    const val PREPARE_MS = 120_000L
+    const val DOWNLOAD_MS = 30 * 60_000L
+
+    fun sniff(): SniffPhase.Failed =
+        SniffPhase.Failed("嗅探超时 · 客户端本地计时 ${seconds(SNIFF_MS)} 到点", null, true)
+
+    fun prepare(): DownloadPhase.Failed =
+        DownloadPhase.Failed("画质解析超时 · 客户端本地计时 ${seconds(PREPARE_MS)} 到点", null, true)
+
+    fun download(): DownloadPhase.Failed =
+        DownloadPhase.Failed(
+            "下载超时 · 客户端本地计时 ${seconds(DOWNLOAD_MS)} 到点，任务仍在引擎侧运行",
+            null,
+            true,
+        )
+
+    private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
 }
 
 private fun Task.toFinalPhase(): DownloadPhase = when (status) {

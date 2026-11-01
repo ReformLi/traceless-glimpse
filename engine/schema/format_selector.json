@@ -14,10 +14,12 @@
       ]
     },
     "formatId": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "maxHeight": {
-      "type": "integer"
+      "type": "integer",
+      "x-nullable": true
     },
     "preferCodec": {
       "type": "string",
@@ -26,10 +28,12 @@
         "h265",
         "av1",
         "vp9"
-      ]
+      ],
+      "x-nullable": true
     },
     "maxSizeBytes": {
-      "type": "integer"
+      "type": "integer",
+      "x-nullable": true
     }
   }
 }

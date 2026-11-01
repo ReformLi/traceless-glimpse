@@ -18,7 +18,10 @@ import kotlinx.serialization.json.put
  * - 枚举 → {"type":"string","enum":[...]}（取值为 @SerialName 修饰后的协议值）
  * - 嵌套对象（CLASS / MAP / CONTEXTUAL）→ {"type":"object"} 占位，阶段 4 对嵌套层降级比对
  * - 数组 → {"type":"array"}（元素类型不展开）
- * - 不追求完整 JSON Schema 语义，仅覆盖 required / enum / properties / 基础类型。
+ * - 可空字段 → 额外标 `x-nullable: true`（收尾⑤）：`String?` 与 `String = "…"` 在只看 `type`
+ *   的导出里长得一模一样，而 JSON 里 `null` 是否合法恰恰是双端最容易各写各的一处。
+ *   取 `isNullable`（类型可否为 null），不取 `isElementOptional`（有没有默认值）——两者是两条轴。
+ * - 不追求完整 JSON Schema 语义，仅覆盖 required / enum / properties / 基础类型 / 可空性。
  */
 object SchemaExporter {
 
@@ -60,5 +63,8 @@ object SchemaExporter {
             StructureKind.LIST -> put("type", "array")
             else -> put("type", "object") // CLASS / MAP / OBJECT / CONTEXTUAL：嵌套占位
         }
+        if (desc.isNullable) put(X_NULLABLE, true)
     }
+
+    internal const val X_NULLABLE = "x-nullable"
 }

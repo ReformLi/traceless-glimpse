@@ -56,22 +56,27 @@
       "type": "string"
     },
     "formatSelector": {
-      "type": "object"
+      "type": "object",
+      "x-nullable": true
     },
     "namingTemplate": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "postActions": {
       "type": "array"
     },
     "proxyId": {
-      "type": "string"
+      "type": "string",
+      "x-nullable": true
     },
     "progress": {
-      "type": "object"
+      "type": "object",
+      "x-nullable": true
     },
     "error": {
-      "type": "object"
+      "type": "object",
+      "x-nullable": true
     }
   }
 }

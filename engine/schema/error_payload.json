@@ -60,7 +60,8 @@
       "type": "boolean"
     },
     "detail": {
-      "type": "object"
+      "type": "object",
+      "x-nullable": true
     }
   }
 }

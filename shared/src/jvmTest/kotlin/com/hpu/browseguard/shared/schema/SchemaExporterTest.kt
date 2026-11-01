@@ -1,10 +1,13 @@
 package com.hpu.browseguard.shared.schema
 
 import com.hpu.browseguard.shared.model.ErrorPayload
+import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSelector
 import com.hpu.browseguard.shared.model.PostAction
+import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.Task
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -14,6 +17,9 @@ import kotlin.test.assertTrue
 
 /** 导出器单测：断言 required 集合、enum 取值、properties 平铺结构与协议一致。 */
 class SchemaExporterTest {
+
+    /** 线上契约的可空性键名，与 engine/export_schema.py 的 X_NULLABLE 同字面值；测试按协议字面量钉，不跟随实现常量。 */
+    private val xNullableKey = "x-nullable"
 
     private fun JsonArray.strings(): List<String> = map { it.jsonPrimitive.content }
 
@@ -112,4 +118,54 @@ class SchemaExporterTest {
         assertEquals("integer", props["maxHeight"]!!.jsonObject["type"]!!.jsonPrimitive.content)
         assertEquals("integer", props["maxSizeBytes"]!!.jsonObject["type"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun `可空字段带 x-nullable 标记`() {
+        assertEquals(
+            setOf("error", "formatSelector", "namingTemplate", "progress", "proxyId"),
+            nullableOf(SchemaExporter.schemaOf(Task.serializer())),
+        )
+        assertEquals(setOf("drmSystem"), nullableOf(SchemaExporter.schemaOf(SniffResult.serializer())))
+        assertEquals(emptySet(), nullableOf(SchemaExporter.schemaOf(FormatInfo.serializer())))
+        assertEquals(
+            setOf("formatId", "maxHeight", "maxSizeBytes", "preferCodec"),
+            nullableOf(SchemaExporter.schemaOf(FormatSelector.serializer())),
+        )
+        assertEquals(
+            setOf("container", "crf", "destDir", "lang", "langs", "model", "targetCodec"),
+            nullableOf(SchemaExporter.schemaOf(PostAction.serializer())),
+        )
+        assertEquals(setOf("detail"), nullableOf(SchemaExporter.schemaOf(ErrorPayload.serializer())))
+    }
+
+    /**
+     * 可空性标记只在「字段类型可为 null」时出现，且不与 required 并存：
+     * required 表达「字段必须出现在 JSON 里」，x-nullable 表达「该字段的值允许是 null」，
+     * 两条轴独立（Kotlin 侧 `?` 与 `= null` 默认值也独立）。这条断言把两侧别混用钉住。
+     */
+    @Test
+    fun `x-nullable 与 required 互斥且标记与可空集合一致`() {
+        listOf(
+            Task.serializer(), SniffResult.serializer(), FormatInfo.serializer(),
+            FormatSelector.serializer(), PostAction.serializer(), ErrorPayload.serializer(),
+        ).forEach { serializer ->
+            val schema = SchemaExporter.schemaOf(serializer)
+            val required = schema["required"]!!.jsonArray.strings().toSet()
+            val nullable = nullableOf(schema)
+            val overlap = nullable.intersect(required)
+            assertTrue(actual = overlap.isEmpty(), message = "可空字段不该同时是必填：$overlap")
+            schema["properties"]!!.jsonObject.forEach { (field, prop) ->
+                assertEquals(
+                    expected = field in nullable,
+                    actual = prop.jsonObject.containsKey(xNullableKey),
+                    message = "字段 $field 的 x-nullable 键与可空集合不一致",
+                )
+            }
+        }
+    }
+
+    private fun nullableOf(schema: kotlinx.serialization.json.JsonObject): Set<String> =
+        schema["properties"]!!.jsonObject
+            .filter { (_, prop) -> prop.jsonObject[xNullableKey]?.jsonPrimitive?.booleanOrNull == true }
+            .keys
 }

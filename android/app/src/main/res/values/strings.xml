@@ -33,7 +33,8 @@
     <string name="sniff_field">网页链接</string>
     <string name="sniff_placeholder">粘贴要嗅探的页面地址</string>
     <string name="sniff_action">嗅探</string>
-    <string name="sniff_running">引擎状态：</string>
+    <!-- 这一行跟的是任务状态（§4），不是引擎连接状态；后者在上方状态卡。裁决 2026-11-01 收尾③① -->
+    <string name="sniff_running">任务状态：</string>
     <string name="sniff_result_title">嗅探结果</string>
     <string name="sniff_no_drm">无 DRM</string>
     <string name="sniff_retryable">可重试</string>
