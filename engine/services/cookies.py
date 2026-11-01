@@ -7,6 +7,9 @@
 
 凭据来源只能是引擎侧 ``BGV_COOKIE_FILE``；协议层不存在 cookieFile / browser 字段。
 原文件只读，yt-dlp 需要写入 Cookie 时使用临时副本。
+
+凭据最小化：只在明确的 401/403 拒绝信号下回补，不对登录页猜测性回补——「302 跳登录页」
+「200 但正文是登录墙」都不触发读取。要改这个判定条件，先立证据再改本段口径。
 """
 from __future__ import annotations
 
