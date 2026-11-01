@@ -194,14 +194,23 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
    的 `environment.py` 明确不复用，隐私自检按 PROTOCOL §6.5 从协议重写（保持溯源干净）。
    留此一条是给后来的读者：这批代码的放行口径与其余里程碑不同，再复核时按「整批审计」对待，
    不要拿它的通过状态当分阶段验收的证据。
-10. **审计状态：M2 惰性 Cookie 的实际策略待复核**——已取证的部分：凭据来源只有引擎侧
-    `BGV_COOKIE_FILE`、原文件只读（单测断言 mtime 不变）、协议层无 `cookieFile`/`browser` 字段、
-    嗅探路径 real 用例（`tests_real/test_lazy_cookie_sniff.py`）、真机两次任务 Cookie 不共享（§9.3）。
-    **待复核的是 `lazy` 的触发边界**：直链与 yt-dlp 两条路径都只在 401/403 时读一次副本并重试一次
-    （`downloader.py` 的 `{401, 403}` 判定与 `_looks_like_rejection` 的文本标记
-    `("401", "403", "forbidden", "unauthorized")`），而「302 跳登录页」「200 但正文是登录墙」
-    不会触发回补。这两种现场当时没有取证，也没有裁决记录说明它是刻意的凭据最小化。
-    复核要回答的就一句话：这是设计（宁可不重试，也不对模糊信号发出凭据）还是缺口。
+10. **审计状态：M2 惰性 Cookie 实际策略——已复核（§14.1）：三条路径均接线惰性读；直链有 real
+    用例取证；嗅探/yt-dlp 路径 real 取证留 M4（仅代码核对 + fake 证接线）**（2026-11-01，M3 收尾第 1 条）。
+
+    结论是「惰性读」而不是「不读」：`cookiePolicy` 是 `POST /v1/tasks` 必填字段、引擎默认上报
+    `lazy`、客户端两处建任务都取该默认值，所以真机流程走的就是 `lazy`；4a 的 `cookie_present=false`
+    是因为那批路由从不回 401/403，现场没触发回补——缺的是现场，不是代码。三条敞口按裁决处置：
+    - **① yt-dlp 真进程（留 M4）**：惰性重试**仅 `fake_ydl` 证接线，real 未取证**——`cookiefile`
+      从无到有、副本清理、原文件 mtime 不变都由 fake 证明，真进程对真 403 抛出的错误文本能否命中
+      `_looks_like_rejection`（[engine/services/downloader.py:402](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L402)）
+      没有现场。M4 做「受保护 HLS 真链路」时一并补。
+    - **② 嗅探第二个信号（留 M4）**：`sniffer.py:165` 的「页面 200 但页内媒体请求被拒 → 整页重载」
+      **real 未覆盖**——`tests_real/test_lazy_cookie_sniff.py` 四条走的全是导航响应那一支
+      （`/protected.html` 直接 403）。代码在、语义对，缺的是现场。
+    - **③ 模糊拒绝不回补（设计意图，已入码）**：「302 跳登录页」「200 但正文是登录墙」两条路径都不
+      触发 Cookie 回补。复核认定为刻意的**凭据最小化**（只在明确的 401/403 拒绝信号下回补，不对登录
+      页猜测性回补），按裁决写进 [engine/services/cookies.py](file:///E:/code/android/BrowseGuardVid/engine/services/cookies.py)
+      模块 docstring，不只留在汇报里；M4 若要改判定条件，应先立证据再改这段口径。
 
 ## 9. M3 4a real 模式验证（2026-11-01，七项）
 
@@ -1056,4 +1065,74 @@ R2 那 13.04 s 不需要单独复现：它是同一段代码在同一路径上�
    本轮不动，M4 评估给它加体积上限。
 3. 探测提前断开后 httpx 不复用这条连接，正文下载会多一次 TCP 建连——真实下载路径上可忽略。
 4. 桩模式无探测请求（走桩下载分支），本轮改动全在 real 分支。
+
+## 14. M3 收尾清单逐条记录（2026-11-01）
+
+### 14.1 收尾①：M2 惰性 Cookie 复核（只读代码 + 针对性单测，不改行为）
+
+**裁决口径**（M2，2026-10-31）：默认不发、被拒才读一次、只重试一次；凭据来源只有引擎侧
+`BGV_COOKIE_FILE`；原文件只读，yt-dlp 需要写入时用临时副本；协议层不存在 `cookieFile`/`browser`。
+
+**代码核对**——三条路径都接了线，触发信号各不相同：
+
+| 路径 | 触发条件 | 读取方式 | 复核前的证据状态 |
+|---|---|---|---|
+| 嗅探 `services/sniffer.py` | 两个信号：导航响应 `_nav_rejected(response)`；或页面 200 但**页内媒体请求被拒**（`rejected` 非空且尚未重试过） | `load_env_cookies()` → `playwright_cookies()`（保留 domain 作用域），整页重载一次 | real 已证：`tests_real/test_lazy_cookie_sniff.py`（真 Playwright + 真 HTTP 403） |
+| 直链 `services/downloader.py:download_direct` | `response.status_code in {401, 403}` 且 `not cookie_retry_done` | `header_from_env(final_url)` 读一次、只重试一次 | 只有注入式 transport（`test_cookies.py`），真 socket 未走 |
+| yt-dlp `services/downloader.py:download_media` | 异常文本命中 `_looks_like_rejection`（`401/403/forbidden/unauthorized`） | `cookie_file_copy()` 临时副本传 `cookiefile` 选项 | 只有 `fake_ydl`，真进程未证 |
+
+**关键分叉点判定：是「惰性读」，不是「不读」。** 三条支撑：
+1. 策略不是硬编码也不是 `none`——`cookiePolicy` 是 `POST /v1/tasks` 的**必填**字段（模型无默认值），
+   引擎 selfcheck 上报 `cookiePolicyDefault = lazy`（`main.py:818`），客户端两处建任务都取这个默认值
+   （`HomeViewModel.kt:163` 嗅探、`:210` 下载），所以真机流程走的就是 `lazy`。
+2. `main.py:334/344/579` 把 `task.cookiePolicy.value` 一路透到三条执行路径，中间没有被覆写回 `none`。
+3. 4a 真机留下的 `cookie_present=false` 属于**现场没有 403**：那批路由
+   （`/page.html`、`/media/sample.mp4`、HLS master）从不回 401/403，惰性语义下本就不该读文件。
+   也就是说 §9.3 那条证据的边界是「未读」，但它否证不了「被拒时读不到」——
+   缺的是现场，不是代码。
+
+**补的针对性单测**（`tests_real/test_lazy_cookie_direct.py`，两条，`real` 标记，不改任何生产代码）：
+
+| 用例 | 钉住的东西 |
+|---|---|
+| `test_direct_lazy_reads_once_and_retries_once_over_real_http` | 真 HTTP 上 403 → 读一次 → 重试一次拿到 200；产物逐字节等于源；`load_env_cookies` 恰好调用 1 次；原文件 mtime 不变；完成后无 `.part`；审计行只有 `cookie_lazy_retry task_id=…`，`cookie_file_loaded`（explicit 专用）不出现，日志里搜不到 Cookie 值 |
+| `test_direct_lazy_without_cookie_file_fails_after_one_read` | 没配 `BGV_COOKIE_FILE` 时：读了一次、读不到，**不重试**，按 `HTTP 403` 失败，且目录里不留半个产物 |
+
+**现场数字**（同一路径独立跑一遍，Cookie 值只以 present/长度呈现，不进报告）：
+
+```
+bgv.engine | cookie_lazy_retry task_id=evidence-lazy-1
+bgv.engine | direct_download_complete task_id=evidence-lazy-1 bytes=61456
+  #0 range=bytes=0-0    cookie_present=False cookie_len=0  sid_in_cookie=False
+  #1 range=-            cookie_present=False cookie_len=0  sid_in_cookie=False
+  #2 range=-            cookie_present=True  cookie_len=15 sid_in_cookie=True
+product=protected.mp4 size=61456 sha256=ba7a40823a6c0e89…
+source  sample.mp4    size=61456 sha256=ba7a40823a6c0e89…
+cookie_file mtime before=1793522874.2 after=1793522874.2 changed=False
+```
+
+三跳而不是两跳是真实形态：`#0` 是 `resolve_redirects` 的 `bytes=0-0` 探测，它撞了同一个 403
+但**不做 Cookie 回补**（探测只要头，正文与凭据都与它无关）；`#1` 才是下载请求的第一次无凭据尝试，
+`#2` 是带凭据的重试。用例按 `Range` 头把探测那一跳单独摘出来断言，而不是把它藏进计数里。
+`#2` 的 `range=-` 同时证明重试沿用原始请求头、没有夹带续传 Range。
+
+**结论**：M2 惰性 Cookie **已落地**，收尾继续，不需要回头补 M2。
+
+**计数**（收尾① 补测后现场复跑）：stub `154 passed, 144 deselected` / real
+`143 passed, 154 deselected, 1 xfailed` / schema `6/6`。commit `c1f2be9` 里写的「141 real」
+是这次补测之前的基线——message 是历史、报告是活文档，以本节为准。
+上面那块现场数字也是补测后独立复跑的一次（mtime 随现场时钟而变，判定看 `changed=False`）。
+
+复核后仍然敞着的三条，按「证据边界」而不是「代码缺陷」记（裁决见 §8-10，2026-11-01 收尾①验收）：
+1. **yt-dlp 真进程——留 M4**：惰性重试**仅 `fake_ydl` 证接线，real 未取证**（`cookiefile` 从无到有、副本清理、
+   原文件 mtime 不变）；真进程对真 403 抛出的错误文本能否命中 `_looks_like_rejection` 没取过证。M4 做
+   「受保护 HLS 真链路」时一并补。
+2. **嗅探的第二个信号——留 M4**：`sniffer.py:165` 那条「页面 200 但页内媒体请求被拒 → 整页重载」在 real
+   用例里没覆盖——`test_lazy_cookie_sniff.py` 四条走的是导航响应那一支（`/protected.html` 直接 403）。
+   代码在、语义对，缺的是现场。
+3. **不触发回补的模糊拒绝——设计意图，按裁决入码**：「302 跳登录页」「200 但正文是登录墙」两条路径都不重试。
+   复核认定为**刻意的凭据最小化**（只在明确的 401/403 拒绝信号下回补，不对登录页猜测性回补），不是缺口；
+   该口径已写进 `engine/services/cookies.py` 模块 docstring（不只留在汇报里），M4 若要改判定条件应先立证据。
+
+
 
