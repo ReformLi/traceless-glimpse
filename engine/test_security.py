@@ -4,6 +4,7 @@
 + API 级 §9.2 / §9.4 逐字断言。
 """
 
+import logging
 import os
 
 import pytest
@@ -216,3 +217,85 @@ class TestApiSecurityExamples:
         assert err["code"] == "INVALID_URL"
         assert err["category"] == "input"
         assert err["retryable"] is False
+
+
+class TestDevSsrfAllowlist:
+    """方案 X 临时开发白名单：三门控 + 精确主机匹配 + 每次放行一条日志。"""
+
+    def test_missing_bypass_gate_keeps_blocked(self, monkeypatch):
+        monkeypatch.setenv("BGV_SSRF_ALLOWLIST", "127.0.0.1")
+        monkeypatch.delenv("BGV_DEV_ALLOW_SSRF_BYPASS", raising=False)
+        monkeypatch.setenv("BGV_ENGINE_MODE", "real")
+        with pytest.raises(SsrfBlockedError):
+            validate_outbound_url("http://127.0.0.1:8731/page.html")
+
+    def test_missing_allowlist_gate_keeps_blocked(self, monkeypatch):
+        monkeypatch.delenv("BGV_SSRF_ALLOWLIST", raising=False)
+        monkeypatch.setenv("BGV_DEV_ALLOW_SSRF_BYPASS", "1")
+        monkeypatch.setenv("BGV_ENGINE_MODE", "real")
+        with pytest.raises(SsrfBlockedError):
+            validate_outbound_url("http://127.0.0.1:8731/page.html")
+
+    def test_non_real_mode_keeps_blocked_and_warns(self, monkeypatch, caplog):
+        monkeypatch.setenv("BGV_SSRF_ALLOWLIST", "127.0.0.1")
+        monkeypatch.setenv("BGV_DEV_ALLOW_SSRF_BYPASS", "1")
+        monkeypatch.setenv("BGV_ENGINE_MODE", "stub")
+        with caplog.at_level(logging.WARNING, logger="bgv.engine"):
+            with pytest.raises(SsrfBlockedError):
+                validate_outbound_url("http://127.0.0.1:8731/page.html")
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(line.startswith("dev_ssrf_bypass_ignored engine_mode=stub") for line in warnings)
+
+    def test_three_gates_allow_and_log_one_line_per_call(self, monkeypatch, caplog):
+        monkeypatch.setenv("BGV_SSRF_ALLOWLIST", "127.0.0.1")
+        monkeypatch.setenv("BGV_DEV_ALLOW_SSRF_BYPASS", "1")
+        monkeypatch.setenv("BGV_ENGINE_MODE", "real")
+        url = "http://127.0.0.1:8731/media/hls/master.m3u8"
+        with caplog.at_level(logging.INFO, logger="bgv.engine"):
+            assert validate_outbound_url(url) == url
+            assert validate_outbound_url(url) == url
+        bypass = [
+            r.getMessage()
+            for r in caplog.records
+            if r.getMessage().startswith("ssrf_allowlist_bypass")
+        ]
+        # 每次放行都必须有一行，且只带 host，不带 URL / 端口 / 路径
+        assert bypass == [
+            "ssrf_allowlist_bypass host=127.0.0.1",
+            "ssrf_allowlist_bypass host=127.0.0.1",
+        ]
+
+    def test_exact_host_match_only(self, monkeypatch):
+        """不支持 IP 段、后缀与改名：只有整串精确命中的主机被放行。"""
+        monkeypatch.setenv("BGV_SSRF_ALLOWLIST", " 127.0.0.1, 192.168.7.7 ")
+        monkeypatch.setenv("BGV_DEV_ALLOW_SSRF_BYPASS", "1")
+        monkeypatch.setenv("BGV_ENGINE_MODE", "real")
+        assert validate_outbound_url("http://127.0.0.1:8731/x") == "http://127.0.0.1:8731/x"
+        assert validate_outbound_url("http://192.168.7.7:8731/x") == "http://192.168.7.7:8731/x"
+        for url in (
+            "http://localhost:8731/x",  # 同一回环地址换个名字
+            "http://127.0.0.2/x",  # 相邻回环地址
+            "http://192.168.7.8/x",  # 同段相邻地址
+            "http://[::ffff:127.0.0.1]/x",  # IPv4-mapped 写法
+        ):
+            with pytest.raises(SsrfBlockedError):
+                validate_outbound_url(url)
+
+    def test_cidr_entry_is_not_a_segment(self, monkeypatch):
+        """白名单写段（127.0.0.0/24）不产生段语义：段内主机仍被拒。"""
+        monkeypatch.setenv("BGV_SSRF_ALLOWLIST", "127.0.0.0/24")
+        monkeypatch.setenv("BGV_DEV_ALLOW_SSRF_BYPASS", "1")
+        monkeypatch.setenv("BGV_ENGINE_MODE", "real")
+        with pytest.raises(SsrfBlockedError):
+            validate_outbound_url("http://127.0.0.1:8731/x")
+
+    def test_blocked_path_logs_reason(self, monkeypatch, caplog):
+        monkeypatch.delenv("BGV_SSRF_ALLOWLIST", raising=False)
+        monkeypatch.delenv("BGV_DEV_ALLOW_SSRF_BYPASS", raising=False)
+        with caplog.at_level(logging.INFO, logger="bgv.engine"):
+            with pytest.raises(SsrfBlockedError):
+                validate_outbound_url("http://10.0.0.1/internal")
+        lines = [r.getMessage() for r in caplog.records]
+        assert any(
+            line == "ssrf_blocked host=10.0.0.1 reason=blocked_ip" for line in lines
+        ), lines

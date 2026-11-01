@@ -1,0 +1,150 @@
+package com.hpu.browseguard.data
+
+import com.hpu.browseguard.data.EngineFailure.Protocol
+import com.hpu.browseguard.data.EngineFailure.Transport
+import com.hpu.browseguard.shared.BgvJson
+import com.hpu.browseguard.shared.model.DownloadRequest
+import com.hpu.browseguard.shared.model.ErrorEnvelope
+import com.hpu.browseguard.shared.model.ErrorPayload
+import com.hpu.browseguard.shared.model.FormatsResponse
+import com.hpu.browseguard.shared.model.FormatInfo
+import com.hpu.browseguard.shared.model.HealthResponse
+import com.hpu.browseguard.shared.model.SelfcheckResponse
+import com.hpu.browseguard.shared.model.SniffResult
+import com.hpu.browseguard.shared.model.SniffResultsResponse
+import com.hpu.browseguard.shared.model.Task
+import com.hpu.browseguard.shared.model.TaskCreateRequest
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+
+/** 引擎调用失败的两类来源。 */
+sealed class EngineFailure {
+    /** 引擎按协议返回了 ErrorPayload（PROTOCOL §5）。 */
+    data class Protocol(val httpStatus: Int, val error: ErrorPayload) : EngineFailure()
+
+    /** 连不上、超时、协议头不符或响应体不是协议 JSON。 */
+    data class Transport(val reason: String) : EngineFailure()
+}
+
+class EngineException(val failure: EngineFailure) : Exception(failure.toString())
+
+/**
+ * 本地引擎 HTTP 客户端（PROTOCOL v0.1）。
+ *
+ * 所有序列化走 [:shared] 的 `BgvJson`（未知字段严格拒绝），因此客户端不可能
+ * 悄悄带上协议外的字段；请求头只有 `Accept` 与 `X-Protocol-Version`。
+ */
+class EngineClient(private val http: OkHttpClient = DEFAULT_HTTP) {
+
+    suspend fun health(baseUrl: String): HealthResponse =
+        decode(HealthResponse.serializer(), execute(baseUrl, "GET", listOf("v1", "health"), null))
+
+    suspend fun selfcheck(baseUrl: String): SelfcheckResponse =
+        decode(SelfcheckResponse.serializer(), execute(baseUrl, "GET", listOf("v1", "privacy", "selfcheck"), null))
+
+    suspend fun createTask(baseUrl: String, request: TaskCreateRequest): Task =
+        decode(Task.serializer(), execute(baseUrl, "POST", listOf("v1", "tasks"), encode(request, TaskCreateRequest.serializer())))
+
+    suspend fun task(baseUrl: String, taskId: String): Task =
+        decode(Task.serializer(), execute(baseUrl, "GET", taskPath(taskId), null))
+
+    suspend fun sniffResults(baseUrl: String, taskId: String): List<SniffResult> =
+        decode(SniffResultsResponse.serializer(), execute(baseUrl, "GET", taskPath(taskId) + "sniff-results", null)).items
+
+    suspend fun formats(baseUrl: String, taskId: String): List<FormatInfo> =
+        decode(FormatsResponse.serializer(), execute(baseUrl, "GET", taskPath(taskId) + "formats", null)).items
+
+    /** §6.4：`202` 返回更新后的 Task（`status=downloading`）；同 formatId 重复调用幂等。 */
+    suspend fun startDownload(baseUrl: String, taskId: String, request: DownloadRequest): Task =
+        decode(Task.serializer(), execute(baseUrl, "POST", taskPath(taskId) + "download", encode(request, DownloadRequest.serializer())))
+
+    /** §4：任意非终态 ──取消──► cancelled；终态 → `409 TASK_STATE_CONFLICT`。 */
+    suspend fun cancelTask(baseUrl: String, taskId: String): Task =
+        decode(Task.serializer(), execute(baseUrl, "POST", taskPath(taskId) + "cancel", null))
+
+    private fun taskPath(taskId: String) = listOf("v1", "tasks", taskId)
+
+    private fun <T> encode(value: T, serializer: KSerializer<T>): String =
+        BgvJson.encodeToString(serializer, value)
+
+    private fun <T> decode(serializer: KSerializer<T>, body: String): T =
+        try {
+            BgvJson.decodeFromString(serializer, body)
+        } catch (e: SerializationException) {
+            throw EngineException(Transport("引擎响应不符合协议 v0.1：${e.message}"))
+        }
+
+    private suspend fun execute(
+        baseUrl: String,
+        method: String,
+        path: List<String>,
+        jsonBody: String?,
+    ): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(buildUrl(baseUrl, path))
+            .header("Accept", "application/json")
+            .header(PROTOCOL_HEADER, PROTOCOL_VERSION)
+            .method(method, bodyFor(method, jsonBody))
+            .build()
+
+        val response = try {
+            http.newCall(request).execute()
+        } catch (e: IOException) {
+            throw EngineException(Transport("无法连接引擎：${e.message}"))
+        }
+
+        response.use { resp ->
+            val version = resp.header(PROTOCOL_HEADER)
+            if (version != PROTOCOL_VERSION) {
+                throw EngineException(Transport("协议版本不符：响应头为 ${version ?: "缺失"}，期望 $PROTOCOL_VERSION"))
+            }
+            val body = resp.body.string()
+            if (!resp.isSuccessful) {
+                throw EngineException(protocolFailure(resp.code, body))
+            }
+            body
+        }
+    }
+
+    /** 取消端点无请求体，但 OkHttp 要求 POST 必须带 body：发零长度 JSON 体。 */
+    private fun bodyFor(method: String, jsonBody: String?): RequestBody? = when {
+        jsonBody != null -> jsonBody.toRequestBody(JSON)
+        method == "POST" -> ByteArray(0).toRequestBody(JSON)
+        else -> null
+    }
+
+    private fun protocolFailure(httpStatus: Int, body: String): EngineFailure {
+        val error = runCatching { BgvJson.decodeFromString(ErrorEnvelope.serializer(), body) }
+            .getOrNull()?.error
+        return error?.let { Protocol(httpStatus, it) }
+            ?: Transport("HTTP $httpStatus，响应体不是协议错误对象")
+    }
+
+    private fun buildUrl(baseUrl: String, path: List<String>) =
+        baseUrl.toHttpUrl().newBuilder().apply {
+            path.forEach { addPathSegment(it) }
+        }.build()
+
+    companion object {
+        const val PROTOCOL_VERSION = "0.1"
+        const val PROTOCOL_HEADER = "X-Protocol-Version"
+
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        val DEFAULT_HTTP = OkHttpClient.Builder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+}

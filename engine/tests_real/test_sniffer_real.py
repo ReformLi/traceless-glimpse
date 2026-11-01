@@ -171,3 +171,26 @@ def test_no_playwright_profile_dirs_left_behind(sniffer, server):
     leftover = after - before
     assert leftover == set(), f"存在残留 profile 目录：{leftover}"
     print("\n[证据] TEMP playwright* 目录 before =", before, "\n[证据] after =", after)
+
+
+def test_nocookie_page_media_request_carries_no_cookie_after_task_a(server):
+    """4a 真机取证项的自动化等价：任务 A 写入 sid Cookie 后，全新上下文打开
+    「不写 Cookie」页面，服务器侧对同一个 master.m3u8 的请求 Cookie 必须为空。
+
+    自建 Sniffer：模块共享实例会被 profile 残留用例 shutdown，线程不能重开。
+    """
+    from services.sniffer import Sniffer
+
+    local = Sniffer()
+    try:
+        local.sniff("task-a-cookie", server.base_url + "/page.html?sid=task-a")
+        server.reset_log()
+        observed = local.sniff("task-b-clean", server.base_url + "/page-nocookie.html")
+    finally:
+        local.shutdown()
+    assert observed is not None and observed.url.endswith("/media/hls/master.m3u8")
+    playlist_requests = [
+        entry for entry in server.request_log if entry["path"] == "/media/hls/master.m3u8"
+    ]
+    assert playlist_requests, "任务 B 未触发播放列表请求，用例前提不成立"
+    assert all(entry["cookie"] == "" for entry in playlist_requests), playlist_requests

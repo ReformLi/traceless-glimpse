@@ -24,6 +24,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "browseguard-vid-agent"
 
-// M0：只挂 :shared（KMP 协议模型）。
-// android/ 客户端模块 M3 接入，见 android/README.md。
+// M3：android/ 客户端接入构建；协议模型仍由 :shared 单一来源提供。
 include(":shared")
+include(":android:app")

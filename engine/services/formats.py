@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import httpx
 
@@ -92,6 +92,55 @@ def ytdlp_format_expression(selector: FormatSelector | None) -> str:
     return "best"
 
 
+class FormatNoMatchError(Exception):
+    """元数据完整，但没有任何格式满足 ``height<=N``。
+
+    与「元数据不完整」区分开：这里信息足够判定，所以明确失败不猜。
+    ``detail`` 直接进 ``FORMAT_UNAVAILABLE.error.detail``。
+    """
+
+    def __init__(self, requested: int, available: list[int]):
+        super().__init__(f"no format within height<={requested}; available={available}")
+        self.requested = requested
+        self.available = available
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        return {"reason": "no_height_within_cap", "requested": self.requested, "available": self.available}
+
+
+class ResolvedFormat(NamedTuple):
+    expression: str
+    degraded_reason: str | None = None
+
+
+def resolve_format_expression(
+    selector: FormatSelector | None,
+    formats: list[FormatInfo] | None,
+) -> ResolvedFormat:
+    """把结构化选择器落到具体 yt-dlp 表达式，必要时按格式表降级。
+
+    只处理 ``max_height``：``best[height<=N]`` 在 height 未知时不会报错，而是
+    **静默无匹配**（实测：单条 ``height=None`` 变体 → NO MATCH → 下载阶段抛
+    ``Requested format is not available``）。因此判定必须发生在调用下载器之前：
+
+    - 有任一候选 height 未知（含格式表缺失）→ 无法判定上限 → 降级 ``best``，
+      返回 ``degraded_reason=incomplete_metadata``，由调用方记审计；
+    - height 全部已知且都 > N → 判定得出来、结论是没有 → ``FormatNoMatchError``；
+    - 其余情况按原表达式下发。
+    """
+    expression = ytdlp_format_expression(selector)
+    if selector is None or selector.strategy != SelectionStrategy.MAX_HEIGHT:
+        return ResolvedFormat(expression)
+    heights = [item.resolution.height for item in (formats or [])]
+    if not heights or any(height <= 0 for height in heights):
+        return ResolvedFormat("best", "incomplete_metadata")
+    cap = selector.maxHeight or 0
+    if min(heights) > cap:
+        raise FormatNoMatchError(cap, sorted(set(heights)))
+    return ResolvedFormat(expression)
+
+
 def estimate_quality(info: dict[str, Any]) -> EstimatedQuality:
     """从 yt-dlp info 的格式字典估算画质：height / tbr / format_note。
 
@@ -114,9 +163,14 @@ def estimate_quality(info: dict[str, Any]) -> EstimatedQuality:
     return EstimatedQuality(height=height, bitrateKbps=bitrate, label=label)
 
 
-def fetch_manifest_text(url: str, *, transport: httpx.BaseTransport | None = None) -> str:
+def fetch_manifest_text(
+    url: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    task_id: str = "unknown",
+) -> str:
     """按逐跳校验后的地址取 manifest 文本（首跳同样过 SSRF 校验）。"""
-    final_url = resolve_redirects(url, transport=transport)
+    final_url = resolve_redirects(url, transport=transport, task_id=task_id).url
     with httpx.Client(follow_redirects=False, timeout=5.0, transport=transport) as client:
         response = client.get(final_url)
         try:

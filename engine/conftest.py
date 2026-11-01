@@ -10,6 +10,9 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BGV_DATA_DIR", tempfile.mkdtemp(prefix="bgv-test-data-"))
 # 测试基线固定为默认输出白名单，不受本机 shell 环境影响
 os.environ.pop("BGV_OUTPUT_DIR_ALLOWLIST", None)
+# 临时开发 SSRF 白名单（方案 X）在测试里必须完全不注册
+os.environ.pop("BGV_SSRF_ALLOWLIST", None)
+os.environ.pop("BGV_DEV_ALLOW_SSRF_BYPASS", None)
 
 import main  # noqa: E402 —— 必须在固定环境基线之后导入
 

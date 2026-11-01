@@ -1,3 +1,69 @@
 <resources>
-    <string name="app_name">BrowseGuardVid</string>
+    <string name="app_name">览盾视频</string>
+    <string name="home_title">览盾视频</string>
+    <string name="home_subtitle">本地执行 · 浏览器隔离嗅探</string>
+    <string name="home_stage">M3 · 客户端接入引擎</string>
+
+    <string name="engine_title">本地引擎</string>
+    <string name="engine_status_idle">等待连接</string>
+    <string name="engine_status_checking">连接中…</string>
+    <string name="engine_status_connected">已连接 · 引擎 %1$s · 协议 %2$s</string>
+    <string name="engine_status_failed">未连接</string>
+    <string name="engine_reconnect">重连</string>
+
+    <string name="engine_url_label">引擎地址</string>
+    <string name="engine_url_field">http://127.0.0.1:8730</string>
+    <string name="engine_url_save">保存</string>
+    <string name="engine_url_invalid">需为 http(s)://主机[:端口]，不带路径与参数</string>
+    <string name="engine_url_hint">手机连电脑：在电脑执行 adb reverse tcp:8730 tcp:8730；模拟器把 127.0.0.1 换成 10.0.2.2</string>
+
+    <string name="selfcheck_title">隐私自检</string>
+    <string name="selfcheck_cookie">Cookie 策略</string>
+    <string name="selfcheck_listen">监听地址</string>
+    <string name="selfcheck_tls">TLS / 令牌</string>
+    <string name="selfcheck_output">输出白名单</string>
+    <string name="selfcheck_cache">缓存</string>
+    <string name="selfcheck_proxy">代理</string>
+    <string name="selfcheck_deps">依赖版本</string>
+    <string name="selfcheck_on">开</string>
+    <string name="selfcheck_off">关</string>
+    <string name="selfcheck_none">无</string>
+
+    <string name="sniff_title">视频链接</string>
+    <string name="sniff_field">网页链接</string>
+    <string name="sniff_placeholder">粘贴要嗅探的页面地址</string>
+    <string name="sniff_action">嗅探</string>
+    <string name="sniff_running">引擎状态：</string>
+    <string name="sniff_result_title">嗅探结果</string>
+    <string name="sniff_no_drm">无 DRM</string>
+    <string name="sniff_drm">DRM 保护 · 不支持下载</string>
+    <string name="sniff_retryable">可重试</string>
+    <string name="sniff_not_retryable">不可重试</string>
+    <string name="sniff_no_allowlist">引擎未返回输出目录白名单，无法发起任务</string>
+
+    <string name="format_action">选择画质并下载</string>
+    <string name="format_preparing">引擎解析画质中：</string>
+    <string name="format_title">选择画质</string>
+    <string name="format_audio_only">纯音频</string>
+    <string name="format_kind_unknown">最佳可用（画质未标注）</string>
+    <string name="format_kind_video_only">视频（无音轨）</string>
+    <string name="format_no_metadata">画质与编码待引擎解析</string>
+    <string name="format_needs_merge">音视频分离 · 需合并</string>
+    <string name="format_naming_field">命名模板</string>
+    <string name="format_naming_hint">可选变量：{title} {platform} {date} {time} {uploader} {height} {width} {formatId} {taskId} {ext}</string>
+    <string name="format_merge_label">下载后合并音视频轨（merge）</string>
+    <string name="format_start">开始下载</string>
+
+    <string name="download_running_title">下载进度</string>
+    <string name="download_done_title">下载完成</string>
+    <string name="download_cancelled_title">任务已取消</string>
+    <string name="download_failed_title">下载失败</string>
+    <string name="download_cancel">取消下载</string>
+    <string name="download_cancelling">取消中…</string>
+    <string name="download_retry">重新选择画质</string>
+    <string name="download_no_progress">引擎尚未上报进度</string>
+    <string name="download_eta">剩余 %1$s</string>
+    <string name="download_output_dir">输出目录</string>
+    <string name="download_naming">命名模板</string>
+    <string name="download_size">已下载</string>
 </resources>

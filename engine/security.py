@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import socket
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
+
+logger = logging.getLogger("bgv.engine")
 
 # 输出目录白名单（§6.5 示例值；M0 固定，M1 走配置）
 DEFAULT_OUTPUT_DIR_ALLOWLIST = ["/home/user/Videos/BGV"]
@@ -115,6 +118,34 @@ class OutputFilenameRejectedError(SecurityError):
 # SSRF：出站 URL 校验（§1.5）
 # ---------------------------------------------------------------------------
 
+DEV_SSRF_ALLOWLIST_ENV = "BGV_SSRF_ALLOWLIST"
+DEV_SSRF_BYPASS_ENV = "BGV_DEV_ALLOW_SSRF_BYPASS"
+ENGINE_MODE_ENV = "BGV_ENGINE_MODE"
+_DEV_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _dev_ssrf_allowlist() -> frozenset[str]:
+    """临时开发白名单（方案 X）：三门控同时满足才生效，默认完全不注册。
+
+    1. ``BGV_SSRF_ALLOWLIST`` 非空 —— 逗号分隔主机名/IP，逐个**整串精确匹配**，
+       不支持 IP 段（``192.168.0.0/16``）也不支持后缀匹配（``.local``）；
+    2. ``BGV_DEV_ALLOW_SSRF_BYPASS`` 为真值；
+    3. ``BGV_ENGINE_MODE=real``。
+
+    dev only, never in production：生产配置不应同时设置这两个变量。
+    """
+    allow_raw = os.getenv(DEV_SSRF_ALLOWLIST_ENV, "").strip()
+    bypass_on = os.getenv(DEV_SSRF_BYPASS_ENV, "").strip().lower() in _DEV_TRUTHY
+    if not allow_raw or not bypass_on:
+        return frozenset()
+    mode = os.getenv(ENGINE_MODE_ENV, "stub").strip().lower()
+    if mode != "real":
+        logger.warning("dev_ssrf_bypass_ignored engine_mode=%s", mode)
+        return frozenset()
+    return frozenset(
+        item.strip().rstrip(".").lower() for item in allow_raw.split(",") if item.strip()
+    )
+
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """回环 / 私有 / 链路本地（含元数据 169.254.0.0/16）/ 保留 / 组播 / 未指定一律拒绝。"""
@@ -132,14 +163,19 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
-def _host_is_blocked(host: str) -> bool:
-    """host 为小写化后的主机名（无端口）。IP 字面量直判；域名解析全部地址判。"""
+def _host_block_reason(host: str) -> Optional[str]:
+    """``None`` 放行；字符串为拒绝归类（只给类别，不带 URL / 端口）。
+
+    host 为小写化后的主机名（无端口）。IP 字面量直判；域名解析全部地址判。
+    """
     if host in _BLOCKED_HOSTNAMES:
-        return True
+        return "blocked_hostname"
     try:
-        return _is_blocked_ip(ipaddress.ip_address(host))
+        ip_literal = ipaddress.ip_address(host)
     except ValueError:
         pass
+    else:
+        return "blocked_ip" if _is_blocked_ip(ip_literal) else None
     # 域名：getaddrinfo 解析出的每一个地址都必须干净（含多 A 记录混入私网的情况）
     try:
         infos = socket.getaddrinfo(host, None)
@@ -153,14 +189,14 @@ def _host_is_blocked(host: str) -> bool:
         except ValueError:
             continue
         if _is_blocked_ip(ip):
-            return True
-    return False
+            return "resolved_blocked_ip"
+    return None
 
 
 def validate_outbound_url(url: str) -> str:
     """出站 URL 唯一校验入口。通过则原样返回，非法则抛 SecurityError 子类。
 
-    校验顺序：scheme 白名单 → 主机名/IP 判定。
+    校验顺序：scheme 白名单 → 临时开发白名单 → 主机名/IP 判定。
     """
     try:
         parts = urlsplit(url)
@@ -173,7 +209,13 @@ def validate_outbound_url(url: str) -> str:
     if not host:
         raise InvalidUrlError()
     host = host.rstrip(".").lower()  # 尾点归一化，防 "localhost." 绕过
-    if _host_is_blocked(host):
+    if host in _dev_ssrf_allowlist():
+        # 每次放行一条；只打 host，不打完整 URL（§1.6 脱敏）
+        logger.info("ssrf_allowlist_bypass host=%s", host)
+        return url
+    reason = _host_block_reason(host)
+    if reason is not None:
+        logger.info("ssrf_blocked host=%s reason=%s", host, reason)
         raise SsrfBlockedError(host)
     return url
 

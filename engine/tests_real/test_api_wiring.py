@@ -5,16 +5,23 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
 import main
 from models import (
+    Codec,
     CookiePolicy,
     ErrorCode,
     EstimatedQuality,
+    FormatInfo,
     FormatSelector,
+    FormatSource,
     MediaStreamType,
+    Resolution,
     SelectionStrategy,
     SniffResult,
     Task,
@@ -54,6 +61,34 @@ def _sniff_result() -> SniffResult:
         estimatedQuality=EstimatedQuality(height=0, bitrateKbps=0, label="unknown"),
         drmDetected=False,
         discoveredAt="2026-10-31T00:00:00Z",
+    )
+
+
+def _direct_sniff() -> SniffResult:
+    """MP4 直链：走 download_direct（协作式断流的直链分支）。"""
+    return SniffResult(
+        taskId="task-real",
+        mediaUrl="http://8.8.8.8/video.mp4",
+        type=MediaStreamType.MP4,
+        container="mp4",
+        estimatedQuality=EstimatedQuality(height=720, bitrateKbps=2500, label="720p"),
+        drmDetected=False,
+        discoveredAt="2026-10-31T00:00:00Z",
+    )
+
+
+def _format_info(height: int, format_id: str = "137") -> FormatInfo:
+    """构造一条格式表记录；height=0 表示引擎侧「画质未知」。"""
+    return FormatInfo(
+        formatId=format_id,
+        container="mp4",
+        resolution=Resolution(width=height * 16 // 9, height=height),
+        bitrateKbps=4500,
+        codec=Codec(video="avc1.640028", audio="mp4a.40.2"),
+        hasAudio=True,
+        hasVideo=True,
+        fileSizeEstimateBytes=524_288_000,
+        source=FormatSource.YT_DLP,
     )
 
 
@@ -191,13 +226,14 @@ def test_real_do_download_maps_security_error(monkeypatch):
 
 
 def test_real_do_download_passes_max_height_expression(monkeypatch, tmp_path):
-    """_do_download → max_height 映射为 best[height<=N] 传给 download_media。"""
+    """格式表画质齐全且上限可满足 → best[height<=N] 原样下发给 download_media。"""
     monkeypatch.setattr(main, "ENGINE_MODE", "real")
     record = _record(TaskMode.DOWNLOAD, sniff=_sniff_result())
     record.task.status = TaskStatus.AWAITING_SELECTION
     record.task.formatSelector = FormatSelector(
         strategy=SelectionStrategy.MAX_HEIGHT, maxHeight=720
     )
+    record.formats = [_format_info(720, "136"), _format_info(1080, "137")]
 
     calls: dict[str, object] = {}
 
@@ -214,6 +250,94 @@ def test_real_do_download_passes_max_height_expression(monkeypatch, tmp_path):
 
     assert calls["format_expression"] == "best[height<=720]"
     assert record.task.status == TaskStatus.DONE
+
+
+def test_real_do_download_incomplete_metadata_degrades_to_best(monkeypatch, tmp_path, caplog):
+    """场景一：height 未知判不了上限 → 降级 best 跑完，任务不失败，但留 selector_degraded 审计行。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    record = _record(TaskMode.DOWNLOAD, sniff=_sniff_result())
+    record.task.status = TaskStatus.AWAITING_SELECTION
+    record.task.formatSelector = FormatSelector(
+        strategy=SelectionStrategy.MAX_HEIGHT, maxHeight=720
+    )
+    record.formats = [_format_info(0, "0")]
+
+    calls: dict[str, object] = {}
+
+    def _fake_download(
+        media_url, output_dir, *, task_id="unknown", format_expression="best", **kwargs
+    ):
+        calls["format_expression"] = format_expression
+        path = tmp_path / "out.mp4"
+        path.write_bytes(b"x")
+        return path
+
+    monkeypatch.setattr(downloader_service, "download_media", _fake_download)
+    with caplog.at_level(logging.WARNING):
+        main._do_download(record)
+
+    assert calls["format_expression"] == "best"
+    assert record.task.status == TaskStatus.DONE
+    assert record.task.error is None
+    degraded = [
+        rec.getMessage() for rec in caplog.records if "selector_degraded" in rec.getMessage()
+    ]
+    assert degraded == [
+        "selector_degraded task_id=task-real reason=incomplete_metadata requested=720"
+    ]
+
+
+def test_real_do_download_no_match_fails_format_unavailable(monkeypatch, tmp_path):
+    """场景二：画质全已知但都超出上限 → FAILED + FORMAT_UNAVAILABLE，明确失败不进下载。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    record = _record(TaskMode.DOWNLOAD, sniff=_sniff_result())
+    record.task.status = TaskStatus.AWAITING_SELECTION
+    record.task.formatSelector = FormatSelector(
+        strategy=SelectionStrategy.MAX_HEIGHT, maxHeight=480
+    )
+    record.formats = [_format_info(720, "136"), _format_info(1080, "137")]
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("无匹配时不得调用 download_media")
+
+    monkeypatch.setattr(downloader_service, "download_media", _should_not_be_called)
+    main._do_download(record)
+
+    assert record.task.status == TaskStatus.FAILED
+    assert record.task.error is not None
+    assert record.task.error.code == ErrorCode.FORMAT_UNAVAILABLE
+    assert record.task.error.detail == {
+        "reason": "no_height_within_cap",
+        "requested": 480,
+        "available": [720, 1080],
+        "message": "上限内没有可用画质",
+    }
+
+
+def test_start_download_no_match_returns_422(client, monkeypatch):
+    """API 入口同样拦下无匹配：422 + detail{requested, available}，任务停在 AWAITING_SELECTION。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    record = _record(TaskMode.DOWNLOAD, sniff=_sniff_result())
+    record.task.status = TaskStatus.AWAITING_SELECTION
+    record.formats = [_format_info(720, "136"), _format_info(1080, "137")]
+    main.TASKS[record.task.id] = record
+
+    response = client.post(
+        f"/v1/tasks/{record.task.id}/download",
+        json={"formatSelector": {"strategy": "max_height", "maxHeight": 480}},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "FORMAT_UNAVAILABLE"
+    assert error["detail"] == {
+        "reason": "no_height_within_cap",
+        "requested": 480,
+        "available": [720, 1080],
+        "message": "上限内没有可用画质",
+    }
+    assert record.task.status == TaskStatus.AWAITING_SELECTION
+    assert main.DOWNLOAD_COUNTER.count == 0
 
 
 def test_real_do_download_exact_selector_fails(monkeypatch):
@@ -284,3 +408,155 @@ def test_start_download_max_height_without_height_returns_422(client, monkeypatc
     }
     assert record.task.status == TaskStatus.AWAITING_SELECTION
     assert main.DOWNLOAD_COUNTER.count == 0
+
+
+# ---------------------------------------------------------------------------
+# 4b-3 协作式断流：cancel 端点置的标志，必须就是下载循环读的同一个标志
+# ---------------------------------------------------------------------------
+
+
+def _wait_for_log(caplog, prefix: str, timeout: float = 5.0) -> str:
+    """worker 线程写日志有延迟：轮询到出现指定前缀的审计行为止。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for record in caplog.records:
+            message = record.getMessage()
+            if message.startswith(prefix):
+                return message
+        time.sleep(0.02)
+    raise AssertionError(f"未在 {timeout}s 内看到审计行 {prefix!r}")
+
+
+def test_cancel_mid_download_aborts_and_stays_cancelled(client, monkeypatch, caplog):
+    """下载阻塞在传输中 → POST /cancel → 循环命中标志抛错 → 终态 cancelled 不被覆盖。
+
+    这是「接线」证明：假下载器只会调用 main.py 传进来的 ``should_abort``，
+    标志没接上就永远等不到取消，任务会落成 done/failed。
+    """
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _fake_direct(
+        media_url,
+        output_dir,
+        *,
+        task_id="unknown",
+        should_abort=None,
+        on_progress=None,
+        **kwargs,
+    ):
+        assert should_abort is not None, "download_direct 未收到 should_abort：断流没接线"
+        assert on_progress is not None, "download_direct 未收到 on_progress：进度没接线"
+        on_progress(1024, 3072)
+        entered.set()
+        assert release.wait(5), "测试未释放下载阻塞"
+        if not should_abort():
+            raise AssertionError("cancel 端点置的标志与下载循环读到的不是同一个")
+        raise downloader_service.DownloadCancelled(
+            f"task_id={task_id} aborted after 1024 bytes"
+        )
+
+    monkeypatch.setattr(downloader_service, "download_direct", _fake_direct)
+
+    record = _record(TaskMode.DOWNLOAD, sniff=_direct_sniff())
+    record.task.status = TaskStatus.AWAITING_SELECTION
+    main.TASKS[record.task.id] = record
+
+    with caplog.at_level(logging.INFO, logger="bgv.engine"):
+        started = client.post(
+            f"/v1/tasks/{record.task.id}/download",
+            json={"formatSelector": {"strategy": "best"}},
+        )
+        assert started.status_code == 202
+        assert record.task.status == TaskStatus.DOWNLOADING
+        assert entered.wait(5), "worker 未进入下载"
+        assert record.task.progress is not None
+        assert record.task.progress.bytesDownloaded == 1024
+
+        cancelled = client.post(f"/v1/tasks/{record.task.id}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        release.set()
+
+        abort_line = _wait_for_log(caplog, "download_aborted")
+
+    assert record.task.status == TaskStatus.CANCELLED, "断流后不得被覆盖成 done/failed"
+    assert record.task.error is None
+    # 取消前的真实进度保持冻结：断流不把字节清零，也不补 done
+    assert record.task.progress.bytesDownloaded == 1024
+    assert record.task.progress.bytesTotal == 3072
+    assert record.task.progress.phase == "downloading"
+    assert abort_line == "download_aborted task_id=task-real detail=task_id=task-real aborted after 1024 bytes"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(line.startswith("cancel_requested task_id=task-real from_status=downloading") for line in messages)
+    assert not any(line.startswith("download_failed") for line in messages)
+
+
+def test_cancel_before_worker_start_skips_downloader(monkeypatch, caplog):
+    """取消落在 202 之后、下载起跑之前：直接停手，不碰状态、不叫下载器。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    record = _record(TaskMode.DOWNLOAD, sniff=_direct_sniff())
+    record.task.status = TaskStatus.CANCELLED
+    record.cancel_requested.set()
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("取消后不得调用下载器")
+
+    monkeypatch.setattr(downloader_service, "download_direct", _should_not_run)
+    with caplog.at_level(logging.INFO, logger="bgv.engine"):
+        main._download_real(record)
+
+    assert record.task.status == TaskStatus.CANCELLED
+    assert record.task.error is None
+    assert any(
+        line.startswith("download_skipped_cancelled task_id=task-real")
+        for line in [record.getMessage() for record in caplog.records]
+    )
+
+
+def test_cancel_racing_with_completion_keeps_cancelled(monkeypatch, caplog, tmp_path):
+    """收尾竞态：取消落在「下载器已跑完、终态还没落」之间 → 不补 done、不覆盖 cancelled。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    record = _record(TaskMode.DOWNLOAD, sniff=_direct_sniff())
+    record.task.status = TaskStatus.DOWNLOADING
+
+    def _fake_direct(media_url, output_dir, **kwargs):
+        # 复现 cancel 端点的两步（置标志 + 落 cancelled），都发生在下载器返回之前
+        record.cancel_requested.set()
+        main._transition(record.task, TaskStatus.CANCELLED)
+        return tmp_path / "video.mp4"
+
+    monkeypatch.setattr(downloader_service, "download_direct", _fake_direct)
+    with caplog.at_level(logging.INFO, logger="bgv.engine"):
+        main._download_real(record)
+
+    assert record.task.status == TaskStatus.CANCELLED, "完成竞态不得把 cancelled 覆盖成 done"
+    assert record.task.progress is None
+    assert record.task.error is None
+    messages = [item.getMessage() for item in caplog.records]
+    assert any(line.startswith("download_cancelled task_id=task-real") for line in messages)
+    assert not any(line.startswith("download_aborted") for line in messages)
+
+
+def test_progress_recorder_uses_rolling_window(monkeypatch):
+    """速度/ETA 走 0.5s 窗口；total 未知时 percent 保持 0，不猜。"""
+    task = _record(TaskMode.DOWNLOAD).task
+    clocks = iter([0.0, 0.6, 1.2, 1.3])
+    monkeypatch.setattr(main.time, "monotonic", lambda: next(clocks))
+    on_progress = main._make_progress_recorder(task)
+
+    on_progress(600, 1200)
+    first = task.progress
+    assert (first.bytesDownloaded, first.bytesTotal, first.percent) == (600, 1200, 50.0)
+    assert first.speedBps == 1000  # 600 B / 0.6 s
+    assert first.etaSeconds == 0  # 600 B / 1000 B/s 向下取整
+    assert first.phase == "downloading"
+
+    on_progress(1200, 1200)
+    assert (task.progress.percent, task.progress.speedBps) == (100.0, 1000)
+
+    on_progress(200, None)
+    unknown = task.progress
+    assert (unknown.bytesDownloaded, unknown.bytesTotal, unknown.percent) == (200, 0, 0.0)
+    assert unknown.etaSeconds == 0

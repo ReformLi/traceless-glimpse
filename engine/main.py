@@ -24,6 +24,7 @@ import asyncio
 import logging
 import os
 import random
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -195,6 +196,8 @@ class TaskRecord:
         self.sniffed = sniff is not None
         self.formats: list[FormatInfo] | None = None  # real 模式 yt-dlp 格式表
         self.last_selector_key: str | None = None
+        # 协作式断流：cancel 端点 set，下载循环每写一块之前查一次
+        self.cancel_requested = threading.Event()
 
 
 TASKS: dict[str, TaskRecord] = {}
@@ -221,6 +224,37 @@ def _begin_download(record: TaskRecord) -> None:
     DOWNLOAD_COUNTER.count += 1
 
 
+def _make_progress_recorder(task: Task):
+    """返回 ``on_progress(downloaded, total_or_None)``：把真实写入字节写进任务进度。
+
+    速度与 ETA 用 0.5s 滚动窗口算，既避免每块都改对象，也不会因单块抖动
+    给出忽高忽低的读数；``total`` 未知（直链无 content-length / HLS 未汇总）
+    时 ``bytesTotal`` 与 ``percent`` 保持 0，由客户端按不确定进度显示。
+    """
+    state = {"at": time.monotonic(), "bytes": 0, "speed": 0.0}
+
+    def _on_progress(downloaded: int, total: int | None) -> None:
+        now = time.monotonic()
+        window = now - state["at"]
+        if window >= 0.5:
+            instant = max(0, downloaded - state["bytes"]) / window
+            state["speed"] = (
+                instant if state["speed"] <= 0 else 0.5 * state["speed"] + 0.5 * instant
+            )
+            state["at"], state["bytes"] = now, downloaded
+        remaining = (total - downloaded) if total and total > downloaded else 0
+        task.progress = Progress(
+            phase="downloading",
+            bytesDownloaded=downloaded,
+            bytesTotal=total or 0,
+            speedBps=int(state["speed"]),
+            etaSeconds=int(remaining / state["speed"]) if remaining and state["speed"] > 0 else 0,
+            percent=round(min(downloaded / total * 100.0, 100.0), 1) if total else 0.0,
+        )
+
+    return _on_progress
+
+
 def _do_download(record: TaskRecord) -> None:
     """下载入口（同步执行）：stub 只推进状态；real 调 ``download_media``。
 
@@ -234,6 +268,7 @@ def _do_download(record: TaskRecord) -> None:
 _FORMAT_UNAVAILABLE_MESSAGES = {
     "exact_format_id_unsupported": "M1 暂不支持精确 formatId",
     "max_height_required": "max_height 策略必须提供 maxHeight",
+    "no_height_within_cap": "上限内没有可用画质",
 }
 
 
@@ -246,6 +281,11 @@ def _format_unavailable_detail(reason: str) -> dict[str, Any]:
     return detail
 
 
+def _format_no_match_detail(exc: Any) -> dict[str, Any]:
+    """无匹配时额外带 requested / available，让客户端能解释「为什么这条选不了」。"""
+    return {**exc.detail, "message": _FORMAT_UNAVAILABLE_MESSAGES[exc.detail["reason"]]}
+
+
 def _download_real(record: TaskRecord) -> None:
     """real 模式下载：统一校验器 → yt-dlp（download_media）→ 失败置 FAILED。
 
@@ -253,13 +293,15 @@ def _download_real(record: TaskRecord) -> None:
     检查终态，避免取消后覆盖状态。
     """
     task = record.task
-    if task.status is TaskStatus.CANCELLED:
+    if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
+        # 取消可能落在 202 响应之后、worker 起跑之前：不碰状态，只留证
+        logger.info("download_skipped_cancelled task_id=%s", task.id)
         return
     if record.sniff is None:
         _fail_task(task, ErrorCode.NO_MEDIA_FOUND)
         return
     try:
-        format_expression = formats_service.ytdlp_format_expression(task.formatSelector)
+        resolved = formats_service.resolve_format_expression(task.formatSelector, record.formats)
     except formats_service.FormatUnavailableError as exc:
         _fail_task(
             task,
@@ -267,6 +309,21 @@ def _download_real(record: TaskRecord) -> None:
             _format_unavailable_detail(exc.reason),
         )
         return
+    except formats_service.FormatNoMatchError as exc:
+        _fail_task(task, ErrorCode.FORMAT_UNAVAILABLE, _format_no_match_detail(exc))
+        return
+    if resolved.degraded_reason:
+        # 上限判不了 ≠ 任务失败：降级 best 跑完，但必须留下可 grep 的审计行
+        logger.warning(
+            "selector_degraded task_id=%s reason=%s requested=%s",
+            task.id,
+            resolved.degraded_reason,
+            task.formatSelector.maxHeight if task.formatSelector else None,
+        )
+    format_expression = resolved.expression
+    # 协作式断流 + 真实进度：两条下载循环各自在写块之前查标志
+    should_abort = record.cancel_requested.is_set
+    on_progress = _make_progress_recorder(task)
     try:
         if record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
             # 单文件直链走 download_direct；HLS/DASH 交给 yt-dlp
@@ -275,6 +332,8 @@ def _download_real(record: TaskRecord) -> None:
                 task.outputDir,
                 task_id=task.id,
                 cookie_policy=task.cookiePolicy.value,
+                should_abort=should_abort,
+                on_progress=on_progress,
             )
         else:
             path = downloader_service.download_media(
@@ -283,7 +342,13 @@ def _download_real(record: TaskRecord) -> None:
                 task_id=task.id,
                 format_expression=format_expression,
                 cookie_policy=task.cookiePolicy.value,
+                should_abort=should_abort,
+                on_progress=on_progress,
             )
+    except downloader_service.DownloadCancelled as exc:
+        # 断流不改状态：cancel 端点已置 cancelled，这里只留可 grep 的字节证据
+        logger.info("download_aborted task_id=%s detail=%s", task.id, exc)
+        return
     except SecurityError as exc:
         logger.warning("download_blocked task_id=%s code=%s", task.id, exc.code)
         _fail_task(task, ErrorCode(exc.code), exc.detail)
@@ -296,7 +361,8 @@ def _download_real(record: TaskRecord) -> None:
         logger.warning("download_failed task_id=%s type=%s", task.id, type(exc).__name__)
         _fail_task(task, ErrorCode.UNKNOWN, {"reason": "download_failed"})
         return
-    if task.status is TaskStatus.CANCELLED:
+    if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
+        # 收尾竞态：下载刚好在取消前一瞬完成——终态已是 cancelled，不覆盖成 done
         logger.info("download_cancelled task_id=%s", task.id)
         return
     task.progress = Progress(
@@ -526,7 +592,7 @@ def _sniff_real(record: TaskRecord) -> None:
     if observed.container == "m3u8":
         try:
             drm_detected, drm_system_name = formats_service.detect_drm(
-                formats_service.fetch_manifest_text(observed.url)
+                formats_service.fetch_manifest_text(observed.url, task_id=task.id)
             )
         except SecurityError:
             logger.warning("sniff_manifest_blocked task_id=%s", task.id)
@@ -880,10 +946,11 @@ def start_download(task_id: str, req: DownloadRequest):
     if record.sniff is not None and record.sniff.drmDetected:
         raise DrmProtectedError(record.sniff.drmSystem)
     # real 模式先做最小映射校验：exact / 缺 maxHeight 显式拒绝（非静默 best）；
+    # 上限判得出来却无匹配 → 同样显式拒绝，不放进下载阶段；
     # stub 模式保留 M0 fixture 契约（不做映射）
     if ENGINE_MODE == "real":
         try:
-            formats_service.ytdlp_format_expression(req.formatSelector)
+            formats_service.resolve_format_expression(req.formatSelector, record.formats)
         except formats_service.FormatUnavailableError as exc:
             return _error_response(
                 422,
@@ -891,6 +958,11 @@ def start_download(task_id: str, req: DownloadRequest):
                     ErrorCode.FORMAT_UNAVAILABLE,
                     _format_unavailable_detail(exc.reason),
                 ),
+            )
+        except formats_service.FormatNoMatchError as exc:
+            return _error_response(
+                422,
+                error_payload(ErrorCode.FORMAT_UNAVAILABLE, _format_no_match_detail(exc)),
             )
     # 应用选择器与可选覆盖（§6.4）
     task.formatSelector = req.formatSelector
@@ -919,6 +991,9 @@ def cancel_task(task_id: str):
     record = _get_record_or_404(task_id)
     if record.task.status in TERMINAL_STATES:
         raise TaskStateConflictError()
+    # 先置标志再转移状态：worker 最迟在下一次写块之前停手，且不会在终态之后覆盖进度
+    record.cancel_requested.set()
+    logger.info("cancel_requested task_id=%s from_status=%s", task_id, record.task.status.value)
     _transition(record.task, TaskStatus.CANCELLED)
     return _task_response(record.task)
 

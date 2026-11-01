@@ -23,7 +23,9 @@ M1 中的五类行为差异。协议字段、错误码与状态机对两者一�
 | 项目 | stub | real |
 |---|---|---|
 | 执行方式 | 仅推进状态与计数器，无网络 IO | 单文件直链 `download_direct`；HLS/DASH 交给 yt-dlp `download_media` |
-| 续传 | 不涉及 | 写 `<name>.part` + `Range`；206 续写；200（`Accept-Ranges: none`）降级全量重下并记 `resume_downgraded` |
+| 续传 | 不涉及 | 写 `<name>.part` + `Range`；**偏移只取 `.part` 磁盘大小**，不用客户端/进度上报的字节数；有残留时先过 Content-Type 门禁——终点声明非媒体（如 `text/html`）就拒绝续传并记 `resume_rejected task_id=… reason=unexpected_content_type`，防「错误页被当片段拼进产物」（4b-4 裁决①补的防御；只覆盖续传，全新下载不设这道门，见 §8-8）；名字对不上时按全新下载走，但记 `resume_missed task_id=… reason=part_name_mismatch expected=… found=…`（4b-4 裁决②：静默可以，无痕不行）；206 续写；200（服务器忽略 Range）降级全量重下并记 `resume_unsupported task_id=… reason=no_range`；逐跳校验前的 `Range: bytes=0-0` 探测**流式且有界**（`PROBE_MAX_BYTES=1024`，读满即断开并记 `resume_probe_truncated`），忽略 Range 或无限流都不会把探测变成一次完整下载（P0，见 §13） |
+| 中断残留 | 不涉及 | 直链：引擎 own 的 `<name>.part`（续传读它、完成改名）；HLS/DASH：yt-dlp own 的 `<name>.part` / `<name>.part-FragN.part` / `<name>.ytdl`——**引擎不读、不改、不代它清理**，续传由 yt-dlp 按 `.ytdl` 自行接上（4b-4 裁决②）。将来若要清残留，只在 `failed` 终态按清理策略做，不在下载中途动 |
+| 产物封装名 | 不涉及 | 直链按终点响应的 `Content-Type` 校正（`resolve_redirects` 那次 `bytes=0-0` 探测顺带取回，不额外发请求）：音频内容不会落成 `.mp4`，记 `output_ext_corrected task_id=… from=… to=… reason=audio_content_type`；认不出类型又没有后缀时交给 `validate_output_filename` 拒绝 |
 | 完整性 | 固定进度直接 `done` | 非空 + 长度/`Content-Range` 校验；yt-dlp 产物过 `ffprobe`（duration>0） |
 | 失败映射 | 无下载失败路径 | `SecurityError`→原错误码；`DownloadIntegrityError`→`PARTIAL_DOWNLOAD`；其他→`UNKNOWN` |
 

@@ -84,7 +84,11 @@ def test_jwt_redacted_even_without_key():
     "line",
     [
         "sniff_context_open task_id=01a191ed",
-        "resume_downgraded task_id=accept-downgrade",
+        "resume_unsupported task_id=accept-downgrade reason=no_range",
+        "resume_rejected task_id=resume-html reason=unexpected_content_type content_type=text/html",
+        "resume_probe_truncated task_id=paced-1 reason=body_over_probe_budget read_bytes=65536",
+        "resume_missed task_id=miss-1 reason=part_name_mismatch expected=file.m4a.part found=file.mp4.part",
+        "output_ext_corrected task_id=x from=mp4 to=m4a reason=audio_content_type",
         "direct_download_complete task_id=x bytes=123456",
         "download_attempt task_id=x format=best",
         "awaiting_selection_timeout task_id=x",

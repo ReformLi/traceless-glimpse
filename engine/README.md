@@ -29,6 +29,21 @@ python -m venv .venv
   Windows `%LOCALAPPDATA%\BGV\cache`，其他平台 `$XDG_CACHE_HOME/bgv` 或 `~/.cache/bgv`。
   当前引擎不写入缓存，故 `cacheSizeBytes` 通常为 0。
 
+### 开发专用：临时 SSRF 主机白名单（dev only, never in production）
+
+`BGV_SSRF_ALLOWLIST` + `BGV_DEV_ALLOW_SSRF_BYPASS`：仅用于真机 / 本地媒体联调，
+让受控测试主机通过出站校验。**三个条件同时满足才生效**，缺任何一个白名单完全不注册：
+
+1. `BGV_SSRF_ALLOWLIST` 非空 —— 逗号分隔主机名或 IP，**逐个整串精确匹配**，
+   不支持 IP 段（写 `127.0.0.0/24` 不放行 `127.0.0.1`）也不支持后缀匹配；
+2. `BGV_DEV_ALLOW_SSRF_BYPASS=1`；
+3. `BGV_ENGINE_MODE=real`。非 real 而设了 `DEV_ALLOW` 会打
+   `dev_ssrf_bypass_ignored engine_mode=...` 告警且不生效。
+
+每次放行打印一行 `ssrf_allowlist_bypass host=<host>`（只带 host，不带 URL / 端口 / 路径），
+被拒路径同样补一行 `ssrf_blocked host=<host> reason=<类别>`。
+生产部署不要设置这两个变量；测试基线（`conftest.py`）会显式清除，防止本机 shell 环境串味。
+
 ## 隐私自检（§6.5）
 
 `GET /v1/privacy/selfcheck` 只读汇总运行环境，不发起出站请求、不读取 Cookie 文件。

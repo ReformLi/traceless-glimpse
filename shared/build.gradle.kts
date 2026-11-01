@@ -3,14 +3,22 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.android.kotlin.multiplatform.library)
 }
 
 kotlin {
+    // 客户端 minSdk 29 / JDK 17 基线：JVM 产物与 Android 单测 JVM 保持一致（字节码 61）。
+    jvmToolchain(17)
+    android {
+        namespace = "com.hpu.browseguard.shared"
+        compileSdk = 36
+        minSdk = 29
+    }
     jvm()
 
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.serialization.json)
+            api(libs.kotlinx.serialization.json)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
