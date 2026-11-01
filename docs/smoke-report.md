@@ -230,13 +230,29 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
       三条 real 用例真驱动 worker + 一条静态守卫扫全量 `ErrorCode.X` 引用（§14.3.1）。
       取证是**真机主路径**跑出来的，不是读代码读出来的——既有 real 用例只断言嗅探函数返回 `None`，
       没人把无媒体 URL 推进状态机。
-    - **待裁决①：`sniff_running` 标签语义错位**——资源串写「引擎状态：」，`HomeScreen.kt:329`
-      屏上跟的是**任务状态**。收尾③只统一文案来源，标签属界面语义，未点名不动。
-      两条出路：资源串改「任务状态：」，或这行改显示 `/v1/health` 的引擎状态。
-    - **待裁决②：两条本地超时的错误码表示不一致**——嗅探/画质解析超时传 `code=null`
-      （`HomeViewModel.kt:191/239`），下载超时传 `"NETWORK_TIMEOUT"`（`:284`），而 `NETWORK_TIMEOUT`
-      在 §5 表内存在但**引擎侧从不发**，目前只有客户端本地计时器在用。改任一侧都牵动 §5 语义，本轮留档。
-    - **待裁决③：保存引擎地址后不自动重连**，仍要手点「重连」——属交互缺口不是文案缺口，转收尾⑥（物理真机）前定。
+    - **已落地①（裁决 2026-11-01）：`sniff_running` 标签语义错位**——资源串原写「引擎状态：」，
+      `HomeScreen.kt:329` 屏上跟的是**任务状态**。裁决：改资源串为「任务状态：」（`strings.xml:37`，
+      `:36` 留注释说明这行不表示引擎连接状态），**不改信息架构**；引擎连接状态归设置页，M4 再考虑。
+    - **已落地②（P1，裁决 2026-11-01）：两条本地超时的错误码表示不一致**——原嗅探/画质解析超时传
+      `code=null`，下载超时传 `"NETWORK_TIMEOUT"`，而该码在 §5 表内存在但**引擎侧从不发**，属客户端伪造协议码。
+      裁决理由三条：用户误判成网络问题、日志与协议审计对不上、将来重试策略误判。
+      修法：`LocalTimeouts`（`HomeViewModel.kt:379`）成单一来源，三条路径统一 `code=null` +
+      retryable=true + 文案自带窗口秒数；`LocalTimeoutTest` 4 条钉住，其中一条静态守卫扫全量
+      `"UPPER_SNAKE"` 字面量不得命中 `ErrorCode` 名（§17.1）。
+    - **待裁决③（已撤销，不得采用）：原记「保存引擎地址后不自动重连，仍要手点『重连』」是前提误判**。
+      代码自 `c1f2be9` 起 `saveEngineUrl()` 成功分支即调用 `refreshConnection()`（`HomeViewModel.kt:126-133`），
+      保存后会自动复检；上一轮的结论是从「屏上无变化」越界得出。该观察在当前设计下**不可判定**：
+      状态卡不回显所连 baseUrl（`strings.xml:10` 静态示例地址）、客户端无请求日志、访问日志无时间戳，
+      `.devtmp/3ui-35-url-back.txt` 与 `.devtmp/3ui-36-saved.txt` 逐字节相同只能证明「屏上无差异」。
+      因此「地址已保存，点击连接生效」「保存并连接」两类提示文案**不得采用**（写的是与行为相反的话）。
+      真实缺口是**可判性**（改错地址后屏上无法回答「连的哪台引擎」）不是交互，归 M4 设置页批次（裁决 ①）。
+12. **M4 开工前必做：状态机非终态错误出口全枚举审计**（登记 2026-11-01，来源是收尾③ 那条 P0 的复盘）。
+    逐个非终态列出「这个状态下失败发哪个 §5 码」——`queued` / `sniffing` / `awaiting_selection` /
+    `downloading` / `merging` / `post_processing`，成表，缺的补上。
+    判定原则：每个非终态都必须有错误出口，不能既不失败也不完成。
+    P0 就是这类缺口的实例：`sniffing` 的失败路径引用了不存在的 `ErrorCode.INTERNAL_ERROR`，
+    worker 抛 `AttributeError`，任务永久停在 `sniffing`。
+    不阻塞收尾④/⑤，但 M4 开工前必须做完（见 §17.4）。
 
 ## 9. M3 4a real 模式验证（2026-11-01，七项）
 
@@ -1344,10 +1360,203 @@ Android 57 tests, 0 failures, 0 skipped           # 其中文案同源 21 条：
 5. **`listenAddress` 是常量**：`engine/services/environment.py:16` 写死 `127.0.0.1:8730`，
    selfcheck 直接回显它（`:100`）。所以 8740 那个桩实例屏上仍显示 `127.0.0.1:8730`——
    协议不允许覆盖监听地址是有意的（`m3copy-7` 取证时按常量理解，不当 bug 报）。
-6. **改完引擎地址不会自动重连**：保存后仍要手点「重连」。属于交互缺口不是文案缺口，转收尾⑥前讨论。
+6. **改完引擎地址「不会自动重连」这条自报已撤销（前提误判）**：`saveEngineUrl()` 成功分支自 `c1f2be9`
+   起即调用 `refreshConnection()`（`HomeViewModel.kt:126-133`），保存后会自动复检。当时两次 dump
+   （`.devtmp/3ui-35` / `.devtmp/3ui-36` 逐字节相同）只能证明屏上无差异；而状态卡不回显 baseUrl、
+   客户端无请求日志、访问日志无时间戳，**该观察在当前设计下不可判定**，不能支撑「没重连」。
+   真实缺口是可判性不是交互，见 §8-11 待裁决③ 与 §17.4 遗留 4（M4 设置页批次）。
 7. **文案同源只覆盖「渲染入口」**：`FormatSelection.selectorFor` 的下发规则本轮**一行未动**，
    `FormatRowCopy` 只做文案。两侧一致性靠 `primaryLabelIsDrivenByKindOf` 那条同源断言钉，
    不等于两侧从此共用同一份判定代码。
+
+   > 上面 1–7 的状态以 §17 汇总表为准：3、4 已按裁决落地，6 属前提误判已撤销。
+
+## 15. M3 收尾④：`unitTests.isReturnDefaultValues` 评估（2026-11-01，结论＝保留 + 加约束）
+
+产出是结论，不是改动。评估期间对 `build.gradle.kts` 的唯一操作是「改 false 跑一遍再原样还原」，
+还原后用 XML 结果时间戳复核过（`android/app/build.gradle.kts:45` 仍为 `true`）。
+
+### 15.1 现场复跑（不看配置猜）
+
+方法：备份 → 第 45 行 `true` → `false` → `--offline :android:app:testDebugUnitTest` → 还原 → 再跑一遍。
+
+| 跑法 | 结果 |
+| --- | --- |
+| `isReturnDefaultValues = false` | `61 tests completed, 3 failed` |
+| `isReturnDefaultValues = true`（还原后） | `tests=61 failures=0`（结果 XML 为本次写入，非 up-to-date 残留） |
+
+三条失败的**堆栈根因完全同一条**——不是三种 Android API 依赖，是一个静态方法调用点：
+
+```
+java.lang.RuntimeException: Method w in android.util.Log not mocked.
+    at android.util.Log.w(Log.java)
+    at com.hpu.browseguard.data.FormatSelection.selectorFor(FormatSelection.kt:46)
+```
+
+| 失败用例 | 触发行 |
+| --- | --- |
+| `FormatRowCopyTest.videoOnlyRowMarksMergeNeeded` | `FormatRowCopyTest.kt:111` |
+| `FormatSelectionTest.kindDrivesStrategyForAllFourShapes` | `FormatSelectionTest.kt:126` |
+| `FormatSelectionTest.videoWithoutAudioFallsBackToBest` | `FormatSelectionTest.kt:80` |
+
+全量扫描客户端 main 源码里的 `Log.d|i|w|e|v(` 调用点：**只有 1 处**，就是 `FormatSelection.kt:46`
+（`video_only` 降级审计行）。其余 58 条单测与这个开关无关。
+证据：`.devtmp/4-flagfalse-run.txt`、`.devtmp/4-flagfalse-detail.txt`、`.devtmp/4-build.gradle.kts.bak`。
+
+### 15.2 依赖性质判定
+
+这 3 条**不是**「断言依赖 Android API 的返回值」，而是「调用链路过一个 Android 静态方法」。
+断言内容全是纯逻辑（格式 → 选择器映射、文案拼接）。也就是说开关在这里起的作用是
+「让日志副作用不炸」，不是「让断言蒙对」。这个区分决定了下面的建议方向。
+
+### 15.3 替代成本
+
+| 方案 | 成本 | 判定 |
+| --- | --- | --- |
+| Robolectric | 新增 `testImplementation`；当前构建走 `--offline`，Gradle 缓存里没有 → 必须先联网；引入 Android 框架 jar、JVM 单测变慢 | 为一个 `Log.w` 拖进整套 Android 运行时，比例不合。不推荐 |
+| mockk | 同样不在缓存，需联网；`mockkStatic(Log::class)` + `every { Log.w(any<String>(), anyString()) } returns 0`；**每个新增 `Log` 调用点都要补桩** | 能解决，但收益是把 1 个调用点的成本摊到全部后续调用点。暂无必要 |
+| 零依赖（日志挪出纯函数） | 改 1 处：`selectorFor` 返回降级原因，由 `ui/` 层调用方打日志（或注入 `(String) -> Unit`）；之后 `false` 也能 61/0 | 最便宜的结构修法，M4 想彻底摘开关时走这条 |
+| ViewModel 层单测 | 需要 `AndroidViewModel` / `Application` / SharedPreferences 三件套；`kotlinx-coroutines-test` 已在依赖里 | 这才是替换的真实门槛，且与本开关无关——别把两件事捆在一起决策 |
+
+### 15.4 结论：保留 + 加约束
+
+1. 这是 AGP 官方支持的 `testOptions` 配置，不是 hack；关掉它换不来任何断言强度，
+   只会把 3 条纯逻辑测试推向一个 Android 运行时依赖。
+2. 风险面已知且极窄：唯一暴露点是 `android.util.Log`、1 个调用点；
+   不存在「靠默认返回值蒙对断言」的现存用例——`false` 只红这 3 条本身就是证据。
+3. 真正的风险是**将来**新增的 Android API 调用被静默放行，所以约束要打在「新增」上，不是打在「配置」上。
+
+现有约束（`android/app/build.gradle.kts:42-44` 注释）已写明「仅为 `android.util.Log.*` 服务」+
+「依赖 Android API 行为的单测必须显式 mock（或走 androidTest），不得把默认返回值当断言依据」。
+
+建议追加（**未落地，等你点头**）：
+
+- A（推荐，零依赖）：立一条分层规矩——`data/` 与纯映射函数不打 `android.util.Log`，日志只允许出现在
+  `ui/` 层；配一条静态守卫单测扫 main 源码，把「1 处」压到「0 处」并钉住不再增长。
+  落点顺序：先改 `selectorFor` 返回降级原因，再加守卫测试，最后可选把开关置 `false` 复跑确认。
+- B：M4 若引入 mockk，把 15.1 的复跑命令再执行一次，确认依赖仍为 0 而不是悄悄长大。
+
+## 16. M3 收尾⑤：双端 `x-nullable` 可空性同步（2026-11-01）
+
+### 16.1 补的是哪一层漏洞
+
+对账原本只比 required / properties / enum / type 四类。在这套投影里
+`formatId: String? = null` 与 `formatId: String = "best"` 导出的 `type` 都是 `"string"`——
+**「JSON 里这个字段能不能是 null」这条语义完全没进对账**。而它恰恰是双端最容易各写各的一处：
+引擎侧发 `"formatId": null`，Kotlin 侧声明成非空 `String` 时 `BgvJson` 直接抛序列化异常，
+契约检查看不见，要到真机跑到那条分支才炸。
+
+### 16.2 两侧怎么加
+
+- **Kotlin**（`shared/src/jvmMain/.../SchemaExporter.kt`）：`typeOf()` 末尾
+  `if (desc.isNullable) put(X_NULLABLE, true)`。取 `isNullable`（类型可否为 null），
+  **不取** `isElementOptional`（有没有默认值）——后者已经由 `required` 表达，两者是两条轴。
+- **Python**（`engine/export_schema.py`）：原 `_simplify_prop` 拆成
+  `_base_prop` / `_is_null_branch` / `_is_nullable` / `_simplify_prop`。Pydantic v2（本机 2.14.2，
+  另在 2.12 上验证过同形）把 `Optional[str]` 导成
+  `anyOf: [{"type":"string"},{"type":"null"}]`，折叠回单一 `type` 的同时写入 `x-nullable: true`；
+  不可空字段**不带该键**（不写 `x-nullable: false`，避免「缺键」和「显式 false」两种表示混跑）。
+  曾按 Pydantic v1 的 `type: ["string","null"]` 形式补过猜测分支，实测输出后删除——不留没验证过的代码。
+- **`engine/models.py` 一行未改**（对「两侧同时加标记」的字面要求的偏离，理由）：Python 侧的
+  可空性本来就由 `Optional[...]` 类型声明承载，在模型上再写一遍标记等于制造第二个真相源，
+  还会和类型注解漂移。标记只加在**导出投影**上，与 Kotlin 侧的「由 descriptor 投影」对称。
+- **对账**（`scripts/check_schema.py`）：升到五类；类型不一致时 `continue` 跳过可空性比对
+  （先修类型，可空性差异会在修好后重新暴露）；新增 `_marked()` 计数，并在
+  **六个模型全部比对成功却零标记命中**时判定失败——防的是 Kotlin 侧导出器静默失效导致对账空过。
+- **文档**：`engine/README.md` / `shared/README.md` 的 schema 段落各补一条约定，
+  含「`required` 说字段必须出现、`x-nullable` 说值可以是 null，两条轴」。
+
+### 16.3 现场结果
+
+重新生成两侧各 6 份（`export_schema.py` / `:shared:exportSchemas`），diff 只多了 `x-nullable` 键
+和随之而来的逗号，两侧行数变化逐模型相同（3/12/21/3/15）。
+
+| 模型 | 可空字段 | 双侧 |
+| --- | --- | --- |
+| `task` | `error` `formatSelector` `namingTemplate` `progress` `proxyId` | 5 / 5 |
+| `sniff_result` | `drmSystem` | 1 / 1 |
+| `format_info` | — | 0 / 0 |
+| `format_selector` | `formatId` `maxHeight` `maxSizeBytes` `preferCodec` | 4 / 4 |
+| `post_action` | `container` `crf` `destDir` `lang` `langs` `model` `targetCodec` | 7 / 7 |
+| `error_payload` | `detail` | 1 / 1 |
+| 合计 |  | **Python 18 / Kotlin 18** |
+
+**没有出现单侧不一致**——本轮是「加上标记后两侧本来就一致」，不是「加标记挖出不一致」。
+所以没有需要裁决的模型改动；真出现时按流程是把差异列出来交裁决，不静默改模型。
+
+反向验证（证明检查看得见）：删掉 `shared/schema/task.json` 里 `formatSelector` 的标记 →
+`exit=1`，报 `[task].formatSelector 可空性不一致：Python=True / Kotlin=False`，
+参考计数 `Python=18 / Kotlin=17` → 还原后 `exit=0`，文件与生成版逐字节相同。
+证据：`.devtmp/5-schema-check-pass.txt`、`5-schema-check-negative.txt`、`5-schema-check-restored.txt`、
+`5-task-schema.bak`、`5-nullable-list.txt`。
+
+单测：`SchemaExporterTest` 5 → 7 条（`可空字段带 x-nullable 标记` 钉六个模型的可空集合；
+`x-nullable 与 required 互斥且标记与可空集合一致` 钉「两条轴不许混用」）。
+摘掉导出器发射行复跑 → `11 tests completed, 1 failed`：红的是第一条。
+**分工如实记**：第二条只在「标记乱贴」时红，摘掉发射时两侧同空所以不红——有牙的是第一条。
+
+全量基线（本轮复跑）：shared `11/0`、android `61/0`、engine 桩 `170 passed / 147 deselected`、
+engine real `146 passed + 1 xfailed`、`check_schema.py` `6/6`。
+
+## 17. M3 关闭报告（收尾①–⑤ 汇总，2026-11-01）
+
+### 17.1 收尾清单状态
+
+| 收尾 | 内容 | 状态 | 落点 |
+| --- | --- | --- | --- |
+| ① | M2 惰性 Cookie 复核 | 关闭（只读复核 + 针对性单测，行为未改） | §14.1 |
+| ② | `Task.warnings` / `download_rejected` 入 PROTOCOL-CHANGELOG | 关闭（只入档，不实现） | §14.2 |
+| ③ | UI 文案与协议同源 | 关闭，另挖出 1 条 P0 并修 | §14.3 |
+| ③ 裁决① | `sniff_running` 标签改「任务状态：」 | 关闭 | `strings.xml:37` + 裁决注释 `:36` |
+| ③ 裁决② | 本地超时停止伪造协议码（P1） | 关闭 | `LocalTimeouts`（`HomeViewModel.kt:379`）+ `LocalTimeoutTest` 4 条 |
+| ③ 裁决③ | 保存地址后「不自动重连」提示 | **撤销**：前提误判，文案不得采用 | §8-11 待裁决③、§14.3.3 边界 6 |
+| ④ | `isReturnDefaultValues` 评估 | 关闭，结论＝保留 + 加约束（约束未落地） | §15 |
+| ⑤ | 双端 `x-nullable` 同步 + 对账 | 关闭 | §16 |
+| ⑥ | 物理真机第一轮验收 | **推迟**，见 17.3 | — |
+
+### 17.2 M3 关闭时的基线
+
+| 层 | 数字 |
+| --- | --- |
+| shared JVM 单测 | 11 通过 / 0 失败（`BgvJsonTest` 4 + `SchemaExporterTest` 7） |
+| android JVM 单测 | 61 通过 / 0 失败（9 个测试类，含新增 `LocalTimeoutTest` 4 条） |
+| engine 桩 | 170 通过 / 147 排除（`-m "not real"`） |
+| engine real | 146 通过 + 1 xfail（登记缺口，`strict=True`）/ 170 排除 |
+| 契约对账 | `scripts/check_schema.py` 6/6 模型、五类全等、`x-nullable` 18/18 |
+
+### 17.3 物理真机验收推迟（本报告的已知边界，不修饰）
+
+已完成的全部真机取证都在 `emulator-5554`（API 36）上，走 `adb reverse` 到本机引擎。
+**物理真机这一轮没有跑**：手上那台旧真机 API 28，客户端 `minSdk`/依赖（Compose、OkHttp 5.x）
+跑不满，装上去的失败与业务链路无关，取证价值为负。
+因此本文所有「真机」字样一律指模拟器；协议 §9 端到端、断流、续传、产物封装四类证据
+在物理设备上的复现属于未完成项，不记为通过。
+
+推迟原因与安排：受限于测试设备（旧真机 API 28 过低），物理真机验收**推迟至 MuMu 模拟器
+（已开启 ARM 兼容模式）配置完成后执行**。MuMu 相关排查在本轮暂挂起，不作为任何结论的前置。
+
+### 17.4 遗留清单（M4 前置 → 可延后）
+
+M4 开工前必须做完：
+
+1. **状态机非终态错误出口全枚举审计**（§8-12）：`queued` / `sniffing` / `awaiting_selection` /
+   `downloading` / `merging` / `post_processing` 各自失败走哪个 §5 码，列表，缺的补上。
+   驱动力是收尾③ 的 P0：`sniffing` 的失败路径引用了不存在的码，任务永久卡住——
+   「一个状态没有失败出口」正是这类缺陷的实例。
+2. `1080p · h264` / `视频（无音轨）` 两行目前只有单测覆盖（真机媒体源限制）；
+   M4 换分离轨素材后复核（§14.3.3 边界 1）。
+3. `嗅探中（sniffing）` 屏显窗口太短未取到截图；用 `media_server` 已有的 `?delay_ms=3000` 补一张（§14.3.3 边界 2）。
+
+可延后 / 归 M4 界面批次：
+
+4. **可判性缺口**：改错引擎地址后，屏上没有任何信息能回答「我现在连的是哪台引擎」
+   （状态卡不回显 baseUrl、客户端无请求日志、访问日志无时间戳）。
+   修法在设置页批次里，与裁决①「不改信息架构」同批处理（§8-11 待裁决③）。
+5. `engine_url_field` 的静态示例地址 `http://127.0.0.1:8730`（`strings.xml:15`）是上面缺口的
+   放大器：输入框里的示例长得像真值。
+6. 收尾④ 建议 A（`Log` 分层规矩 + 守卫单测）待裁决后落地。
+7. `listenAddress` 常量回显（§14.3.3 边界 5）与文案同源只覆盖渲染入口（边界 7）——均为记录，不是缺陷。
+
 
 
 
