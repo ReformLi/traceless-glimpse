@@ -315,6 +315,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             while (current.status !in TERMINAL_STATUSES) {
                 delay(POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
+                // 轮询结果必须回写，否则 SniffPhase.Running 永远停在初始 QUEUED，界面拿不到 sniffing
+                _state.update { state ->
+                    if (state.sniff !is SniffPhase.Running) return@update state
+                    state.copy(sniff = SniffPhase.Running(current.status))
+                }
             }
         }
         return current
@@ -326,6 +331,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             while (current.status != TaskStatus.AWAITING_SELECTION && current.status !in TERMINAL_STATUSES) {
                 delay(POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
+                // 与 awaitTerminal 同型：不回写则 Preparing.status 永远停在初始 QUEUED，
+                // 界面读到的「画质解析中（queued）」是过时报数
+                _state.update { state ->
+                    if (state.download !is DownloadPhase.Preparing) return@update state
+                    state.copy(download = DownloadPhase.Preparing(current.status))
+                }
             }
         }
         return current
