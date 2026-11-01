@@ -1512,7 +1512,7 @@ engine real `146 passed + 1 xfailed`、`check_schema.py` `6/6`。
 | ③ 裁决③ | 保存地址后「不自动重连」提示 | **撤销**：前提误判，文案不得采用 | §8-11 待裁决③、§14.3.3 边界 6 |
 | ④ | `isReturnDefaultValues` 评估 | 关闭，结论＝保留 + 加约束（约束未落地） | §15 |
 | ⑤ | 双端 `x-nullable` 同步 + 对账 | 关闭 | §16 |
-| ⑥ | 物理真机第一轮验收 | **推迟**，见 17.3 | — |
+| ⑥ | 物理真机第一轮验收 | **关闭**（MuMu Android 15 / API 35，全绿；另挖出 1 条屏显死分支并修） | §17.5 |
 
 ### 17.2 M3 关闭时的基线
 
@@ -1524,7 +1524,7 @@ engine real `146 passed + 1 xfailed`、`check_schema.py` `6/6`。
 | engine real | 146 通过 + 1 xfail（登记缺口，`strict=True`）/ 170 排除 |
 | 契约对账 | `scripts/check_schema.py` 6/6 模型、五类全等、`x-nullable` 18/18 |
 
-### 17.3 物理真机验收推迟（本报告的已知边界，不修饰）
+### 17.3 物理真机验收：先记为推迟、后由 §17.5 解除（口径变化留痕，不修饰）
 
 已完成的全部真机取证都在 `emulator-5554`（API 36）上，走 `adb reverse` 到本机引擎。
 **物理真机这一轮没有跑**：手上那台旧真机 API 28，客户端 `minSdk`/依赖（Compose、OkHttp 5.x）
@@ -1534,6 +1534,11 @@ engine real `146 passed + 1 xfailed`、`check_schema.py` `6/6`。
 
 推迟原因与安排：受限于测试设备（旧真机 API 28 过低），物理真机验收**推迟至 MuMu 模拟器
 （已开启 ARM 兼容模式）配置完成后执行**。MuMu 相关排查在本轮暂挂起，不作为任何结论的前置。
+
+**2026-11-01 21:24 更新：该推迟状态解除。** 物理验收环境 MuMu（Android 15 / API 35）已跑通并全绿，
+见 §17.5。上述「本文所有真机字样一律指模拟器」的口径自 §17.5 起不再适用于本轮新增证据；
+`emulator-5554`（API 36 纯 x86）与旧真机（API 28）的历史记录保留作过程档案，
+但**不作为最终物理设备通过依据**——通过依据是 §17.5。
 
 ### 17.4 遗留清单（M4 前置 → 可延后）
 
@@ -1545,18 +1550,230 @@ M4 开工前必须做完：
    「一个状态没有失败出口」正是这类缺陷的实例。
 2. `1080p · h264` / `视频（无音轨）` 两行目前只有单测覆盖（真机媒体源限制）；
    M4 换分离轨素材后复核（§14.3.3 边界 1）。
-3. `嗅探中（sniffing）` 屏显窗口太短未取到截图；用 `media_server` 已有的 `?delay_ms=3000` 补一张（§14.3.3 边界 2）。
+3. ~~`嗅探中（sniffing）` 屏显窗口太短未取到截图~~ **关闭，且原因为误判**：窗口不短（引擎侧实测 3.90 s），
+   是 `awaitTerminal` 轮询不回写导致屏显恒为 `queued`。已在 MuMu 轮修复并取到两帧，见 §17.5.4。
 
 可延后 / 归 M4 界面批次：
 
 4. **可判性缺口**：改错引擎地址后，屏上没有任何信息能回答「我现在连的是哪台引擎」
    （状态卡不回显 baseUrl、客户端无请求日志、访问日志无时间戳）。
    修法在设置页批次里，与裁决①「不改信息架构」同批处理（§8-11 待裁决③）。
+   本轮补上了**判定方法**（访问日志行数增量，§17.5.5），缺口本身不变：方法能证明请求发过，
+   但屏上依然读不出地址。
 5. `engine_url_field` 的静态示例地址 `http://127.0.0.1:8730`（`strings.xml:15`）是上面缺口的
    放大器：输入框里的示例长得像真值。
-6. 收尾④ 建议 A（`Log` 分层规矩 + 守卫单测）待裁决后落地。
+6. 收尾④ 建议 A（`Log` 分层规矩 + 守卫单测）：**2026-11-01 已批准，尚未落地**，归 M4 批次。
+   建议 B（把 `data/` 依赖从测试配置里拆出去）记入 M4。
 7. `listenAddress` 常量回显（§14.3.3 边界 5）与文案同源只覆盖渲染入口（边界 7）——均为记录，不是缺陷。
+8. ~~**同型死分支**：`awaitAwaitingSelection` 与修前的 `awaitTerminal` 一样只读不回写~~
+   **已修（2026-11-01 裁决轮）**：裁决口径是「同一种结构性缺陷（UI 镜像状态漏写回写），顺手修掉，
+   不留作遗留项，以免以后踩同样的坑」。修法与 §17.5.4 同一行形状；
+   并补结构守卫 `PollLoopStateWritebackTest`（三条 `await*` 循环各自的回写目标 + 回写必须在 `client.task` 之后 + 扫描集非空自证）。
+9. ~~**§17.5.4 的修复没有单测兜底**~~ **降级为「兜底是静态守卫，不是行为断言」**：
+   `HomeViewModel` 直接 `private val client = EngineClient()`，不可注入 → 轮询回写无法在 JVM 单测里
+   用假引擎构造断言。本轮先落地**静态守卫**（只保证源码里存在回写，不保证运行时真的发出过状态更新），
+   行为断言待 M4 第 3 步 FakeBackend 后补（见 §18 规划）。
+
+### 17.5 物理验收环境：MuMu（Android 15 / API 35），2026-11-01 20:56–21:24
+
+本轮是 M3 的**最终物理设备验收**，通过依据即本节；`emulator-5554` 与 API 28 旧真机的历史记录降级为过程档案（§17.3）。
+
+| 项 | 取值 |
+| --- | --- |
+| 设备 | MuMu 模拟器最新版，Android 15 / API 35，机型 SM-S9080，`adb` 序列号 `192.168.31.57:5555`（桥接 IP 直连，未切 NAT） |
+| 回环 | PC 侧 `adb -s 192.168.31.57:5555 reverse tcp:8730 tcp:8730`（`reverse --list` 有 `host-16`），客户端仍走 `127.0.0.1:8730`，`network_security_config.xml` 的 cleartext 放行域不变 |
+| 引擎 | `BGV_ENGINE_MODE=real` + `BGV_DEV_ALLOW_SSRF_BYPASS=1` + `BGV_SSRF_ALLOWLIST=127.0.0.1` + `BGV_OUTPUT_DIR_ALLOWLIST=D:\tmp\bgvmumu\out`，日志 `.devtmp/mumu-engine.log` |
+| 媒体源 | `media_server` :8731（`?delay_ms` / `?chunk_delay` 两个节流旋钮），日志 `.devtmp/mumu-media.log` |
+| 客户端 | `app-debug.apk` 32,062,038 B，`versionCode=1 minSdk=29 targetSdk=36`，`install -r -g` 覆盖安装 |
+
+架构维度按裁决不测：M3 客户端是纯 HTTP 协议端，不加载 ARM 原生库；yt-dlp / FFmpeg 的 ARM 转译排查归 M4。
+顺手记三条与 M4 排查直接相关的设备读数（不构成 M3 结论）：
+`ro.product.cpu.abilist = x86_64,arm64-v8a,x86`、`ro.dalvik.vm.native.bridge = libnb.so`、
+`ro.vendor.enable.native.bridge.exec64 = 1`，而 `/proc/cpuinfo` 是 AMD Ryzen 7 5800H（x86_64 宿主）。
+即该镜像把 `arm64-v8a` 报进 ABI 列表并挂了 ARM 翻译桥，M4 的原生库可行性以此为起点排查。
+
+#### 17.5.1 高优项：Android 13+ 权限面（结论：零适配缺口，Manifest 与权限逻辑未改）
+
+| 观察 | 读数 | 判读 |
+| --- | --- | --- |
+| `AndroidManifest.xml` 声明 | 仅 `android.permission.INTERNET` | 无存储/媒体类权限可申 |
+| `dumpsys package` install permissions | `INTERNET: granted=true` + `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION: granted=true` | 后者是 AAPT 为 AppCompat 动态注册自动补的 normal 级权限，安装期授予，非本 App 申请 |
+| 运行时（dangerous）权限 | 0 条 | 全流程无授权弹窗，截图 `m3mumu-1..6` 六帧均无系统弹层 |
+| Scoped Storage / 媒体权限细分 | 不适用 | 客户端不落盘：写盘发生在 PC 侧引擎，Android 端只走 HTTP |
+| logcat 4,340 行扫描 | `FATAL EXCEPTION` 0 / `SecurityException` 0 / `Permission Denial` 0 / `dropbox` 无 `browseguard` 条目 | 无 Android 15 特有崩溃 |
+| 噪音两条 | 80 条 `SIGSEGV` 全部 `>>> uiautomator <<<`；78 条 `avc: denied` 的 `tcontext` 为 `su`/`shell`/`init`，唯一带 `browseguard` 的一条 `permissive=1` | 取证工具自身收尾崩溃 + `adb input` 注入路径，均非 App 域 |
+
+#### 17.5.2 主路径：嗅探 → 选画质 → 下载 → done
+
+任务 `01a19746-c2a9-7d24-9931-d59e2a316806`：`sniff_context_close 21:22:40,287` →
+`GET /v1/tasks/{id}/formats 200` → `download_attempt 21:22:49,219` + `POST /download 202` →
+`direct_download_complete bytes=4218400`（21:22:49,586）。产物
+`D:\tmp\bgvmumu\out\bulk.mp4` 与源文件 `.devtmp/media-assets/media/bulk.mp4`
+sha256 全等：`e5a5923deda3b2998940ec852ed48e4150f45856763452c7c1bdf3d2e410fc87`。
+屏显：`m3mumu-6-done.png`（下载完成 / 输出目录 `D:\tmp\bgvmumu\out` / 已下载 4.0 MB）。
+
+#### 17.5.3 取消，以及一条白捡的续传证据
+
+`?chunk_delay=400` 放慢到 159 KB/s，屏显「下载中（downloading） 1.8 MB / 4.0 MB · 剩余 14s」时点
+「取消下载」（`m3mumu-3-downloading.png`）：引擎 `cancel_requested from_status=downloading 21:17:41,581`
+→ `POST /cancel 200` → `download_aborted ... aborted after 3932160 bytes`（83 ms 内断流），
+屏显「任务已取消」+ 重试入口（`m3mumu-4-cancelled.png`），产物目录只留 `bulk.mp4.part` 3,932,160 B。
+随后 §17.5.2 重跑时 `media_server` 记录 `range=bytes=3932160-`——取消残留的 `.part` 被**精确续上**，
+最终字节数与 sha256 仍与源一致。Android 15 上协作式断流与断点续传两条链路一并复现。
+
+#### 17.5.4 queued → sniffing 两帧：MuMu 轮的改代码项
+
+- **现象**：上一轮在 `?delay_ms=3000` 期间截屏恒为「排队中，等引擎领取（queued）」，
+  而引擎侧同一任务的 `sniffing` 窗口实测 3.90 s（`21:12:09,248 → 21:12:13,148`）。
+- **根因不是截屏时机**：`awaitTerminal` 的轮询循环只 `current = client.task(...)`，从不回写 `_state`，
+  于是 `SniffPhase.Running(status)` 除 `sniff()` 入口写入的初始 `QUEUED` 外没有任何写入点，
+  `HomeScreen.kt:329` 的 sniffing 分支是死代码。对照 `awaitDownloadTerminal`
+  （回写体在 `HomeViewModel.kt:351-354`，行号含裁决轮的第二次改动）本来就在回写——同一条协议镜像，下载侧活、嗅探侧死。
+- **修法**：轮询里补一次 `_state.update`（`HomeViewModel.kt:312-326`），一行形状，不动布局与文案。
+  重建后 android 单测 61 通过 / 0 失败，覆盖安装重跑。
+- **取证**：连拍（只 `screencap`，不夹 `uiautomator dump`，见 §17.5.6）。
+  首轮修复版（任务 `01a1973d-2517-7670-83e6-79dc0cf014f9`，sniffing 窗口
+  `21:12:09,248 → 21:12:13,148` = 3.90 s）已取到两帧；随后清掉一处无用绑定重建重装，
+  **最终入库构建**复跑同 URL 同参数（任务 `01a1974a-a7d3-7134-8799-548ca2288e61`，
+  窗口 `21:26:54,685 → 21:26:58,577` = 3.89 s）逐帧复现：
+  tap+0.05s = 「任务状态： 排队中，等引擎领取（queued）」（`m3mumu-1-queued.png`），
+  tap+1.48s = 「任务状态： 嗅探中（sniffing）」（`m3mumu-2-sniffing.png`），
+  tap+3.6s 层级文本尾部同步出现 `嗅探中（sniffing）`。两帧同 URL 同任务，证明状态**会推进**而非恒真。
+  三源对齐：`media_server` `t=21:26:54.754 path=/page-bulk.html delay_ms=3000` ↔
+  引擎 `sniff_context_open 21:26:54,685` ↔ 设备截屏 `21:26` 帧。
+- **同型缺口（本轮登记、裁决轮已修）**：`awaitAwaitingSelection` 同病，见 §17.5.7。
+- **无单测兜底（裁决轮降级为静态守卫）**：`EngineClient` 不可注入，见 §17.4 遗留 9 与 §17.5.7。
+
+#### 17.5.7 裁决轮：同型死分支补齐 + 结构守卫（M3 关闭判定的同日裁决，非设备取证轮）
+
+§17.5.4 只修了嗅探侧，把 `awaitAwaitingSelection` 登记为遗留等裁决。裁决口径：**修**，理由是
+「这是同一种结构性缺陷（UI 镜像状态漏写回写），不留作遗留项，以免以后踩同样的坑」。
+
+- 改动：`HomeViewModel.kt:328-343` 轮询体内补 `_state.update`，回写目标 `DownloadPhase.Preparing(current.status)`；
+  写法与 `awaitTerminal` / `awaitDownloadTerminal` 同形，不动布局、不动文案。
+- 守卫：新增 `android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt`，三条断言——
+  ① 每条 `await*` 循环体内必须出现它对应镜像阶段的构造（`awaitAwaitingSelection` → `DownloadPhase.Preparing(`），
+  这就是「进入 format_preparing 时必须发出状态更新」的可执行形式；
+  ② 回写必须排在 `client.task(` 之后（写在前面等于回写上一轮的旧值）；
+  ③ 扫描集必须恰好是这三条函数，防止守卫日后扫成空集静默通过。
+- **守卫的边界要讲清**：它检查的是源码里存在回写，不是运行时真发出过一次状态更新。
+  后者要等 M4 FakeBackend 才能断言（§17.4 遗留 9）。
+- **守卫非空转证明**（现场复跑，不是推断）：临时删掉 `awaitAwaitingSelection` 的回写体后
+  `./gradlew.bat :android:app:testDebugUnitTest --tests "*PollLoopStateWriteback*" --offline` →
+  `3 tests completed, 2 failed`，失败正是 `everyAwaitLoopWritesItsStatusBackToItsPhase` 与
+  `writebackHappensAfterThePollNotBefore` 这两条；恢复后全量 **64 通过 / 0 失败**（首次运行 61 → 64，新增 3 条）。
+  附带一条方法论：变异时用 `MUTATION_PLACEHOLDER` 这类非法语句会让 `compileDebugKotlin` 先红，
+  **测不到守卫本身**——变异必须是「语法合法但语义退回旧行为」的形状（这里即直接删掉回写块）。
+- **设备屏显未复拍**：本轮只重跑 JVM 单测（64 通过 / 0 失败）与 `assembleDebug` 构建，`format_preparing`
+  的中态截图没补——取证链路不在这一改动的关键路径上，且补拍要重开带旁路的引擎。登记为 §18.2 第 1 步开工前的复核项。
+
+#### 17.5.5 地址保存：上一轮「不可判定」的口径闭环
+
+按上一轮设计的方法执行——动作前后各取一次引擎访问日志行数：
+`before_lines=211 → after_lines=213`，delta=2，新增两行恰为
+`GET /v1/health 200` + `GET /v1/privacy/selfcheck 200`（同一连接 `127.0.0.1:3894`），
+屏上回显 `http://127.0.0.1:8730` 且状态卡「已连接 · 引擎 0.1.0 · 协议 0.1」（`m3mumu-5-save-echo.png`）。
+`saveEngineUrl()` 成功分支 → `refreshConnection()`（`HomeViewModel.kt:126-133`）在物理设备上判为**已发生**。
+可判性缺口本身不变（屏上仍读不出当前引擎地址），继续挂 §17.4 遗留 4。
+
+#### 17.5.6 取证方法学（本轮踩到的坑，写下来省下一轮）
+
+1. Git Bash 会把 `/sdcard/ui.xml` 重写成 `/Files/Git/sdcard/ui.xml`；`exec-out cat` 需
+   `MSYS_NO_PATHCONV=1` 或写成 `//sdcard/ui.xml`。
+2. Android 15 上 `uiautomator dump` **写完层级后**收尾 SIGSEGV（rc=139），层级是好的：
+   按输出含 `dumped to` 判定，别 `check_returncode()`。
+3. 中文经 Git Bash argv 传进 Python 会被 GBK 解码搞坏（脚本内的 UTF-8 常量不受影响）：
+   界面目标用 ASCII 别名在脚本内映射。
+4. `screencap` 与 `uiautomator dump` 不在同一瞬间——先截屏后 dump 的脚本，PNG 与 XML 是两个时刻，
+   不能用 XML 文本反推 PNG 内容。上一轮的「矛盾」一半来自这里，但主因仍是 §17.5.4 的死分支。
+5. 折叠区外的节点 uiautomator 不导出，等待逻辑必须滚动感知；Compose 按钮的文本节点
+   `clickable=false`，点击要落在其外层 `View`。
+6. `adb shell input keyevent --repeat 70 67` 在该镜像上静默无效，清空输入框用逐发 `keyevent 67`。
+
+#### 17.5.8 判定
+
+Android 15 权限面零缺口、主路径到 `done` 且产物哈希全等、取消与续传链路复现、
+queued→sniffing 屏显修复后取到两帧、地址保存触发重连有行数证据。**M3 物理设备验收通过，M3 正式关闭。**
 
 
 
 
+
+
+---
+
+## 18. M4 开工计划（2026-11-01 裁决落地，M3 关闭后的下一里程碑）
+
+### 18.1 已裁决的架构口径
+
+1. **A 案：事件流 + 任务句柄**。UI 不再持有 `baseUrl`、不再手写轮询 `while`；
+   界面只消费后端发出的状态事件，句柄用于取消。
+   本轮 `sniffing` / `format_preparing` 两条死分支（§17.5.4、§17.5.7）就是「UI 镜像状态 + 手写轮询」这个形状的债：
+   镜像的写入点靠人记得，漏一个就是一条永远取不到值的屏显分支。A 案是把这类缺陷**从结构上消灭**，不是再补一条守卫。
+2. **拆两个接口，不是一个**：`SniffBackend` 与 `DownloadBackend` 分开。
+   裁决理由（用户口径，原样记入）：
+   - 嗅探的实现机理在两端完全不同——PC 侧靠 Playwright，本地侧靠 WebView 拦截或直接 `yt-dlp` extract；
+   - 疑难网页（blob / MSE）本地侧可能**根本不支持嗅探**；
+   - 混进一个接口，独立模式下 `capability` 就得硬编码「无法嗅探该网页」，UI 状态机复杂度陡增；
+   - 拆开之后，UI 只按当前模式注入不同 `SniffBackend`：全本地模式可输入网页 URL 走 WebView，
+     也可直接粘贴直链走 yt-dlp；远端模式走 Playwright。
+3. 现有 HTTP 实现相应拆成 `RemoteSniffer` / `RemoteDownloader`（今天 `EngineClient` 的 9 个 suspend 方法按语义归队）。
+
+### 18.2 实施顺序（审计喂接口，四步）
+
+| 步 | 内容 | 验收口径 |
+| --- | --- | --- |
+| 1 | §8-12 非终态错误出口全枚举审计 | 产出 §18.3 的矩阵 + 缺口清单，先补引擎侧出口，再动接口 |
+| 2 | 落 `SniffBackend` / `DownloadBackend` 接口，`EngineClient` 拆成 `RemoteSniffer` / `RemoteDownloader` | **UI 行为零变化**：六张截图链路复跑，屏显文案逐字不变 |
+| 3 | 补 `FakeBackend`，把 §17.5.4 / §17.5.7 两条静态守卫升级为行为单测 | 「进入 sniffing / format_preparing 时必须发出状态更新」在 JVM 里可断言 |
+| 4 | 评估 `youtubedl-android` 可行性 | 结论性报告：ARM 转译依赖性 + APK 体积增量 + 与 `DownloadBackend` 的接缝 |
+
+顺序不可颠倒的原因：第 1 步定义的「每个非终态都有错误出口」是接口契约的一部分——
+第 2 步的事件流要能表达失败，就得先知道失败有哪些码；先拆接口再补出口，等于把契约缺口固化进抽象层。
+
+### 18.3 第 1 步产出物清单（审计本体）
+
+**范围**：六个非终态 `queued` / `sniffing` / `awaiting_selection` / `downloading` / `merging` / `post_processing`
+（合法后继见 [engine/main.py:112-144](file:///E:/code/android/BrowseGuardVid/engine/main.py#L112) 的转移表，
+失败出口唯一写入点是 [`_fail_task`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L379)，
+终态优先不覆盖已在那条函数里处理了取消/失败竞态）。
+
+**原则**（驱动这一整步的是收尾③ 的 P0）：每个非终态都必须有错误出口，不能「既不失败也不完成」。
+`sniffing` 那次是引用了不存在的枚举成员 → worker 抛 `AttributeError` → 任务永久停在 `sniffing`，
+表面看是「卡住」，本质是**该状态没有可用的失败出口**。
+
+**产出物**：
+
+1. **状态 × 错误码矩阵**（入 `docs/`，与 §5 表同源不另立词汇）：
+   行=6 个非终态，列=该状态下**可能**落到 `Task.error` 的 §5 码；
+   每格标注三态之一：`已有出口`（给出 `_fail_task` 调用点 file:line）/ `应补`（说明触发条件与为什么归这个码）/ `不适用`（写清为什么不适用，不能空着）。
+2. **基线数字**（本轮已实测，供矩阵当分母）：`main.py` 里 `_fail_task(` 调用点 **10** 处、
+   `ErrorCode.X` 引用去重后 **9** 个码（`UNKNOWN`×4、`FORMAT_UNAVAILABLE`×4、`NO_MEDIA_FOUND`×2、
+   `VALIDATION_ERROR` / `TASK_STATE_CONFLICT` / `PARTIAL_DOWNLOAD` / `NOT_FOUND` / `EXTRACTOR_FAILED` / `DRM_PROTECTED` 各 1）；
+   `services/` 下 **零** 处引用 `ErrorCode`（该层用哨兵返回值/异常，码只在 API 层组装）。
+   §5 共 29 码 → **20 码在引擎侧没有任何生产者**，这是矩阵的第二列来源，也是「本地/远端能力差异」的证据面。
+3. **缺口清单**：矩阵里每一条 `应补` 落成一条待办，带 P 级。
+   P0 判定口径沿用本轮：**能导致任务停在非终态既不失败也不完成**的，一律 P0，不排队直接修。
+4. **静态守卫升级**（延续 [engine/test_error_codes.py](file:///E:/code/android/BrowseGuardVid/engine/test_error_codes.py) 的形状扫描）：
+   - 现有：全量 `ErrorCode.X` 引用必须是枚举真实成员（收尾③ 加的，防的正是那次 `INTERNAL_ERROR` 笔误）；
+   - 新增：每个非终态至少有一个 `_fail_task` 出口可达——**这条能否纯静态判定要先做可行性判断**，
+     若调用点与状态的归属靠 AST 推断不成立，降级为「矩阵文档 + 每条出口一条 real 用例」，
+     不硬凑一个假守卫（判定结论本身要写进产出物，失败面见 §17.4 遗留 9 的同款口径）。
+5. **覆盖对账**：每条 `已有出口` 必须能指到一条把它推进 `failed` 的用例。
+   本轮 P0 的教训是既有 real 用例只断言嗅探函数返回 `None`，没人把无媒体 URL 推进状态机，所以全绿——
+   **断言返回值的用例不算覆盖，断言终态的用例才算**。
+
+**边界声明**（主动写清，不冒充已完成）：第 1 步只审**引擎侧**状态机；
+客户端本地失败按裁决**不参与**该矩阵——本地事件一律 `code = null`（§5 是引擎的发言权，客户端计时器无权替引擎表态），
+已由 `LocalTimeoutTest` 的裸字面量守卫钉住。M4 第 2 步的 `SniffBackend` 若引入本地嗅探，
+本地失败面的词汇表要另开一节讨论，不能借道这张矩阵。
+
+### 18.4 M3 遗留里挂在 M4 的条目
+
+- §17.4 遗留 2 / 3：`1080p · h264`、`视频（无音轨）` 仅单测覆盖，需分离轨素材复核；`sniffing` 屏显两帧已补，`format_preparing` 中态未复拍（§17.5.7）。
+- §17.4 遗留 4 / 5：可判性缺口（屏上读不出当前引擎地址）与 `engine_url_field` 示例地址放大器，归设置页批次。
+- §17.4 遗留 6：收尾④ 建议 A（`Log` 只允许出现在 `ui/` 层 + 静态守卫）**已批准未落地**。
+- §8 已登记的 M4 候选（勿提前做）：全新下载过 Content-Type 门禁（strict xfail）、`.part` 名换稳定 key、
+  HLS `percent` 在客户端显示层单调化、yt-dlp `noprogress` 清理 stdout、`fetch_manifest_text` 正文体积上限、探测修复无回归复核。
+- 设备侧待办：物理设备 adb 连接在本轮环境回收时随 `adb kill-server` 断开，下次取证前需重连
+  `adb connect 192.168.31.57:5555` 并重设 `adb reverse tcp:8730 tcp:8730`（设备事实见 §17.5 表头）。
