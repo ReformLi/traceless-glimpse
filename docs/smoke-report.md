@@ -223,6 +223,20 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
       触发 Cookie 回补。复核认定为刻意的**凭据最小化**（只在明确的 401/403 拒绝信号下回补，不对登录
       页猜测性回补），按裁决写进 [engine/services/cookies.py](file:///E:/code/android/BrowseGuardVid/engine/services/cookies.py)
       模块 docstring，不只留在汇报里；M4 若要改判定条件，应先立证据再改这段口径。
+11. **审计状态：收尾③（UI 文案同源）挖出的 P0 已修 + 三条文案层敞口按裁决入列**（2026-11-01，详见 §14.3）。
+    - **已关闭：嗅探失败路径引用不存在的 `ErrorCode.INTERNAL_ERROR`**（改前 `engine/main.py:536`）——
+      worker 抛 `AttributeError`，任务永久停在 `sniffing`，客户端只能等本地超时、屏上没有协议错误码。
+      改为 §5 真码（`EXTRACTOR_FAILED` / `NO_MEDIA_FOUND`，第二处 `missing_sniff` → `UNKNOWN`），
+      三条 real 用例真驱动 worker + 一条静态守卫扫全量 `ErrorCode.X` 引用（§14.3.1）。
+      取证是**真机主路径**跑出来的，不是读代码读出来的——既有 real 用例只断言嗅探函数返回 `None`，
+      没人把无媒体 URL 推进状态机。
+    - **待裁决①：`sniff_running` 标签语义错位**——资源串写「引擎状态：」，`HomeScreen.kt:329`
+      屏上跟的是**任务状态**。收尾③只统一文案来源，标签属界面语义，未点名不动。
+      两条出路：资源串改「任务状态：」，或这行改显示 `/v1/health` 的引擎状态。
+    - **待裁决②：两条本地超时的错误码表示不一致**——嗅探/画质解析超时传 `code=null`
+      （`HomeViewModel.kt:191/239`），下载超时传 `"NETWORK_TIMEOUT"`（`:284`），而 `NETWORK_TIMEOUT`
+      在 §5 表内存在但**引擎侧从不发**，目前只有客户端本地计时器在用。改任一侧都牵动 §5 语义，本轮留档。
+    - **待裁决③：保存引擎地址后不自动重连**，仍要手点「重连」——属交互缺口不是文案缺口，转收尾⑥（物理真机）前定。
 
 ## 9. M3 4a real 模式验证（2026-11-01，七项）
 
@@ -1192,6 +1206,148 @@ schema 一致性校验通过：6/6 个模型                 # 仍是 6；提案
 该行的 mtime 17:56:29 落在 `c1f2be9`（17:43:59）与下一笔提交之间，且插入位置（「验证文件」段）与本文件
 第 108 行「验收截图不在此列——`.screenshots/` 是证据，要入」的注释互相矛盾，不是本会话写的。
 再出现同样状况按本节复核三条命令即可判定，不靠记忆。
+
+### 14.3 收尾③：UI 文案与协议同源（本轮另挖出一条 P0）
+
+**口径**：界面文案只允许四类来源，每一类都能回溯到协议条款或引擎规则；`strings.xml` 不再存媒体行副本。
+
+| 来源 | 对应条款 / 规则 | 唯一落点 |
+|---|---|---|
+| 任务状态措辞 | §4 状态机 | `ui/ProtocolCopy.kt:9-25`（`displayLabel` / `wireName` / `displayWithWire`） |
+| 错误文案与可重试 | §5 错误码表 | 客户端 `shared/.../ErrorPayload.kt:44-46`，引擎同源 `engine/models.py:157-159`（双端逐字对齐） |
+| 格式行首/次行 | §3.4 + 引擎 `services/formats.py` 降级规则 | `ui/FormatRowCopy.kt:19-60`（判定一律接收**整张表**） |
+| 嗅探结果行 | §3.2 | 同文件 `SniffRowCopy`（`FormatRowCopy.kt:68-89`） |
+
+**线名继续留在屏上**（`displayWithWire()` 把中文和 `awaiting_selection` 这样的蛇形名拼在一行）：
+中文化不该切断真机取证的 grep 口径，`HomeScreen.kt:329/390/554` 三处状态行都走这一个函数。
+
+**改动的界面元素**（改前 → 改后）：
+
+| 落点 | 改前 | 改后 |
+|---|---|---|
+| `HomeScreen.kt:414` 嗅探首行 | `type.name.lowercase() + " · " + estimatedQuality.label`——引擎无高度时把 `label="unknown"`（`engine/main.py:620` 的占位线名）当画质标签直接上屏 | `SniffRowCopy.primary(result)` |
+| `HomeScreen.kt:432` 嗅探次行 | `buildString` 恒打 `0p · 0 kbps`（假精确） | `SniffRowCopy.secondary(result)`：`height/bitrate <= 0` 不出现 |
+| `HomeScreen.kt:422` DRM 标注 | `R.string.sniff_drm` 副本「DRM 保护 · 不支持下载」 | `ErrorCode.DRM_PROTECTED.message` |
+| `HomeViewModel.kt:174-176` 嗅探空结果 | 硬编码中文 + 手写码名 | `ErrorCode.NO_MEDIA_FOUND` 的 `message`/`name`/`retryable` |
+| `HomeViewModel.kt:226-228` 画质不可用 | 同上 | `ErrorCode.FORMAT_UNAVAILABLE.…` |
+| `HomeViewModel.kt:183/382` 无 error 的终态 | 写死「任务结束」 | `"任务结束于 ${status.displayWithWire()}"` |
+| `HomeScreen.kt:528/538` 格式行 | （4b-1 已接 `FormatRowCopy`，本轮只补整表口径） | `FormatRowCopy.primary/secondary(format, formats)` |
+
+**`strings.xml` 副本清除**：删 `sniff_drm`、`format_audio_only`、`format_kind_unknown`、
+`format_kind_video_only`、`format_no_metadata`、`format_needs_merge` 六条，原位置留一行注释指向
+`ui/FormatRowCopy.kt`。删除后 `grep -rn` 六个名字在 `android/` 的 `.kt`/`.xml` 里命中 **0 行**，
+`assembleDebug` + 单测复跑通过（编译器会因缺失 `R.string` 直接失败，不是靠肉眼）。
+`sniff_no_drm`（无 DRM，`HomeScreen.kt:424`）与 `sniff_running`（引擎状态：，`:329`）仍在用，没动。
+
+**同源性钉子（不是「看起来一样」）**：`FormatRowCopy.heightCapIneffective(formats)`（`:58`）是引擎
+`services/formats.py`「整表任一 `height<=0` → 降级 `best`」的客户端镜像，空表同样判「不生效」；
+`SniffRowCopy.qualityLabel`（`:84`）钉住「引擎给了 `label` 就用 `label`，否则回落 `{height}p`，
+无高度一律『画质未标注』」。文案与 `FormatSelection.selectorFor` 的下发规则共用
+`FormatSelection.kindOf`（`FormatRowCopyTest.primaryLabelIsDrivenByKindOf` 逐条对齐），
+界面不许再从单行 `hasVideo` 另推一套。
+
+#### 14.3.1 P0：嗅探失败路径引用了不存在的枚举成员，任务永久卡在 sniffing
+
+**这条不是读代码读出来的，是真机主路径跑出来的**：给引擎喂 `/whoami`（页面上没有任何媒体流），
+预期是屏上出现 §5 的错误码，实际是**客户端本地 90 s 超时**，任务停在 `sniffing` 不动。
+
+**根因**（改前 `engine/main.py:536`）：
+
+```python
+task.error = error_payload(ErrorCode.INTERNAL_ERROR, detail={"reason": "sniff_failed"})
+```
+
+`ErrorCode` 里没有 `INTERNAL_ERROR`（§5 表内只有 `UNKNOWN`/`EXTRACTOR_FAILED`/`NO_MEDIA_FOUND`…）。
+Python 属性访问到运行期才解析，所以导入、类型检查、单元测试全绿；worker 线程走到这条分支抛
+`AttributeError`，`_transition` 从未执行，任务**永远停在 sniffing**——错误码没写进去，
+失败状态也没写进去。同一支笔误还有第二处（改前 `main.py:652` 的 `missing_sniff` 分支）。
+
+**为什么既有测试没抓到**：`tests_real/test_sniffer_real.py:112` 只断言嗅探函数**返回 `None`**，
+`test_api_wiring.py` 的 real 用例此前全部围绕成功路径——没有任何一条把「无媒体」的 URL
+推进 worker 的完整状态机。缺口在**驱动方式**，不在断言数量。
+
+**修法**（`engine/main.py:565` 起）：`_sniff_real` 的返回类型从 `None` 改为 `ErrorCode | None`，
+两条失败各回一个 §5 真码——嗅探抛 `SniffError` → `EXTRACTOR_FAILED`（`:582`），
+页面无媒体流 → `NO_MEDIA_FOUND`（`:586`），成功 `return None`（`:633`）；调用方拿到码就
+`_fail_task(task, failure, {"reason": "sniff_failed"})`（`:532-536`）。第二处 `missing_sniff`
+改 `ErrorCode.UNKNOWN`（`:651`）。**没有新增错误码**，两条都是 §5 表内既有成员、
+`retryable` 沿用表定义（嗅探类都为 `True`），docstring 同步改成写明两个码。
+
+**回归覆盖（现场复跑，见本节末）**：
+
+| 用例 | 钉住的东西 |
+|---|---|
+| `tests_real/test_api_wiring.py:566` `…sniff_no_media_fails_with_protocol_code` | 无媒体 → `FAILED` + `NO_MEDIA_FOUND` + 文案「未发现可下载的媒体流」+ `retryable=True` + `detail.reason=sniff_failed` |
+| `:593` `…sniff_error_fails_with_extractor_code` | `SniffError` → `FAILED` + `EXTRACTOR_FAILED` + 「解析失败，可能站点已变更」 |
+| `:614` `…downloading_without_sniff_fails_with_unknown_code` | `DOWNLOADING` 但 `sniff=None` → `FAILED` + `UNKNOWN` + `detail.reason=missing_sniff`（用 `asyncio.run(main._process_task(id))` 真驱动 worker，不是调私有断言） |
+| `test_error_codes.py`（静态守卫，`--collect-only` 16 条） | 扫 `engine/*.py` + `engine/services/*.py`（排 `models.py` 与 `test_*.py`）里每一处 `ErrorCode.X`，`X` 必须属于 `ErrorCode.__members__`；另加一条防呆断言：扫描清单必须真含 `main.py`/`security.py`/`downloader.py`，防守卫自己扫成空集 |
+
+守卫的动机写在模块 docstring 里（不只留在本报告）：**枚举成员拼错是 rare path 上的静默失效**，
+把它压回「第一次跑测试就红」，而不是等下一次真机取证。
+本轮之后 `grep -rn INTERNAL_ERROR engine/ shared/ scripts/`（排除 `.venv`）只剩两处
+——两条新用例的回归说明文字，生产代码 0 处。
+
+#### 14.3.2 真机取证（emulator-5554）
+
+**环境**：沿用 §12.3 那套（`BGV_ENGINE_MODE=real` + `BGV_SSRF_ALLOWLIST` 三项 +
+`BGV_DEV_ALLOW_SSRF_BYPASS=1`，引擎 `127.0.0.1:8730`，媒体服务 `8731`，
+`adb reverse tcp:8730 tcp:8731`）；格式表的多行分支本地 real fixture 拿不到（真解析只回一行），
+另起一个 **8740 桩实例**（`BGV_ENGINE_MODE=stub`）专门把「上限不生效 + 纯音频」两行送到屏上。
+取证结束后两个引擎实例连同各自的 dev 环境变量一起停掉，`adb reverse --remove tcp:8730 tcp:8731`。
+
+**主路径跑通**：嗅探 → 选画质 → 下载 → `done`，产物
+`D:\tmp\bgv3ui\out\bulk.mp4` 4,218,400 B、`sha256` 前缀 `e5a5923deda3b299`，
+与源文件 `.devtmp/media-assets/media/bulk.mp4` 同长同哈希（收尾③改动不影响字节）。
+
+**屏上字符串**（uiautomator 导出的 text/content-desc，非肉眼判读；九张截图已入库）：
+
+| 截图 | 屏上文案 | 覆盖的分支 |
+|---|---|---|
+| `m3copy-0-real-sniff-row-before.png` | `mp4 · unknown` / `mp4 · 0p · 0 kbps` | **改前**假精确，留作对照 |
+| `m3copy-8-real-sniff-row-nofake.png` | `mp4 · 画质未标注` / `mp4` | `qualityLabel` 无高度支、`secondary` 省略 `0p/0 kbps` |
+| `m3copy-1-real-format-unknown.png` | `最佳可用（画质未标注） · mp4 · mp4` / `画质与编码待引擎解析` | `UNKNOWN_METADATA` 两支 |
+| `m3copy-2-real-downloading-wire.png` | `下载中（downloading）` + `1.2 MB / 4.0 MB · 312.9 KB/s · 剩余 9s` | `displayWithWire`（中文 + 线名） |
+| `m3copy-3-real-done.png` | `下载完成` / `输出目录 D:\tmp\bgv3ui\out` / `已下载 4.0 MB` | 终态 |
+| `m3copy-4-real-sniff-queued.png` | `引擎状态： 排队中，等引擎领取（queued）` | `QUEUED` 文案 |
+| `m3copy-5-real-no-media-found.png` | `未发现可下载的媒体流` + `NO_MEDIA_FOUND · 可重试` | **P0 修复后的真机表现**：协议码直接上屏，不再等本地超时 |
+| `m3copy-6-stub-ssrf-blocked.png` | `目标地址指向受限网络，已拒绝` + `SSRF_BLOCKED · 不可重试` | 引擎下发的错误码与 `retryable`（客户端不自行判定） |
+| `m3copy-7-stub-format-table.png` | `最佳可用（画质上限不生效） · mp4 · 137+140` / `1920×1080 · 4500 kbps · ~500.0 MB · avc1.640028/mp4a.40.2`；`纯音频 · m4a · 140` / `128 kbps · ~4.0 MB · none/mp4a.40.2` | 整表 `height<=0` 降级、`AUDIO_ONLY`、次行只列真实元数据 |
+
+**计数（收尾③ 全部改动落定后现场复跑）**：
+
+```
+170 passed, 147 deselected                        # stub（154 → +16，全是 test_error_codes.py 的参数化守卫）
+146 passed, 170 deselected, 1 xfailed             # real（143 → +3，三条 worker 驱动用例）
+schema 一致性校验通过：6/6 个模型                  # 未动协议模型，仍是 6
+Android 57 tests, 0 failures, 0 skipped           # 其中文案同源 21 条：ErrorCodeCopy 4 / ProtocolCopy 4 /
+                                                  #   FormatRowCopy 9 / SniffRowCopy 4
+```
+
+`1 xfailed` 仍是 §8-8 那条（`strict=True`，口径同 §13.5）。
+
+#### 14.3.3 边界与遗留（本轮主动声明）
+
+1. **两条分支只有单测，没有屏上证据**：`1080p · h264`（整表画质齐全且上限生效）与
+   `视频（无音轨）`+`音视频分离 · 需合并`（`VIDEO_ONLY`）在真机上取不到——本地 real fixture 的
+   yt-dlp 解析只回单行，桩实例回的是「137+140 带音轨 + 140 纯音频」两行，没有「有画无音」这一行。
+   覆盖方式是 `FormatRowCopyTest` 对应四条 + `Preview`，**不算 UI 取证**。物理真机（收尾⑥）
+   接真实站点后一并补。
+2. **`嗅探中（sniffing）` 没有单独截图**：real 引擎从 `queued` 推进到 `sniffing` 的窗口在
+   uiautomator 两次 dump 之间就走完了，抓到的稳定态是 `queued`（`m3copy-4`）。文案本身由
+   `ProtocolCopyTest` 钉住。
+3. **`sniff_running` 语义错位，留裁决**：资源串说的是「引擎状态：」，屏上跟的是**任务状态**
+   （`HomeScreen.kt:329`）。本轮只统一文案来源，**没有改标签**——改标签属于界面文案之外的语义修正，
+   按「只动点名元素」的口径先摆出来：要么改资源串为「任务状态：」，要么这行改显示 `/v1/health` 的引擎状态。
+4. **两条本地超时的码不一致，留裁决**：嗅探/解析超时传 `code=null`（`HomeViewModel.kt:191/239`），
+   下载超时传 `"NETWORK_TIMEOUT"`（`:284`）——而 `NETWORK_TIMEOUT` 在 §5 表内存在但**引擎侧从不发**，
+   只有客户端本地计时器在用。同类路径两种表示，本轮按裁决不动（改哪一边都涉及 §5 语义）。
+5. **`listenAddress` 是常量**：`engine/services/environment.py:16` 写死 `127.0.0.1:8730`，
+   selfcheck 直接回显它（`:100`）。所以 8740 那个桩实例屏上仍显示 `127.0.0.1:8730`——
+   协议不允许覆盖监听地址是有意的（`m3copy-7` 取证时按常量理解，不当 bug 报）。
+6. **改完引擎地址不会自动重连**：保存后仍要手点「重连」。属于交互缺口不是文案缺口，转收尾⑥前讨论。
+7. **文案同源只覆盖「渲染入口」**：`FormatSelection.selectorFor` 的下发规则本轮**一行未动**，
+   `FormatRowCopy` 只做文案。两侧一致性靠 `primaryLabelIsDrivenByKindOf` 那条同源断言钉，
+   不等于两侧从此共用同一份判定代码。
 
 
 

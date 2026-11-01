@@ -45,10 +45,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
-import com.hpu.browseguard.data.FormatSelection
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DrmSystem
+import com.hpu.browseguard.shared.model.ErrorCode
 import com.hpu.browseguard.shared.model.EstimatedQuality
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSource
@@ -326,7 +326,7 @@ private fun SniffCard(
             when (val phase = state.sniff) {
                 is SniffPhase.Running -> {
                     Text(
-                        text = stringResource(R.string.sniff_running) + " " + phase.status.name.lowercase(Locale.ROOT),
+                        text = stringResource(R.string.sniff_running) + " " + phase.status.displayWithWire(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -387,7 +387,7 @@ private fun SniffCard(
                 val preparing = state.download as? DownloadPhase.Preparing
                 if (preparing != null) {
                     Text(
-                        text = stringResource(R.string.format_preparing) + " " + preparing.status.name.lowercase(Locale.ROOT),
+                        text = stringResource(R.string.format_preparing) + " " + preparing.status.displayWithWire(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -411,29 +411,25 @@ private fun SniffResultRow(result: SniffResult) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = result.type.name.lowercase(Locale.ROOT) + " · " + result.estimatedQuality.label,
+                    text = SniffRowCopy.primary(result),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = stringResource(
-                        if (result.drmDetected) R.string.sniff_drm else R.string.sniff_no_drm,
-                    ),
+                    // DRM 文案取协议 §5 原文（`ErrorCode` 自带），不与界面另写一套措辞
+                    text = if (result.drmDetected) {
+                        ErrorCode.DRM_PROTECTED.message
+                    } else {
+                        stringResource(R.string.sniff_no_drm)
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = if (result.drmDetected) MaterialTheme.colorScheme.error else Color(0xFF16A34A),
                 )
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                text = buildString {
-                    append(result.container)
-                    append(" · ")
-                    append(result.estimatedQuality.height).append("p")
-                    append(" · ")
-                    append(result.estimatedQuality.bitrateKbps).append(" kbps")
-                    result.drmSystem?.let { append(" · ").append(it.name.lowercase(Locale.ROOT)) }
-                },
+                text = SniffRowCopy.secondary(result),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -464,6 +460,7 @@ private fun FormatCard(
         selecting.formats.forEach { format ->
             FormatOptionRow(
                 format = format,
+                formats = selecting.formats,
                 selected = format.formatId == state.selectedFormatId,
                 onSelect = { onSelectFormat(format.formatId) },
             )
@@ -509,8 +506,12 @@ private fun FormatCard(
 }
 
 @Composable
-private fun FormatOptionRow(format: FormatInfo, selected: Boolean, onSelect: () -> Unit) {
-    val kind = FormatSelection.kindOf(format)
+private fun FormatOptionRow(
+    format: FormatInfo,
+    formats: List<FormatInfo>,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -524,7 +525,7 @@ private fun FormatOptionRow(format: FormatInfo, selected: Boolean, onSelect: () 
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 text = buildString {
-                    append(formatKindLabel(format, kind))
+                    append(FormatRowCopy.primary(format, formats))
                     append(" · ")
                     append(format.container)
                     append(" · ")
@@ -534,23 +535,11 @@ private fun FormatOptionRow(format: FormatInfo, selected: Boolean, onSelect: () 
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = formatSummary(format, kind),
+                text = FormatRowCopy.secondary(format, formats),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-/** 首行文案 = 点下去实际会发生什么，取自 [FormatSelection.kindOf]，不再从 `hasVideo` 另推一套。 */
-@Composable
-private fun formatKindLabel(format: FormatInfo, kind: FormatSelection.Kind): String = when (kind) {
-    FormatSelection.Kind.UNKNOWN_METADATA -> stringResource(R.string.format_kind_unknown)
-    FormatSelection.Kind.AUDIO_ONLY -> stringResource(R.string.format_audio_only)
-    FormatSelection.Kind.VIDEO_ONLY -> stringResource(R.string.format_kind_video_only)
-    FormatSelection.Kind.VIDEO_AND_AUDIO -> {
-        val codec = FormatSelection.preferCodecLabel(FormatSelection.preferCodecOf(format.codec.video))
-        if (codec == null) "${format.resolution.height}p" else "${format.resolution.height}p · $codec"
     }
 }
 
@@ -562,7 +551,7 @@ private fun DownloadCard(phase: DownloadPhase, onCancel: () -> Unit, onRetry: ()
                 val task = phase.task
                 CardTitle(stringResource(R.string.download_running_title))
                 Text(
-                    text = task.status.name.lowercase(Locale.ROOT),
+                    text = task.status.displayWithWire(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -622,30 +611,6 @@ private fun DownloadCard(phase: DownloadPhase, onCancel: () -> Unit, onRetry: ()
     }
 }
 
-/** 次行只列真实拿到的元数据；元数据未知时不再渲染 `0×0 · 0 kbps · none/none` 这类假精确。 */
-@Composable
-private fun formatSummary(format: FormatInfo, kind: FormatSelection.Kind): String {
-    if (kind == FormatSelection.Kind.UNKNOWN_METADATA) {
-        return stringResource(R.string.format_no_metadata)
-    }
-    val parts = buildList {
-        if (format.resolution.height > 0) {
-            add("${format.resolution.width}×${format.resolution.height}")
-        }
-        if (format.bitrateKbps > 0) {
-            add("${format.bitrateKbps} kbps")
-        }
-        if (format.fileSizeEstimateBytes > 0L) {
-            add("~${formatBytes(format.fileSizeEstimateBytes)}")
-        }
-        add("${format.codec.video}/${format.codec.audio}")
-        if (kind == FormatSelection.Kind.VIDEO_ONLY) {
-            add(stringResource(R.string.format_needs_merge))
-        }
-    }
-    return parts.joinToString(" · ")
-}
-
 @Composable
 private fun progressSummary(progress: TaskProgress?): String {
     if (progress == null) return stringResource(R.string.download_no_progress)
@@ -686,7 +651,7 @@ private fun Connection.statusText(): String = when (this) {
 private fun boolText(value: Boolean): String =
     stringResource(if (value) R.string.selfcheck_on else R.string.selfcheck_off)
 
-private fun formatBytes(bytes: Long): String = when {
+internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1L shl 30 -> String.format(Locale.ROOT, "%.2f GB", bytes / 1073741824.0)
     bytes >= 1 shl 20 -> String.format(Locale.ROOT, "%.1f MB", bytes / 1048576.0)
     bytes >= 1 shl 10 -> String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0)

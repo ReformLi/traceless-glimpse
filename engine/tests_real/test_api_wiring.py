@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -560,3 +561,65 @@ def test_progress_recorder_uses_rolling_window(monkeypatch):
     unknown = task.progress
     assert (unknown.bytesDownloaded, unknown.bytesTotal, unknown.percent) == (200, 0, 0.0)
     assert unknown.etaSeconds == 0
+
+
+def test_real_sniff_no_media_fails_with_protocol_code(monkeypatch):
+    """页面无媒体流 → failed + NO_MEDIA_FOUND（§5 原文案、可重试）。
+
+    回归：这条路径曾引用不存在的 `ErrorCode.INTERNAL_ERROR`，worker 线程抛
+    AttributeError，任务永久停在 sniffing，客户端只能等到超时。
+    """
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+
+    class _NoMediaSniffer:
+        def sniff(self, task_id: str, source_url: str, cookie_policy: str = "none"):
+            return None
+
+    monkeypatch.setattr(sniffer_service, "get_sniffer", lambda: _NoMediaSniffer())
+
+    record = _record(TaskMode.SNIFF)
+    main._advance(record)
+
+    task = record.task
+    assert task.status == TaskStatus.FAILED
+    assert task.error is not None
+    assert task.error.code is ErrorCode.NO_MEDIA_FOUND
+    assert task.error.message == "未发现可下载的媒体流"
+    assert task.error.retryable is True
+    assert task.error.detail == {"reason": "sniff_failed"}
+    assert record.sniff is None
+
+
+def test_real_sniff_error_fails_with_extractor_code(monkeypatch):
+    """嗅探自身异常（playwright 缺失 / worker 崩溃）→ failed + EXTRACTOR_FAILED。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+
+    class _BrokenSniffer:
+        def sniff(self, task_id: str, source_url: str, cookie_policy: str = "none"):
+            raise sniffer_service.SniffError("browser worker died")
+
+    monkeypatch.setattr(sniffer_service, "get_sniffer", lambda: _BrokenSniffer())
+
+    record = _record(TaskMode.DOWNLOAD)
+    main._advance(record)
+
+    task = record.task
+    assert task.status == TaskStatus.FAILED
+    assert task.error is not None
+    assert task.error.code is ErrorCode.EXTRACTOR_FAILED
+    assert task.error.message == "解析失败，可能站点已变更"
+    assert task.error.retryable is True
+
+
+def test_real_downloading_without_sniff_fails_with_unknown_code(monkeypatch):
+    """worker 起跑时 sniff 丢失（重启恢复的边缘）→ failed + UNKNOWN，不再抛 AttributeError。"""
+    monkeypatch.setattr(main, "ENGINE_MODE", "real")
+    record = _record(TaskMode.DOWNLOAD)
+    record.task.status = TaskStatus.DOWNLOADING
+    main.TASKS[record.task.id] = record
+
+    asyncio.run(main._process_task(record.task.id))
+
+    assert record.task.status == TaskStatus.FAILED
+    assert record.task.error.code is ErrorCode.UNKNOWN
+    assert record.task.error.detail == {"reason": "missing_sniff"}

@@ -36,7 +36,6 @@
     <string name="sniff_running">引擎状态：</string>
     <string name="sniff_result_title">嗅探结果</string>
     <string name="sniff_no_drm">无 DRM</string>
-    <string name="sniff_drm">DRM 保护 · 不支持下载</string>
     <string name="sniff_retryable">可重试</string>
     <string name="sniff_not_retryable">不可重试</string>
     <string name="sniff_no_allowlist">引擎未返回输出目录白名单，无法发起任务</string>
@@ -44,11 +43,7 @@
     <string name="format_action">选择画质并下载</string>
     <string name="format_preparing">引擎解析画质中：</string>
     <string name="format_title">选择画质</string>
-    <string name="format_audio_only">纯音频</string>
-    <string name="format_kind_unknown">最佳可用（画质未标注）</string>
-    <string name="format_kind_video_only">视频（无音轨）</string>
-    <string name="format_no_metadata">画质与编码待引擎解析</string>
-    <string name="format_needs_merge">音视频分离 · 需合并</string>
+    <!-- 画质行文案只有一处来源：ui/FormatRowCopy.kt（与 FormatSelection 映射同源），此处不再留副本 -->
     <string name="format_naming_field">命名模板</string>
     <string name="format_naming_hint">可选变量：{title} {platform} {date} {time} {uploader} {height} {width} {formatId} {taskId} {ext}</string>
     <string name="format_merge_label">下载后合并音视频轨（merge）</string>

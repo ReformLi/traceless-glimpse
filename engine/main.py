@@ -529,13 +529,10 @@ def _advance(record: TaskRecord) -> None:
     if task.status == TaskStatus.QUEUED:
         _transition(task, TaskStatus.SNIFFING)
     if task.status == TaskStatus.SNIFFING and not record.sniffed:
-        _sniff_real(record)
+        failure = _sniff_real(record)
         record.sniffed = True
-        if record.sniff is None:
-            task.error = error_payload(
-                ErrorCode.INTERNAL_ERROR, detail={"reason": "sniff_failed"}
-            )
-            _transition(task, TaskStatus.FAILED)
+        if failure is not None:
+            _fail_task(task, failure, {"reason": "sniff_failed"})
             return
     if task.status == TaskStatus.SNIFFING:
         if task.mode == TaskMode.SNIFF:
@@ -565,11 +562,12 @@ def _selector_key(selector: FormatSelector) -> str:
     return selector.model_dump_json()
 
 
-def _sniff_real(record: TaskRecord) -> None:
+def _sniff_real(record: TaskRecord) -> ErrorCode | None:
     """real 模式嗅探 + yt-dlp 格式解析：结果写回 record.sniff / record.formats。
 
-    失败（页面无媒体流 / 嗅探异常）→ sniff=None，由调用方置 failed
-    （INTERNAL_ERROR，detail.reason=sniff_failed；不新增错误码）。
+    成功返回 None；失败返回 §5 错误码，由调用方置 failed：
+    嗅探异常 → EXTRACTOR_FAILED，页面无媒体流 → NO_MEDIA_FOUND
+    （两者均 retryable，detail.reason=sniff_failed；不新增错误码）。
     """
     from services.sniffer import SniffError, get_sniffer
 
@@ -581,11 +579,11 @@ def _sniff_real(record: TaskRecord) -> None:
     except SniffError as exc:
         logger.warning("sniff_failed task_id=%s type=%s", task.id, type(exc).__name__)
         record.sniff = None
-        return
+        return ErrorCode.EXTRACTOR_FAILED
     if observed is None:
         logger.warning("sniff_no_media task_id=%s", task.id)
         record.sniff = None
-        return
+        return ErrorCode.NO_MEDIA_FOUND
     # DRM 判定（§3.2）：播放列表按 keyformat 三态判定；取不到 manifest（如回环媒体
     # 被 SSRF 拦截）时保持 false，并记 sniff_manifest_blocked 审计行（只带 task_id）
     drm_detected, drm_system_name = False, None
@@ -632,6 +630,7 @@ def _sniff_real(record: TaskRecord) -> None:
         headersHint=observed.headers_hint,
         discoveredAt=_now(),
     )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +648,7 @@ async def _process_task(task_id: str) -> None:
         return
     if task.status == TaskStatus.DOWNLOADING:
         if record.sniff is None:
-            _fail_task(task, ErrorCode.INTERNAL_ERROR, {"reason": "missing_sniff"})
+            _fail_task(task, ErrorCode.UNKNOWN, {"reason": "missing_sniff"})
             return
         await asyncio.to_thread(_download_real, record)
         return
