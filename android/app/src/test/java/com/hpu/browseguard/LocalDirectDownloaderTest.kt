@@ -41,7 +41,7 @@ import org.junit.rules.TemporaryFolder
  * - 单条 HTTP GET + `.part` 续传，`postActions` 在这一支压根不收（不跑 FFmpeg 合并）；
  * - 服务端回 4xx 是**站点**说的：`BackendFailure.Local(LINK_UNLOADABLE)`，界面阶段 `code == null`；
  * - 取消只登记标志，终态由 `start` 那条流写出，`.part` 留在原地；
- * - 合成的 `Task` 快照装的是本机事实（`local-` 前缀 id、`local_direct` 阶段、`error` 恒 null）。
+ * - 合成的 `Task` 快照装的是本机事实（`local_` 前缀 id、`local_direct` 阶段、`error` 恒 null）。
  */
 class LocalDirectDownloaderTest {
 
@@ -74,7 +74,7 @@ class LocalDirectDownloaderTest {
 
         val done = events.last() as DownloadEvent.Terminal
         assertEquals(TaskStatus.DONE, done.task.status)
-        assertTrue("本地快照的 id 一眼可辨不是引擎任务：${done.task.id}", done.task.id.startsWith("local-"))
+        assertTrue("本地快照的 id 一眼可辨不是引擎任务：${done.task.id}", done.task.id.startsWith("local_"))
         assertEquals("local_direct", done.task.progress?.phase)
         assertEquals(100L, done.task.progress!!.bytesTotal)
         assertEquals(100.0, done.task.progress!!.percent, 0.0)
@@ -252,7 +252,9 @@ class LocalDirectDownloaderTest {
     @Test
     fun startRefusesALinkItCannotFetchLocally() {
         val events = runBlocking {
-            downloader.start(StartRequest.ViaLocal(link("magnet:?xt=urn:btih:abc"), out.absolutePath)).toList()
+            downloader.start(
+                StartRequest.ViaLocal(link("magnet:?xt=urn:btih:abc"), out.absolutePath, listOf(out.absolutePath)),
+            ).toList()
         }
         val failed = events.single() as DownloadEvent.Failed
         assertEquals(LocalReason.UNSUPPORTED_LINK, (failed.failure as BackendFailure.Local).reason)
@@ -272,6 +274,45 @@ class LocalDirectDownloaderTest {
             runBlocking { downloader.start(engineRequest).toList() }
         }
         assertTrue("异常要说清是调用方组错了请求：${boom.message}", boom.message!!.contains("组错了 StartRequest"))
+    }
+
+    /** 写盘前先过沙箱：根外的目录一个字节都不许写，也不许先发请求。 */
+    @Test
+    fun outputDirOutsideTheSandboxIsRefusedBeforeAnythingIsWritten() {
+        val outside = folder.newFolder("outside")
+        server.enqueue(reply(200, payload))
+        val events = runBlocking {
+            downloader.start(
+                StartRequest.ViaLocal(link("/media/clip.mp4"), outside.absolutePath, listOf(out.absolutePath)),
+            ).toList()
+        }
+
+        val failed = events.single() as DownloadEvent.Failed
+        val local = failed.failure as BackendFailure.Local
+        assertEquals(LocalReason.OUTPUT_DIR_REJECTED, local.reason)
+        assertNull("沙箱判定是客户端本地决定，不带 §5 码", local.toDownloadPhase().code)
+        assertTrue("措辞要自证", local.message.contains("沙箱校验"))
+        assertEquals("根外不许落任何文件", 0, outside.list()!!.size)
+        assertEquals("根内也不该多出东西", 0, out.list()!!.size)
+        assertEquals("被拒发生在建连之前", 0, server.requestCount)
+    }
+
+    /** 白名单为空时直接拒，**不许**退回引擎目录或任意目录——那正是「乱写文件」的入口。 */
+    @Test
+    fun emptyAllowlistRefusesInsteadOfFallingBackToAnotherDirectory() {
+        val events = runBlocking {
+            downloader.start(StartRequest.ViaLocal(link("/media/clip.mp4"), out.absolutePath, emptyList())).toList()
+        }
+        val local = (events.single() as DownloadEvent.Failed).failure as BackendFailure.Local
+        assertEquals(LocalReason.OUTPUT_DIR_REJECTED, local.reason)
+        assertEquals(0, out.list()!!.size)
+        assertEquals(0, server.requestCount)
+    }
+
+    /** 本地句柄必须在命名空间上就能区分：下游 `HttpDownloader` 靠这个前缀拒绝上行。 */
+    @Test
+    fun localTaskIdCarriesTheLocalNamespacePrefix() {
+        assertTrue(localTaskId("https://m.example.com/clip.mp4").startsWith("local_"))
     }
 
     /** `headersHint` 协议上已脱敏，但那是引擎侧的约定；本机落地前自己再筛一遍。 */
@@ -309,7 +350,8 @@ class LocalDirectDownloaderTest {
         ).toList()
     }
 
-    private fun viaLocal(l: SniffResult) = StartRequest.ViaLocal(l, out.absolutePath)
+    private fun viaLocal(l: SniffResult) =
+        StartRequest.ViaLocal(l, out.absolutePath, allowedRoots = listOf(out.absolutePath))
 
     private fun link(path: String, drm: Boolean = false, type: MediaStreamType = MediaStreamType.MP4): SniffResult {
         val url = if (path.startsWith("magnet")) path else server.url(path).toString()

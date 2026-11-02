@@ -74,6 +74,7 @@ class HttpDownloader(
             is StartRequest.ViaLocal ->
                 error("HttpDownloader 收到本地直链请求：调用方组错了 StartRequest")
         }
+        engine.taskId.requireRemoteTaskId()
         try {
             val started = client.startDownload(
                 baseUrl,
@@ -104,11 +105,21 @@ class HttpDownloader(
         }
     }
 
-    override suspend fun cancel(taskId: String): BackendFailure? =
-        try {
+    override suspend fun cancel(taskId: String): BackendFailure? {
+        taskId.requireRemoteTaskId()
+        return try {
             client.cancelTask(baseUrl, taskId)
             null
         } catch (e: EngineException) {
             e.failure.toBackendFailure()
         }
+    }
+
+    /**
+     * 本地句柄不许发给引擎：`local_` 前缀的任务在远端根本没有对象，
+     * 放过去只会换来一个 `404 TASK_NOT_FOUND`，却把「客户端拿错了句柄」伪装成「引擎找不到任务」。
+     */
+    private fun String.requireRemoteTaskId() {
+        require(!isLocalTaskId(this)) { "本地任务句柄不得发往引擎：$this（HTTP 入口守卫）" }
+    }
 }

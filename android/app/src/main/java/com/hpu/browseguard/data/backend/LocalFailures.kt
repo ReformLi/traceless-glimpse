@@ -37,7 +37,7 @@ internal object LocalFailures {
     fun noFormats(): BackendFailure.Local =
         BackendFailure.Local(LocalReason.NO_FORMATS, "未发现可用画质 · 引擎回空格式表，客户端本地判定")
 
-    /** 本地直链下载器自有判定的三条：措辞一律自证「客户端本地判定」，与 §19.9 同口径。 */
+    /** 本地直链下载器自有判定：措辞一律自证「客户端本地判定」，与 §19.9 同口径。 */
     fun unsupportedLink(what: String): BackendFailure.Local =
         BackendFailure.Local(LocalReason.UNSUPPORTED_LINK, "本地直链下载不了 · $what，客户端本地判定")
 
@@ -49,6 +49,10 @@ internal object LocalFailures {
 
     fun disk(what: String): BackendFailure.Local =
         BackendFailure.Local(LocalReason.DISK, "本地写入失败 · $what，客户端本地判定")
+
+    /** 写盘前的沙箱判定：**没有产出任何文件**，与「写了但失败」分开说。 */
+    fun outputDirRejected(what: String): BackendFailure.Local =
+        BackendFailure.Local(LocalReason.OUTPUT_DIR_REJECTED, "本地写入目录未通过沙箱校验 · $what，客户端本地判定")
 
     private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
 }

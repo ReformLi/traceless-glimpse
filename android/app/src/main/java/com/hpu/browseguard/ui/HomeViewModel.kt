@@ -1,6 +1,8 @@
 package com.hpu.browseguard.ui
 
 import android.app.Application
+import android.os.Environment
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hpu.browseguard.data.EngineClient
@@ -82,10 +84,25 @@ data class HomeUiState(
     val mergeSelected: Boolean = true,
     /** 下载交给引擎还是本机直链——全局开关，只切下载这一段。 */
     val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
+    /**
+     * 手机侧唯一允许的写盘根（应用专属外部存储的 Download 目录）。
+     *
+     * 与 [outputDir] 不是一回事：那份是引擎进程在电脑上解析的白名单，只能授权电脑侧写盘。
+     * `null` 表示外部存储不可用——本地模式会据此直接拒绝，不会改用别的目录。
+     */
+    val localSandboxRoot: String? = null,
 ) {
-    /** 输出目录只能来自引擎自检白名单；本地下載也用它，授权口径不因执行者而变。 */
+    /** 引擎侧输出目录：只给 `mode=download` 的引擎任务用，本地直链不得拿它当写盘路径。 */
     val outputDir: String?
         get() = (connection as? Connection.Connected)?.selfcheck?.outputDirAllowlist?.firstOrNull()
+
+    /** 有任务正跑着（等画质表或下载中）：换执行者会把两条链路的事实搅在一起，界面据此禁用开关。 */
+    val downloadInFlight: Boolean
+        get() = download is DownloadPhase.Preparing || download is DownloadPhase.Running
+
+    /** 合并需要 FFmpeg，本地直链这一支没有——不是「暂不支持」，是压根没有执行者。 */
+    val mergeAvailable: Boolean
+        get() = downloadExecutor == DownloadExecutor.ENGINE
     /** 输出目录只能来自引擎自检白名单；拿不到就不允许发起任务。 */
     val canSniff: Boolean
         get() = engineReady && sniff !is SniffPhase.Running
@@ -117,6 +134,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val config = EngineConfig(app)
     private val client = EngineClient()
 
+    /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
+    private val localSandboxRoot: String? = try {
+        app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.apply { mkdirs() }?.absolutePath
+    } catch (e: SecurityException) {
+        null
+    }
+
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
 
@@ -125,6 +149,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             engineUrl = config.baseUrl,
             engineUrlDraft = config.baseUrl,
             downloadExecutor = config.downloadExecutor,
+            // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
+            mergeSelected = config.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
+            localSandboxRoot = localSandboxRoot,
         ),
     )
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
@@ -151,15 +178,26 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 切换下载执行者。切完把下载流程清零：换了执行者还接着跑，
-     * 「本机 `.part`」和「引擎任务」就会各说一半。
+     * 切换下载执行者。
+     *
+     * 有任务在跑时**不切**：旧实现会 `downloadJob?.cancel()` + 把阶段打回 `Idle`，
+     * 等于用户点一下开关就把正在下载的任务连状态一起丢掉。现在界面把两颗按钮禁用并给出原因，
+     * 这里再做第二道门（界面之外还有代码路径会调它）。
+     * 没有在跑的任务时，切换会把 `Selecting` 的画质表一并作废——表的内容本来就属于某个执行者。
      */
     fun selectDownloadExecutor(executor: DownloadExecutor) {
-        if (_state.value.downloadExecutor == executor) return
+        val snapshot = _state.value
+        if (snapshot.downloadExecutor == executor) return
+        if (snapshot.downloadInFlight) return
         config.downloadExecutor = executor
-        downloadJob?.cancel()
         _state.update {
-            it.copy(downloadExecutor = executor, download = DownloadPhase.Idle, selectedFormatId = null)
+            it.copy(
+                downloadExecutor = executor,
+                download = DownloadPhase.Idle,
+                selectedFormatId = null,
+                // 切到本地时把合并取消掉：复选框会置灰，勾着却不会发生比不勾更误导。
+                mergeSelected = if (executor == DownloadExecutor.LOCAL_DIRECT) false else it.mergeSelected,
+            )
         }
     }
 
@@ -258,8 +296,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 state.copy(download = DownloadPhase.Preparing(event.status))
             }
 
-            is DownloadEvent.Selecting ->
-                _state.update { it.copy(download = DownloadPhase.Selecting(event.taskId, event.formats)) }
+            // 单行表直接选中：只有一条可选时再让用户点一次没有信息量，
+            // 「开始下载」按钮随 selectedFormat 就绪自动变成可点的高亮态。
+            is DownloadEvent.Selecting -> _state.update {
+                it.copy(
+                    download = DownloadPhase.Selecting(event.taskId, event.formats),
+                    selectedFormatId = event.formats.singleOrNull()?.formatId,
+                )
+            }
 
             is DownloadEvent.Started -> _state.update { it.copy(download = DownloadPhase.Running(event.task)) }
 
@@ -283,6 +327,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleMerge(enabled: Boolean) {
+        // 本地模式没有合并的后端：界面已置灰，这里再挡一次编程调用，别让状态里出现勾着的空操作。
+        if (!_state.value.mergeAvailable) return
         _state.update { it.copy(mergeSelected = enabled) }
     }
 
@@ -304,8 +350,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             DownloadExecutor.LOCAL_DIRECT -> {
                 val link = (snapshot.sniff as? SniffPhase.Success)?.results
                     ?.firstOrNull { localTaskId(it.mediaUrl) == format.formatId }
-                val outputDir = snapshot.outputDir
-                if (link == null || outputDir == null) {
+                val sandboxRoot = snapshot.localSandboxRoot
+                if (link == null) {
                     // 找不到对应直链 = 状态与画质表已脱节（中途重新嗅探过）。说清楚，不让按钮变哑。
                     _state.update {
                         it.copy(
@@ -315,7 +361,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return
                 }
-                StartRequest.ViaLocal(link = link, outputDir = outputDir)
+                if (sandboxRoot == null) {
+                    _state.update {
+                        it.copy(download = LocalFailures.outputDirRejected("手机外部存储不可用").toDownloadPhase())
+                    }
+                    return
+                }
+                if (snapshot.mergeSelected) {
+                    // 勾了合并但这一支没有 FFmpeg：忽略并留审计行，绝不假装合并成功。
+                    Log.w(TAG, "merge_ignored executor=local_direct reason=no_ffmpeg")
+                }
+                StartRequest.ViaLocal(
+                    link = link,
+                    outputDir = sandboxRoot,
+                    allowedRoots = listOf(sandboxRoot),
+                )
             }
         }
         downloadJob = viewModelScope.launch {
@@ -400,3 +460,6 @@ private fun EngineFailure.reason(): String = when (this) {
     is EngineFailure.Protocol -> "HTTP $httpStatus ${error.code}：${error.message}"
     is EngineFailure.Transport -> reason
 }
+
+/** 审计行专用：日志只描述客户端自己的决定，不冒充引擎。 */
+private const val TAG = "HomeViewModel"

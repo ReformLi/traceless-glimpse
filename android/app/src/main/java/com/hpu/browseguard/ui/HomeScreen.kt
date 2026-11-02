@@ -279,30 +279,38 @@ private fun EngineUrlCard(
             ExecutorChoice(
                 text = stringResource(R.string.download_executor_engine),
                 selected = state.downloadExecutor == DownloadExecutor.ENGINE,
+                enabled = !state.downloadInFlight,
                 onClick = { onSelectExecutor(DownloadExecutor.ENGINE) },
             )
             ExecutorChoice(
                 text = stringResource(R.string.download_executor_local),
                 selected = state.downloadExecutor == DownloadExecutor.LOCAL_DIRECT,
+                enabled = !state.downloadInFlight,
                 onClick = { onSelectExecutor(DownloadExecutor.LOCAL_DIRECT) },
             )
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = stringResource(R.string.download_executor_hint),
+            text = stringResource(
+                if (state.downloadInFlight) R.string.download_executor_busy else R.string.download_executor_hint,
+            ),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (state.downloadInFlight) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
         )
     }
 }
 
 /** 选中的那颗有底色——两颗并排时要一眼看出当前是哪条链路。 */
 @Composable
-private fun ExecutorChoice(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun ExecutorChoice(text: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     if (selected) {
-        FilledTonalButton(onClick = onClick) { Text(text) }
+        FilledTonalButton(onClick = onClick, enabled = enabled) { Text(text) }
     } else {
-        OutlinedButton(onClick = onClick) { Text(text) }
+        OutlinedButton(onClick = onClick, enabled = enabled) { Text(text) }
     }
 }
 
@@ -529,15 +537,35 @@ private fun FormatCard(
             modifier = Modifier.fillMaxWidth(),
         )
 
+        val mergeEnabled = state.mergeAvailable
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onToggleMerge(!state.mergeSelected) }
+                .clickable(enabled = mergeEnabled) { onToggleMerge(!state.mergeSelected) }
                 .padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Checkbox(checked = state.mergeSelected, onCheckedChange = onToggleMerge)
-            Text(text = stringResource(R.string.format_merge_label), style = MaterialTheme.typography.bodyMedium)
+            Checkbox(
+                checked = state.mergeSelected,
+                onCheckedChange = onToggleMerge,
+                enabled = mergeEnabled,
+            )
+            Text(
+                text = stringResource(R.string.format_merge_label),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (mergeEnabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        if (!mergeEnabled) {
+            Text(
+                text = stringResource(R.string.format_merge_local_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         Spacer(Modifier.height(10.dp))

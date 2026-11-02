@@ -70,8 +70,18 @@ sealed interface StartRequest {
         val postActions: List<PostAction>?,
     ) : StartRequest
 
-    /** 本机直链：单条 HTTP GET + `.part` 续传，不碰 yt-dlp，也不碰 FFmpeg。 */
-    data class ViaLocal(val link: SniffResult, val outputDir: String) : StartRequest
+    /**
+     * 本机直链：单条 HTTP GET + `.part` 续传，不碰 yt-dlp，也不碰 FFmpeg。
+     *
+     * [allowedRoots] 是**手机侧**的写盘白名单，由调用方（界面层）从应用专属存储声明，
+     * 与本协议的 `outputDirAllowlist`（引擎进程在电脑上解析的那份）不是同一样东西。
+     * 下载器在创建任何文件之前先做规范化包含校验，不通过就发 `Local(OUTPUT_DIR_REJECTED)`。
+     */
+    data class ViaLocal(
+        val link: SniffResult,
+        val outputDir: String,
+        val allowedRoots: List<String>,
+    ) : StartRequest
 }
 
 /**

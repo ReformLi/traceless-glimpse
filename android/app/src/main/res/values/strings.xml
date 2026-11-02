@@ -20,7 +20,8 @@
     <string name="download_executor_label">下载执行者</string>
     <string name="download_executor_engine">引擎</string>
     <string name="download_executor_local">本地直链</string>
-    <string name="download_executor_hint">本地直链：手机自己下嗅探到的那条 HTTP 直链，断点存 .part，不经过引擎，也不做音视频合并。嗅探始终走引擎。切换会丢弃当前下载阶段。</string>
+    <string name="download_executor_hint">本地直链：手机自己下嗅探到的那条 HTTP 直链，断点存 .part，不经过引擎，也不做音视频合并。嗅探始终走引擎。切换会丢弃当前画质表。</string>
+    <string name="download_executor_busy">有任务正在进行：等它结束或取消后才能切换执行者</string>
 
     <string name="selfcheck_title">隐私自检</string>
     <string name="selfcheck_cookie">Cookie 策略</string>
@@ -53,6 +54,7 @@
     <string name="format_naming_field">命名模板</string>
     <string name="format_naming_hint">可选变量：{title} {platform} {date} {time} {uploader} {height} {width} {formatId} {taskId} {ext}</string>
     <string name="format_merge_label">下载后合并音视频轨（merge）</string>
+    <string name="format_merge_local_hint">本地模式不支持合并，请连接引擎</string>
     <string name="format_start">开始下载</string>
 
     <string name="download_running_title">下载进度</string>

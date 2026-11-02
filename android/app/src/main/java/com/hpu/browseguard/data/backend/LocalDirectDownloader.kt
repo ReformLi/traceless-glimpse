@@ -30,6 +30,9 @@ import okhttp3.Request
  *
  * 取消是协作式的：[cancel] 只登记一个标志，终态由 [start] 那条流写出，
  * `.part` 保留在原处，下次点同一条直链就从断点接着下。
+ *
+ * 写盘前先过 [LocalOutputSandbox]：目录必须落在调用方声明的手机侧根之内，
+ * 不通过就发 `OUTPUT_DIR_REJECTED`——不产生任何文件，也不把「没试」说成「写失败」。
  */
 class LocalDirectDownloader(
     private val http: OkHttpClient = LOCAL_HTTP,
@@ -73,6 +76,12 @@ class LocalDirectDownloader(
         val productName = link.productName()
         val partFile = java.io.File(target.outputDir, "$productName.part")
         val finalFile = java.io.File(target.outputDir, productName)
+
+        // 写盘前先过沙箱：这一步不产生任何文件，失败也不该被当成 IO 错误。
+        LocalOutputSandbox.reject(partFile, target.allowedRoots)?.let { reason ->
+            emit(DownloadEvent.Failed(LocalFailures.outputDirRejected(reason)))
+            return@flow
+        }
 
         var resumedFrom = try {
             openForWrite(partFile)

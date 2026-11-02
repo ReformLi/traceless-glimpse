@@ -17,7 +17,8 @@ import com.hpu.browseguard.shared.model.TaskStatus
  *
  * 三条边界，写死在这里：
  * - `error` 恒为 `null`：本地失败一律走 [BackendFailure.Local]，不借用引擎的 §5 码；
- * - `id` 带 `local-` 前缀，界面上「任务 ID」一眼可辨不是引擎任务；
+ * - `id` 带 `local_` 前缀，界面上「任务 ID」一眼可辨不是引擎任务，且 [HttpDownloader] 入口
+ *   会对这个前缀直接抛错（下游防泄漏，不靠调用方自觉）；
  * - 这个对象**只进 `_state`，绝不上行**——`EngineClient` 的请求体只有
  *   `TaskCreateRequest` 与 `DownloadRequest`，`TaskNeverGoesOnTheWireTest` 钉住这一点。
  */
@@ -44,9 +45,20 @@ internal fun localTask(
     )
 }
 
+/**
+ * 本地任务 id 的命名空间。
+ *
+ * 下游不是靠约定而是靠这道前缀防「本地句柄泄漏给远端」：[HttpDownloader] 的
+ * `start` / `cancel` 入口对带此前缀的 id 直接抛错（`LocalHandleIsolationTest` 钉住）。
+ */
+internal const val LOCAL_TASK_PREFIX = "local_"
+
 /** 取消要能找回同一条在跑的下载：id 由直链本身决定，不靠调用方传。 */
 internal fun localTaskId(mediaUrl: String): String =
-    "local-" + mediaUrl.hashCode().toUInt().toString(16)
+    LOCAL_TASK_PREFIX + mediaUrl.hashCode().toUInt().toString(16)
+
+/** 发往引擎之前必须过这一关：本地句柄没有远端对应物。 */
+internal fun isLocalTaskId(taskId: String): Boolean = taskId.startsWith(LOCAL_TASK_PREFIX)
 
 /** 进度对象：`phase` 用本地命名，`percent` 由字节数算（拿不到总长时留 0，界面自会显示「暂无进度」口径）。 */
 internal fun localProgress(
