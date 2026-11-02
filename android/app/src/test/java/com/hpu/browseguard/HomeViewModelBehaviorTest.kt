@@ -7,10 +7,12 @@ import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
+import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.fakes.FakeAuditLogger
 import com.hpu.browseguard.fakes.FakeBackendProvider
 import com.hpu.browseguard.fakes.FakeEngineInfo
 import com.hpu.browseguard.fakes.FakeEngineSettings
+import com.hpu.browseguard.fakes.FakeHistoryRepository
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.EstimatedQuality
@@ -19,6 +21,8 @@ import com.hpu.browseguard.shared.model.FormatSource
 import com.hpu.browseguard.shared.model.MediaStreamType
 import com.hpu.browseguard.shared.model.Resolution
 import com.hpu.browseguard.shared.model.SniffResult
+import com.hpu.browseguard.shared.model.Task
+import com.hpu.browseguard.shared.model.TaskMode
 import com.hpu.browseguard.shared.model.TaskStatus
 import com.hpu.browseguard.ui.Connection
 import com.hpu.browseguard.ui.DownloadPhase
@@ -256,7 +260,7 @@ class HomeViewModelBehaviorTest {
             downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
         )
         val provider = FakeBackendProvider()
-        val vm = HomeViewModel(settings, provider, FakeEngineInfo(healthResult = null), FakeAuditLogger())
+        val vm = HomeViewModel(settings, provider, FakeEngineInfo(healthResult = null), FakeAuditLogger(), FakeHistoryRepository())
 
         assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
         assertTrue("本机嗅探不需要引擎自检", vm.state.value.canSniff)
@@ -275,7 +279,7 @@ class HomeViewModelBehaviorTest {
     fun offlineEngineStillLetsTheDefaultEngineModeStartAndFallBack() = runTest(dispatcher) {
         val provider = FakeBackendProvider()
         val audit = FakeAuditLogger()
-        val vm = HomeViewModel(FakeEngineSettings(), provider, FakeEngineInfo(healthResult = null), audit)
+        val vm = HomeViewModel(FakeEngineSettings(), provider, FakeEngineInfo(healthResult = null), audit, FakeHistoryRepository())
 
         assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
         assertTrue("引擎不可达时嗅探按钮不能灰着：降级要靠这次点击触发", vm.state.value.canSniff)
@@ -310,13 +314,60 @@ class HomeViewModelBehaviorTest {
         )
     }
 
+    /** 一次用户动作只写一行历史：嗅探 → 待下载 → 下载中 → 完成，状态全程跟得上。 */
+    @Test
+    fun sniffAndDownloadWriteOneHistoryRowThroughAllStages() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+        fakes.reachSniffSuccess(vm, listOf(sniffResult()))
+
+        val afterSniff = fakes.history.rows.single()
+        assertEquals(RecordStatus.READY, afterSniff.status)
+        assertEquals("example.com · watch", afterSniff.title)
+
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("01a1", listOf(formatInfo("137"))),
+        )
+        vm.startDownload()
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Started(task(TaskStatus.DOWNLOADING)))
+
+        val running = fakes.history.rows.single()
+        assertEquals(RecordStatus.DOWNLOADING, running.status)
+        assertEquals("01a1", running.taskId)
+        assertEquals("720p · mp4", running.format)
+
+        fakes.provider.downloadBackend.emitStart(
+            DownloadEvent.Terminal(task(TaskStatus.DONE, outputPath = "E:\\Videos\\BGV\\clip.mp4")),
+        )
+        val done = fakes.history.rows.single()
+        assertEquals(RecordStatus.DONE, done.status)
+        assertEquals("E:\\Videos\\BGV\\clip.mp4", done.outputPath)
+    }
+
+    /** 本地失败没有协议码：历史里也不能借一个来写。 */
+    @Test
+    fun localSniffFailureIsPersistedWithoutAProtocolCode() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        fakes.provider.sniffBackend.emit(SniffEvent.Failed(LocalFailures.noSniffResults()))
+
+        val row = fakes.history.rows.single()
+        assertEquals(RecordStatus.FAILED, row.status)
+        assertNull("客户端判定不得借 §5 协议码", row.errorCode)
+    }
+
     private class Fakes(
         val settings: FakeEngineSettings = FakeEngineSettings(),
         val provider: FakeBackendProvider = FakeBackendProvider(),
         val audit: FakeAuditLogger = FakeAuditLogger(),
+        val history: FakeHistoryRepository = FakeHistoryRepository(),
     ) {
         fun connectedViewModel(): HomeViewModel {
-            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit)
+            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit, history)
             assertEquals(Connection.Connected::class.java, vm.state.value.connection.javaClass)
             return vm
         }
@@ -350,6 +401,19 @@ class HomeViewModelBehaviorTest {
             hasVideo = true,
             fileSizeEstimateBytes = 0,
             source = FormatSource.SNIFF,
+        )
+
+        fun task(status: TaskStatus, outputPath: String? = null) = Task(
+            id = "01a1",
+            sourceUrl = "https://example.com/watch",
+            mode = TaskMode.DOWNLOAD,
+            cookiePolicy = CookiePolicy.LAZY,
+            outputDir = "E:\\Videos\\BGV",
+            status = status,
+            namingTemplate = "{title}-{height}p",
+            createdAt = "2026-11-02T10:00:00Z",
+            updatedAt = "2026-11-02T10:00:01Z",
+            outputPath = outputPath,
         )
     }
 }

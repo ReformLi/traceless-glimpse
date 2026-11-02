@@ -12,6 +12,12 @@ import com.hpu.browseguard.data.backend.LocalWebViewSniffer
 import com.hpu.browseguard.data.backend.SniffBackend
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.WebViewCookieProvider
+import com.hpu.browseguard.data.history.BrowseGuardDatabase
+import com.hpu.browseguard.data.history.HistoryRepository
+import com.hpu.browseguard.data.history.ReconcileReport
+import com.hpu.browseguard.data.history.RoomHistoryRepository
+import com.hpu.browseguard.data.history.TaskLookup
+import kotlinx.coroutines.CancellationException
 
 /**
  * 组装根：全仓唯一允许 new 具体后端的地方。
@@ -46,5 +52,69 @@ class AppContainer(context: Context) : BackendProvider {
             audit = audit,
             cookies = WebViewCookieProvider(),
         )
+    }
+
+    private val database by lazy { BrowseGuardDatabase.build(app) }
+
+    val history: HistoryRepository by lazy {
+        RoomHistoryRepository(database.downloadRecords(), localSandboxRoot)
+    }
+
+    /**
+     * 冷启动对账：把上次进程遗留的进行中记录落到事实状态。
+     *
+     * 先探一次引擎可达性：「连不上」只代表状态未知，不能据此把任务写成中断；
+     * 只有引擎明确回答 404 才证明任务真的不存在。引擎离线时远端行原样保留，
+     * 下次冷启动可达后再恢复，避免用户没开电脑就看见满屏「已中断」。
+     */
+    suspend fun reconcileHistory(): ReconcileReport {
+        val reachable = engineReachable()
+        val report = history.reconcile(reachable) { taskId -> lookupTask(taskId) }
+        if (!reachable) {
+            audit.log(
+                "audit_history_reconcile_skipped",
+                mapOf(
+                    "reason" to "engine_unreachable",
+                    "preserved" to report.skipped.toString(),
+                    "local_interrupted" to report.interrupted.toString(),
+                ),
+            )
+        }
+        if (report.scanned > 0) {
+            audit.log(
+                "audit_history_reconcile",
+                mapOf(
+                    "scanned" to report.scanned.toString(),
+                    "interrupted" to report.interrupted.toString(),
+                    "recovered" to report.recovered.toString(),
+                    "skipped" to report.skipped.toString(),
+                ),
+            )
+        }
+        return report
+    }
+
+    private suspend fun engineReachable(): Boolean = try {
+        engineInfo.health(settings.baseUrl)
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false
+    }
+
+    private suspend fun lookupTask(taskId: String): TaskLookup = try {
+        TaskLookup.Found(client.task(settings.baseUrl, taskId)) // one-shot：冷启动对账只查一次，不是轮询环
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: EngineException) {
+        val failure = e.failure
+        if (failure is EngineFailure.Protocol && failure.httpStatus == 404) {
+            TaskLookup.Missing
+        } else {
+            TaskLookup.Unknown
+        }
+    } catch (e: Exception) {
+        TaskLookup.Unknown
     }
 }

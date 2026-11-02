@@ -16,12 +16,20 @@ import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
+import com.hpu.browseguard.data.history.DownloadRecord
+import com.hpu.browseguard.data.history.HistoryRepository
+import com.hpu.browseguard.data.history.ReconcileReport
+import com.hpu.browseguard.data.history.RecordStatus
+import com.hpu.browseguard.data.history.TaskLookup
+import com.hpu.browseguard.data.history.defaultHistoryTitle
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.SelfcheckResponse
+import com.hpu.browseguard.shared.model.Task
 import java.util.Collections
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 
 /**
@@ -188,4 +196,88 @@ class FakeAuditLogger : AuditLogger {
     fun of(event: String): List<Entry> = events.filter { it.event == event }
 
     fun has(event: String): Boolean = events.any { it.event == event }
+}
+
+/** 内存版历史仓库：让 JVM 单测能看见 HomeViewModel 到底写了什么。 */
+class FakeHistoryRepository : HistoryRepository {
+
+    private val state = MutableStateFlow<List<DownloadRecord>>(emptyList())
+
+    override val records: Flow<List<DownloadRecord>> = state
+
+    val calls: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    val rows: List<DownloadRecord>
+        get() = state.value
+
+    override suspend fun beginSniff(id: String, url: String) {
+        calls += "beginSniff"
+        val ts = System.currentTimeMillis()
+        state.value = state.value + DownloadRecord(
+            id = id,
+            url = url,
+            title = defaultHistoryTitle(url),
+            status = RecordStatus.SNIFFING,
+            createdAt = ts,
+            updatedAt = ts,
+        )
+    }
+
+    override suspend fun attachTask(id: String, taskId: String) {
+        calls += "attachTask"
+        update(id) { it.copy(taskId = taskId) }
+    }
+
+    override suspend fun markReady(id: String, format: String?) {
+        calls += "markReady"
+        update(id) { it.copy(status = RecordStatus.READY, format = format ?: it.format) }
+    }
+
+    override suspend fun markDownloading(id: String, taskId: String?, format: String?, outputPath: String?) {
+        calls += "markDownloading"
+        update(id) {
+            it.copy(
+                status = RecordStatus.DOWNLOADING,
+                taskId = taskId ?: it.taskId,
+                format = format ?: it.format,
+                outputPath = outputPath ?: it.outputPath,
+            )
+        }
+    }
+
+    override suspend fun markDone(id: String, outputPath: String?, format: String?) {
+        calls += "markDone"
+        update(id) {
+            it.copy(
+                status = RecordStatus.DONE,
+                outputPath = outputPath ?: it.outputPath,
+                format = format ?: it.format,
+            )
+        }
+    }
+
+    override suspend fun markFailed(id: String, errorCode: String?) {
+        calls += "markFailed"
+        update(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode) }
+    }
+
+    override suspend fun markCancelled(id: String) {
+        calls += "markCancelled"
+        update(id) { it.copy(status = RecordStatus.CANCELLED) }
+    }
+
+    override suspend fun delete(id: String): Boolean {
+        calls += "delete"
+        state.value = state.value.filterNot { it.id == id }
+        return false
+    }
+
+    override suspend fun reconcile(
+        engineReachable: Boolean,
+        lookup: suspend (taskId: String) -> TaskLookup,
+    ): ReconcileReport = ReconcileReport(scanned = 0, interrupted = 0, recovered = 0)
+
+    private fun update(id: String, transform: (DownloadRecord) -> DownloadRecord) {
+        state.value = state.value.map { if (it.id == id) transform(it) else it }
+    }
 }

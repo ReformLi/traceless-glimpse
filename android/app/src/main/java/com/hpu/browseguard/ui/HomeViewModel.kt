@@ -22,6 +22,8 @@ import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.data.backend.toBackendFailure
+import com.hpu.browseguard.data.history.HistoryRepository
+import com.hpu.browseguard.data.history.formatSummary
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
@@ -37,6 +39,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 /** 引擎连接状态。 */
 sealed interface Connection {
@@ -153,10 +156,15 @@ class HomeViewModel(
     private val backends: BackendProvider,
     private val engineInfo: EngineInfo,
     private val audit: AuditLogger,
+    private val history: HistoryRepository,
 ) : ViewModel() {
 
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
+
+    /** 当前这次嗅探/下载在历史里的行 id；一次用户动作只写一行。 */
+    private var historyId: String? = null
+    private var historyTaskId: String? = null
 
     private val _state = MutableStateFlow(
         HomeUiState(
@@ -260,6 +268,15 @@ class HomeViewModel(
         val sourceUrl = snapshot.sourceUrl.trim()
         if (sourceUrl.isEmpty() || !snapshot.canSniff) return
 
+        // 被新一次嗅探取代的旧记录不能停在「嗅探中/下载中」：它已经没有任何协程在推进。
+        if (snapshot.sniff is SniffPhase.Running || snapshot.downloadInFlight) {
+            historyId?.let { replaced -> viewModelScope.launch { history.markCancelled(replaced) } }
+        }
+
+        val recordId = UUID.randomUUID().toString()
+        historyId = recordId
+        historyTaskId = null
+
         sniffJob?.cancel()
         downloadJob?.cancel()
         _state.update { it.copy(sniff = SniffPhase.Running(TaskStatus.QUEUED), download = DownloadPhase.Idle, selectedFormatId = null) }
@@ -273,6 +290,7 @@ class HomeViewModel(
         )
 
         sniffJob = viewModelScope.launch {
+            history.beginSniff(recordId, sourceUrl)
             if (snapshot.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
                 collectLocalSniff(request)
                 return@launch
@@ -300,6 +318,18 @@ class HomeViewModel(
             )
             collectLocalSniff(request)
         }
+    }
+
+    /** 历史写入统一从这里走：一次动作只对应 [historyId] 这一行。 */
+    private fun record(block: suspend HistoryRepository.(id: String) -> Unit) {
+        val id = historyId ?: return
+        viewModelScope.launch { history.block(id) }
+    }
+
+    private fun attachHistoryTask(taskId: String) {
+        if (taskId.isBlank() || taskId == historyTaskId) return
+        historyTaskId = taskId
+        record { attachTask(it, taskId) }
     }
 
     /** 只有「电脑不可达」与「引擎嗅探超时」值得换腿；协议不符/空结果换腿不会变好。 */
@@ -363,18 +393,36 @@ class HomeViewModel(
      */
     private fun applySniffEvent(event: SniffEvent) {
         when (event) {
-            is SniffEvent.Status -> _state.update { state ->
-                if (state.sniff !is SniffPhase.Running) return@update state
-                state.copy(sniff = SniffPhase.Running(event.status))
+            is SniffEvent.Status -> {
+                attachHistoryTask(event.taskId)
+                _state.update { state ->
+                    if (state.sniff !is SniffPhase.Running) return@update state
+                    state.copy(sniff = SniffPhase.Running(event.status))
+                }
             }
 
-            is SniffEvent.Terminal -> _state.update { state ->
-                if (event.task.status == TaskStatus.DONE) return@update state
-                state.copy(sniff = event.task.toSniffFailure())
+            is SniffEvent.Terminal -> {
+                attachHistoryTask(event.task.id)
+                if (event.task.status != TaskStatus.DONE) {
+                    val failure = event.task.toSniffFailure()
+                    record { markFailed(it, failure.code) }
+                }
+                _state.update { state ->
+                    if (event.task.status == TaskStatus.DONE) return@update state
+                    state.copy(sniff = event.task.toSniffFailure())
+                }
             }
 
-            is SniffEvent.Results -> _state.update { it.copy(sniff = SniffPhase.Success(event.results)) }
-            is SniffEvent.Failed -> _state.update { it.copy(sniff = event.failure.toSniffPhase()) }
+            is SniffEvent.Results -> {
+                record { markReady(it, format = null) }
+                _state.update { it.copy(sniff = SniffPhase.Success(event.results)) }
+            }
+
+            is SniffEvent.Failed -> {
+                val phase = event.failure.toSniffPhase()
+                record { markFailed(it, phase.code) }
+                _state.update { it.copy(sniff = phase) }
+            }
         }
     }
 
@@ -416,21 +464,42 @@ class HomeViewModel(
      */
     private fun applyDownloadEvent(event: DownloadEvent) {
         when (event) {
-            is DownloadEvent.Preparing -> _state.update { state ->
-                if (state.download !is DownloadPhase.Preparing) return@update state
-                state.copy(download = DownloadPhase.Preparing(event.status))
+            is DownloadEvent.Preparing -> {
+                attachHistoryTask(event.taskId)
+                _state.update { state ->
+                    if (state.download !is DownloadPhase.Preparing) return@update state
+                    state.copy(download = DownloadPhase.Preparing(event.status))
+                }
             }
 
             // 单行表直接选中：只有一条可选时再让用户点一次没有信息量，
             // 「开始下载」按钮随 selectedFormat 就绪自动变成可点的高亮态。
-            is DownloadEvent.Selecting -> _state.update {
-                it.copy(
-                    download = DownloadPhase.Selecting(event.taskId, event.formats),
-                    selectedFormatId = event.formats.singleOrNull()?.formatId,
-                )
+            is DownloadEvent.Selecting -> {
+                attachHistoryTask(event.taskId)
+                _state.update {
+                    it.copy(
+                        download = DownloadPhase.Selecting(event.taskId, event.formats),
+                        selectedFormatId = event.formats.singleOrNull()?.formatId,
+                    )
+                }
             }
 
-            is DownloadEvent.Started -> _state.update { it.copy(download = DownloadPhase.Running(event.task)) }
+            is DownloadEvent.Started -> {
+                val format = _state.value.selectedFormat
+                val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
+                attachHistoryTask(event.task.id)
+                record { historyId ->
+                    markDownloading(
+                        id = historyId,
+                        taskId = event.task.id,
+                        format = format?.let(::formatSummary),
+                        // 本地直链的产物路径现在就能算出来（`.part` 也在同目录），
+                        // 引擎产物在电脑上，落盘路径只有 done 时才有。
+                        outputPath = if (isLocal) localOutputPath(event.task) else null,
+                    )
+                }
+                _state.update { it.copy(download = DownloadPhase.Running(event.task)) }
+            }
 
             // 只有已经是 Running 才采纳轮询结果，并把界面上的「取消已请求」标记带过去
             is DownloadEvent.Progress -> _state.update { state ->
@@ -438,8 +507,32 @@ class HomeViewModel(
                 state.copy(download = DownloadPhase.Running(event.task, previous.cancelRequested))
             }
 
-            is DownloadEvent.Terminal -> _state.update { it.copy(download = event.task.toFinalPhase()) }
-            is DownloadEvent.Failed -> _state.update { it.copy(download = event.failure.toDownloadPhase()) }
+            is DownloadEvent.Terminal -> {
+                attachHistoryTask(event.task.id)
+                val phase = event.task.toFinalPhase()
+                writeDownloadTerminal(event.task, phase)
+                _state.update { it.copy(download = phase) }
+            }
+
+            is DownloadEvent.Failed -> {
+                val phase = event.failure.toDownloadPhase()
+                record { markFailed(it, phase.code) }
+                _state.update { it.copy(download = phase) }
+            }
+        }
+    }
+
+    private fun writeDownloadTerminal(task: Task, phase: DownloadPhase) {
+        val format = _state.value.selectedFormat?.let(::formatSummary)
+        when (phase) {
+            is DownloadPhase.Success -> {
+                val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
+                record { markDone(it, outputPath = if (isLocal) localOutputPath(task) else task.outputPath, format = format) }
+            }
+
+            is DownloadPhase.Cancelled -> record { markCancelled(it) }
+            is DownloadPhase.Failed -> record { markFailed(it, phase.code) }
+            else -> Unit
         }
     }
 
@@ -481,6 +574,7 @@ class HomeViewModel(
                 val sandboxRoot = snapshot.localSandboxRoot
                 if (link == null) {
                     // 找不到对应直链 = 状态与画质表已脱节（中途重新嗅探过）。说清楚，不让按钮变哑。
+                    record { markFailed(it, null) }
                     _state.update {
                         it.copy(
                             download = LocalFailures.unsupportedLink("嗅探结果已过期，请重新嗅探")
@@ -490,6 +584,7 @@ class HomeViewModel(
                     return
                 }
                 if (sandboxRoot == null) {
+                    record { markFailed(it, null) }
                     _state.update {
                         it.copy(download = LocalFailures.outputDirRejected("手机外部存储不可用").toDownloadPhase())
                     }
@@ -519,15 +614,22 @@ class HomeViewModel(
         _state.update { it.copy(download = running.copy(cancelRequested = true)) }
         viewModelScope.launch {
             backends.download(snapshot.downloadExecutor).cancel(running.task.id)?.let { failure ->
+                val phase = failure.toDownloadPhase()
+                record { markFailed(it, phase.code) }
                 _state.update { state ->
                     if (state.download is DownloadPhase.Running) {
-                        state.copy(download = failure.toDownloadPhase())
+                        state.copy(download = phase)
                     } else {
                         state
                     }
                 }
             }
         }
+    }
+
+    /** 历史页「重新下载」：回到首页并填入原始链接，后续仍交给用户确认嗅探与画质。 */
+    fun adoptSourceUrl(url: String) {
+        editSourceUrl(url)
     }
 
     fun resetDownload() {
@@ -559,6 +661,7 @@ class HomeViewModel(
             backends: BackendProvider,
             engineInfo: EngineInfo,
             audit: AuditLogger,
+            history: HistoryRepository,
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -566,7 +669,7 @@ class HomeViewModel(
                     require(modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                         "HomeViewModel.Factory 不认识的类型：$modelClass"
                     }
-                    return HomeViewModel(settings, backends, engineInfo, audit) as T
+                    return HomeViewModel(settings, backends, engineInfo, audit, history) as T
                 }
             }
     }

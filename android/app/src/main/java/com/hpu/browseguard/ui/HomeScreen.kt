@@ -1,9 +1,6 @@
 package com.hpu.browseguard.ui
 
-import android.content.ActivityNotFoundException
 import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -65,7 +62,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
@@ -93,7 +89,6 @@ import com.hpu.browseguard.ui.components.ErrorCard
 import com.hpu.browseguard.ui.components.StateView
 import com.hpu.browseguard.ui.components.StateViewKind
 import com.hpu.browseguard.ui.theme.BgvTheme
-import java.io.File
 import java.net.URI
 import java.util.Locale
 
@@ -101,7 +96,13 @@ import java.util.Locale
 fun HomeRoute(
     container: AppContainer,
     viewModel: HomeViewModel = viewModel(
-        factory = HomeViewModel.factory(container.settings, container, container.engineInfo, container.audit),
+        factory = HomeViewModel.factory(
+            container.settings,
+            container,
+            container.engineInfo,
+            container.audit,
+            container.history,
+        ),
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -1462,58 +1463,6 @@ private fun recommendedFormat(formats: List<FormatInfo>): FormatInfo? {
     return pool.maxWithOrNull(
         compareBy<FormatInfo> { it.resolution.height }.thenBy { it.hasAudio },
     ) ?: formats.maxByOrNull { it.bitrateKbps }
-}
-
-/** 本地直链的产物路径：`outputDir + namingTemplate`（本地快照把产物名放在模板槽位）。 */
-private fun localOutputPath(task: Task): String? {
-    val name = task.namingTemplate?.takeIf { it.isNotBlank() } ?: return null
-    val dir = task.outputDir.takeIf { it.isNotBlank() } ?: return null
-    return File(dir, name).absolutePath
-}
-
-private enum class OpenFileProblem { NotFound, OutsideSandbox, NoApp }
-
-/**
- * 打开手机侧产物。引擎任务的路径在电脑上，调用方会先禁用按钮，不会走到这里。
- */
-private fun openLocalFile(context: Context, path: String): OpenFileProblem? {
-    val file = File(path)
-    if (!file.isFile) return OpenFileProblem.NotFound
-    val uri = try {
-        FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
-    } catch (e: IllegalArgumentException) {
-        return OpenFileProblem.OutsideSandbox
-    }
-    val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(uri, mimeOf(file.name))
-        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    return try {
-        context.startActivity(intent)
-        null
-    } catch (e: ActivityNotFoundException) {
-        OpenFileProblem.NoApp
-    }
-}
-
-@Composable
-private fun openProblemText(problem: OpenFileProblem): String = stringResource(
-    when (problem) {
-        OpenFileProblem.NotFound -> R.string.download_open_missing
-        OpenFileProblem.OutsideSandbox -> R.string.download_open_outside
-        OpenFileProblem.NoApp -> R.string.download_open_no_app
-    },
-)
-
-private fun mimeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
-    "mp4", "m4v" -> "video/mp4"
-    "webm" -> "video/webm"
-    "mkv" -> "video/x-matroska"
-    "ts" -> "video/mp2t"
-    "m4a" -> "audio/mp4"
-    "mp3" -> "audio/mpeg"
-    "aac" -> "audio/aac"
-    "opus", "ogg" -> "audio/ogg"
-    else -> "*/*"
 }
 
 private fun formatDuration(seconds: Int): String = when {

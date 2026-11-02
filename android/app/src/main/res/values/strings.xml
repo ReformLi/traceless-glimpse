@@ -5,9 +5,32 @@
     <string name="nav_settings">设置</string>
 
     <string name="history_title">下载历史</string>
-    <string name="history_subtitle">完成、取消与中断的任务都会留在这里</string>
+    <string name="history_subtitle">完成、失败与中断的任务都会留在这里，可重试或打开文件</string>
     <string name="history_empty_title">还没有下载记录</string>
-    <string name="history_empty_body">历史记录即将上线：完成的任务会按时间排在这里，可直接重试或打开文件。</string>
+    <string name="history_empty_body">在首页粘贴链接并开始下载后，记录会按时间排在这里，可直接重试、复制链接或打开文件。</string>
+    <string name="history_group_today">今天</string>
+    <string name="history_group_yesterday">昨天</string>
+    <string name="history_group_earlier">更早</string>
+    <string name="history_status_sniffing">嗅探中</string>
+    <string name="history_status_ready">待下载</string>
+    <string name="history_status_downloading">下载中</string>
+    <string name="history_status_done">已完成</string>
+    <string name="history_status_failed">失败</string>
+    <string name="history_status_cancelled">已取消</string>
+    <string name="history_status_interrupted">已中断</string>
+    <string name="history_error_code">错误码：%1$s</string>
+    <string name="history_actions_title">记录操作</string>
+    <string name="history_open_file">打开文件</string>
+    <string name="history_copy_link">复制链接</string>
+    <string name="history_copy_done">链接已复制</string>
+    <string name="history_retry">重新下载</string>
+    <string name="history_delete">删除记录</string>
+    <string name="history_delete_title">删除这条记录？</string>
+    <string name="history_delete_message">记录会从历史中移除；如果手机上有对应文件，也会一并删除。此操作不可撤销。</string>
+    <string name="history_delete_confirm">删除</string>
+    <string name="history_cancel">取消</string>
+    <string name="history_pc_hint">文件保存在电脑的引擎侧，手机无法直接打开；需要时请到电脑上查看。</string>
+    <string name="history_swipe_hint">左滑或长按可删除</string>
 
     <string name="settings_title">设置</string>
     <string name="settings_subtitle">引擎、隐私与存储</string>

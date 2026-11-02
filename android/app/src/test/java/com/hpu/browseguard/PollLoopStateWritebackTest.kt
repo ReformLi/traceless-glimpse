@@ -108,6 +108,9 @@ class PollLoopStateWritebackTest {
      *
      * 这条把引擎轮询（`client.task(`）和本地轮询（`stream.read(buffer)`）都纳进枚举——
      * 上一版只数 `client.task(`，第四条本地环一进来就会把「纳管文件集合」比歪。
+     *
+     * 允许一行任务查询显式标注 `one-shot` 退出枚举：冷启动对账只查一次状态，
+     * 没有「每轮回写」的语义。标注必须写在同一行，避免整文件豁免把新轮询也漏掉。
      */
     @Test
     fun pollLoopsAreAllRegistered() {
@@ -116,7 +119,7 @@ class PollLoopStateWritebackTest {
         loops.groupBy(Loop::pollAnchor).forEach { (anchor, registered) ->
             val sites = sources.flatMap { file ->
                 file.readLines().mapIndexedNotNull { index, line ->
-                    if (anchor in line) "${file.name}:${index + 1}" else null
+                    if (anchor in line && ONE_SHOT_MARK !in line) "${file.name}:${index + 1}" else null
                 }
             }
             if (sites.size != registered.size) {
@@ -148,5 +151,6 @@ class PollLoopStateWritebackTest {
 
     private companion object {
         const val SRC_ROOT = "src/main/java/com/hpu/browseguard"
+        const val ONE_SHOT_MARK = "one-shot"
     }
 }

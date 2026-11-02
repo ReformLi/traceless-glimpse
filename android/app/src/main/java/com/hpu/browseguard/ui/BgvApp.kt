@@ -16,6 +16,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -25,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 
@@ -47,6 +49,22 @@ enum class AppDestination(
 fun BgvApp(container: AppContainer) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     val tabStates = rememberSaveableStateHolder()
+
+    // 首页 VM 提到根容器：历史页的「重新下载」要直接往同一个状态机里填链接。
+    val homeViewModel: HomeViewModel = viewModel(
+        factory = HomeViewModel.factory(
+            container.settings,
+            container,
+            container.engineInfo,
+            container.audit,
+            container.history,
+        ),
+    )
+
+    // 冷启动对账只做一次：把上次进程遗留的进行中记录落成事实状态。
+    LaunchedEffect(Unit) {
+        container.reconcileHistory()
+    }
 
     BackHandler(enabled = destination != AppDestination.HOME) {
         destination = AppDestination.HOME
@@ -84,8 +102,15 @@ fun BgvApp(container: AppContainer) {
         ) {
             tabStates.SaveableStateProvider(destination.name) {
                 when (destination) {
-                    AppDestination.HOME -> HomeRoute(container)
-                    AppDestination.HISTORY -> HistoryScreen()
+                    AppDestination.HOME -> HomeRoute(container, homeViewModel)
+                    AppDestination.HISTORY -> HistoryRoute(
+                        container = container,
+                        onRetry = { url ->
+                            homeViewModel.adoptSourceUrl(url)
+                            destination = AppDestination.HOME
+                        },
+                    )
+
                     AppDestination.SETTINGS -> SettingsScreen()
                 }
             }
