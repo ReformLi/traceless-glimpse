@@ -122,7 +122,7 @@ class SchemaExporterTest {
     @Test
     fun `可空字段带 x-nullable 标记`() {
         assertEquals(
-            setOf("error", "formatSelector", "namingTemplate", "progress", "proxyId"),
+            setOf("error", "formatSelector", "namingTemplate", "progress", "proxyId", "outputPath"),
             nullableOf(SchemaExporter.schemaOf(Task.serializer())),
         )
         assertEquals(setOf("drmSystem"), nullableOf(SchemaExporter.schemaOf(SniffResult.serializer())))

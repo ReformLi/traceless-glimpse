@@ -65,4 +65,6 @@ data class Task(
     val error: ErrorPayload? = null,
     val createdAt: String,
     val updatedAt: String,
+    /** 仅 done 且引擎有真实产物时非空；stub / 未完成 / 失败一律 null。 */
+    val outputPath: String? = null,
 )

@@ -77,6 +77,10 @@
         },
         "updatedAt": {
             "type": "string"
+        },
+        "outputPath": {
+            "type": "string",
+            "x-nullable": true
         }
     }
 }

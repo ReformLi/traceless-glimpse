@@ -19,6 +19,13 @@ data class FormatsResponse(
     val items: List<FormatInfo>,
 )
 
+/** §2.5：`GET /v1/tasks` 返回 `{ items, nextCursor }`，游标耗尽为 null。 */
+@Serializable
+data class TaskListResponse(
+    val items: List<Task>,
+    val nextCursor: String? = null,
+)
+
 /** 失败响应：`4xx/5xx` + `{ "error": ErrorPayload }`。 */
 @Serializable
 data class ErrorEnvelope(
