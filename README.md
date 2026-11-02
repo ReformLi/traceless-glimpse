@@ -85,6 +85,21 @@ Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文�
 工具：`sniff`（嗅探并返回格式）、`probe`（查格式表）、`download`（下发并轮询到终态，支持 `timeoutSeconds`）、`status`、`cancel`。从零验收步骤见 `docs/MCP_USER_GUIDE.md`，工具细节见 `mcp/README.md`。
 
 
+## 隐私：Cookie 只留在手机
+
+手机端的「本机直连下载」可能需要站点认出你是登录态。这件事默认**关闭**，且只以域名为单位授权：
+
+- 第一次遇到需要登录状态的直链（通常是 HTTP 403），App 弹阻断式确认框，问「允许读取 `<域名>` 的登录状态吗」。
+  同意之前，代码连 WebView 的 CookieStore 都不碰（审计行 `cookie_blocked`）。
+- 授权后，Cookie 值只从 WebView 自己的 CookieStore 读一次，只注入**同一站点**的本机下载请求。
+  它不进任何发给电脑引擎的请求体或请求头——协议层就没有承载它的字段（§「如何贡献」的结构性约束）。
+- 设置页「Cookie 授权」按域列出已授权站点与最近使用时间。「撤销」只收回读取许可，下次会重新询问；
+  要抹掉值用「清除所有 Cookie」（二次确认，执行系统的 `removeAllCookies`）。
+  系统没有提供按站点删值的 API，界面不假装能做到。
+- 引擎侧每个请求都有一行 `http_request … cookie=present|absent` 的可 grep 证据，只记存在性；
+  日志脱敏兜底会把 `Cookie:` / `Set-Cookie:` 的整值抹掉，键值对形态的参数化日志也不例外。
+  端到端取证与已知缺口见 `docs/acceptance-m6-5.md`。
+
 ## 如何贡献
 
 - 先读 `docs/PRD.md` 与 `docs/PROTOCOL.md`；协议字段增删需三端确认，删除或改语义必须升版本。
