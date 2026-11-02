@@ -1,5 +1,7 @@
 package com.hpu.browseguard.data.backend
 
+import com.hpu.browseguard.data.AuditLogger
+import com.hpu.browseguard.data.NoopAuditLogger
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSource
@@ -36,6 +38,7 @@ import okhttp3.Request
  */
 class LocalDirectDownloader(
     private val http: OkHttpClient = LOCAL_HTTP,
+    private val audit: AuditLogger = NoopAuditLogger,
 ) : DownloadBackend {
 
     override fun prepare(request: PrepareRequest): Flow<DownloadEvent> = flow {
@@ -211,7 +214,15 @@ class LocalDirectDownloader(
         val builder = Request.Builder().url(link.mediaUrl).header("Accept", "*/*")
         if (from > 0L) builder.header("Range", "bytes=$from-")
         link.headersHint.forEach { (name, value) ->
-            if (name.lowercase() !in FORBIDDEN_HEADERS) builder.header(name, value)
+            val lower = name.lowercase()
+            if (lower !in FORBIDDEN_HEADERS) {
+                builder.header(name, value)
+            } else if (lower == "range" || lower == "if-range") {
+                // 嗅探时的探测 Range 回放会把「206 + 1 字节」伪装成下载完成（§22 P0）。
+                audit.log("range_stripped", mapOf("header" to lower))
+            } else {
+                audit.log("sensitive_header_stripped", mapOf("header" to lower))
+            }
         }
         val response = http.newCall(builder.build()).execute()
         if (response.code == 416) {

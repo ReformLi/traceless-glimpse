@@ -1,5 +1,6 @@
 package com.hpu.browseguard
 
+import com.hpu.browseguard.data.LogcatAuditLogger
 import com.hpu.browseguard.data.backend.BackendFailure
 import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.LocalWebViewSniffer
@@ -46,7 +47,11 @@ class BackendInjectionTest {
         val text = File("$SRC_ROOT/ui/HomeViewModel.kt").readText()
         assertTrue("设置必须是注入的", text.contains("private val settings: EngineSettings"))
         assertTrue("后端必须是注入的", text.contains("private val backends: BackendProvider"))
+        assertTrue("引擎事实必须是注入的", text.contains("private val engineInfo: EngineInfo"))
+        assertTrue("审计必须是注入的", text.contains("private val audit: AuditLogger"))
         assertFalse("不得再继承 AndroidViewModel", text.contains("AndroidViewModel"))
+        assertFalse("不得自己 new 引擎客户端", text.contains("EngineClient("))
+        assertFalse("审计不得直接写 Log.w", text.contains("Log.w("))
         assertTrue("嗅探必须经组装点", text.contains("backends.sniff("))
         assertTrue("下载必须经组装点", text.contains("backends.download("))
     }
@@ -71,6 +76,19 @@ class BackendInjectionTest {
         }
         val owners = hits.map { it.substringBefore(':') }.distinct().sorted()
         assertEquals("具体后端只允许在组装根里构造：\n${hits.joinToString("\n")}", listOf("AppContainer.kt"), owners)
+    }
+
+    /** 审计与引擎事实也必须从组装根流进去；真机取证依赖固定 TAG。 */
+    @Test
+    fun assemblyRootWiresAuditAndEngineInfo() {
+        val container = File("$SRC_ROOT/data/AppContainer.kt").readText()
+        assertTrue("连接态事实必须由组装根提供", container.contains("HttpEngineInfo(client)"))
+        assertTrue("审计实现必须是 LogcatAuditLogger", container.contains("LogcatAuditLogger()"))
+        assertTrue("下载器必须拿到审计通道", container.contains("LocalDirectDownloader(audit = audit)"))
+        val route = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
+        assertTrue("首页工厂必须传入引擎事实", route.contains("container.engineInfo"))
+        assertTrue("首页工厂必须传入审计", route.contains("container.audit"))
+        assertEquals("真机取证只认这一个 TAG", "BgvAudit", LogcatAuditLogger.TAG)
     }
 
     @Test

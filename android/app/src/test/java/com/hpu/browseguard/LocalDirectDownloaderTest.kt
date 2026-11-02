@@ -7,6 +7,7 @@ import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
+import com.hpu.browseguard.fakes.FakeAuditLogger
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DrmSystem
 import com.hpu.browseguard.shared.model.EstimatedQuality
@@ -358,6 +359,30 @@ class LocalDirectDownloaderTest {
         assertNull("Range 只能由下载器按 .part 自己决定", recorded.headers["range"])
         assertNull(recorded.headers["if-range"])
         assertEquals(payload, File(out, "clip.mp4").readText())
+    }
+
+    /** 被剥掉的头必须留审计行：真机排查「为什么 403」时，先要能看见客户端扔了什么。 */
+    @Test
+    fun strippedRangeAndSensitiveHintsLeaveAuditRows() {
+        server.enqueue(reply(200, payload))
+        val audit = FakeAuditLogger()
+        val audited = LocalDirectDownloader(audit = audit)
+        val link = link("/media/clip.mp4").copy(
+            headersHint = mapOf(
+                "Range" to "bytes=0-0",
+                "Cookie" to "sid=secret",
+                "Referer" to "https://m.example.com/watch",
+            ),
+        )
+
+        runBlocking { audited.start(viaLocal(link)).toList() }
+
+        val recorded = server.takeRequest()
+        assertNull(recorded.headers["Range"])
+        assertNull(recorded.headers["Cookie"])
+        assertEquals("https://m.example.com/watch", recorded.headers["Referer"])
+        assertEquals("range", audit.of("range_stripped").single().fields["header"])
+        assertEquals("cookie", audit.of("sensitive_header_stripped").single().fields["header"])
     }
 
     private fun prepare(results: List<SniffResult>) = runBlocking {

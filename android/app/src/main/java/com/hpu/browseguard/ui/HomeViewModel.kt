@@ -1,12 +1,12 @@
 package com.hpu.browseguard.ui
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.hpu.browseguard.data.EngineClient
+import com.hpu.browseguard.data.AuditLogger
 import com.hpu.browseguard.data.EngineException
 import com.hpu.browseguard.data.EngineFailure
+import com.hpu.browseguard.data.EngineInfo
 import com.hpu.browseguard.data.EngineSettings
 import com.hpu.browseguard.data.FormatSelection
 import com.hpu.browseguard.data.backend.BackendFailure
@@ -135,9 +135,9 @@ data class HomeUiState(
 class HomeViewModel(
     private val settings: EngineSettings,
     private val backends: BackendProvider,
+    private val engineInfo: EngineInfo,
+    private val audit: AuditLogger,
 ) : ViewModel() {
-
-    private val client = EngineClient()
 
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
@@ -188,6 +188,10 @@ class HomeViewModel(
         if (snapshot.downloadExecutor == executor) return
         if (snapshot.downloadInFlight) return
         settings.downloadExecutor = executor
+        // 切到本地会把用户勾着的合并静默取消，审计行要留下「为什么没合并」。
+        if (executor == DownloadExecutor.LOCAL_DIRECT && snapshot.mergeSelected) {
+            audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
+        }
         _state.update {
             it.copy(
                 downloadExecutor = executor,
@@ -321,7 +325,10 @@ class HomeViewModel(
 
     fun toggleMerge(enabled: Boolean) {
         // 本地模式没有合并的后端：界面已置灰，这里再挡一次编程调用，别让状态里出现勾着的空操作。
-        if (!_state.value.mergeAvailable) return
+        if (!_state.value.mergeAvailable) {
+            if (enabled) audit.log("merge_ignored", mapOf("reason" to "local_direct_locked"))
+            return
+        }
         _state.update { it.copy(mergeSelected = enabled) }
     }
 
@@ -362,7 +369,7 @@ class HomeViewModel(
                 }
                 if (snapshot.mergeSelected) {
                     // 勾了合并但这一支没有 FFmpeg：忽略并留审计行，绝不假装合并成功。
-                    Log.w(TAG, "merge_ignored executor=local_direct reason=no_ffmpeg")
+                    audit.log("merge_ignored", mapOf("reason" to "no_ffmpeg"))
                 }
                 StartRequest.ViaLocal(
                     link = link,
@@ -406,7 +413,7 @@ class HomeViewModel(
         _state.update {
             it.copy(
                 connection = try {
-                    Connection.Connected(client.health(baseUrl), client.selfcheck(baseUrl))
+                    Connection.Connected(engineInfo.health(baseUrl), engineInfo.selfcheck(baseUrl))
                 } catch (e: EngineException) {
                     Connection.Failed(e.failure.reason())
                 },
@@ -416,14 +423,19 @@ class HomeViewModel(
 
     companion object {
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
-        fun factory(settings: EngineSettings, backends: BackendProvider): ViewModelProvider.Factory =
+        fun factory(
+            settings: EngineSettings,
+            backends: BackendProvider,
+            engineInfo: EngineInfo,
+            audit: AuditLogger,
+        ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     require(modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                         "HomeViewModel.Factory 不认识的类型：$modelClass"
                     }
-                    return HomeViewModel(settings, backends) as T
+                    return HomeViewModel(settings, backends, engineInfo, audit) as T
                 }
             }
     }
@@ -468,6 +480,3 @@ private fun EngineFailure.reason(): String = when (this) {
     is EngineFailure.Protocol -> "HTTP $httpStatus ${error.code}：${error.message}"
     is EngineFailure.Transport -> reason
 }
-
-/** 审计行专用：日志只描述客户端自己的决定，不冒充引擎。 */
-private const val TAG = "HomeViewModel"

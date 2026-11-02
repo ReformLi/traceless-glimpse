@@ -2661,3 +2661,60 @@ header 观测日志再定稿。
 3. **WebView 报告里的「实际给哪些头」未在设备上观测**；第 ③ 小步先打日志再加合成逻辑。
 4. **FakeBackend + `sniffing`/`format_preparing` 行为单测**是第 ② 小步，尚未开工。
 
+## 24. M4 第 3 步 ②：FakeBackend、状态流转与可注入审计
+
+### 24.1 落地表
+
+| 文件 | 改动 |
+| --- | --- |
+| `data/AuditLogger.kt`（新） | `AuditLogger.log(event, fields)`；`NoopAuditLogger`；`LogcatAuditLogger` 固定 TAG `BgvAudit`，字段值里的换行/制表符替换为 `_` |
+| `data/EngineInfo.kt`（新） | `health` / `selfcheck` 两条引擎事实；`HttpEngineInfo(client)` 复用组装根的 `EngineClient` |
+| `ui/HomeViewModel.kt` | 构造改为 `(settings, backends, engineInfo, audit)`；不再 new `EngineClient`；三处 `merge_ignored` 审计 |
+| `data/AppContainer.kt` | 提供 `audit = LogcatAuditLogger()`、`engineInfo = HttpEngineInfo(client)`；本地下载器注入 `audit` |
+| `data/backend/LocalDirectDownloader.kt` | 构造增加 `audit`（默认 `NoopAuditLogger`）；过滤 `headersHint` 时分别写 `range_stripped` / `sensitive_header_stripped` |
+| `ui/HomeScreen.kt` | 工厂传入 `container.engineInfo` 与 `container.audit` |
+| `test/.../fakes/Fakes.kt`（新） | `FakeSniffBackend` / `FakeDownloadBackend`（`Channel(UNLIMITED)`，测试手动发事件）、`FakeBackendProvider`、`FakeEngineSettings`、`FakeEngineInfo`、`FakeAuditLogger` |
+| `test/.../HomeViewModelBehaviorTest.kt`（新） | 6 条状态机/审计行为测试 |
+| `test/.../LocalDirectDownloaderTest.kt` | 新增 1 条「剥头留审计」测试 |
+| `test/.../BackendInjectionTest.kt` | 增补 `engineInfo` / `audit` 注入断言、`BgvAudit` TAG 断言、组装根接线断言 |
+
+### 24.2 新测试钉住的语义
+
+1. `sniffingStatusIsMirroredIntoTheUi`：`sniff()` 后 `Running(QUEUED)`，`Status(SNIFFING)` 后界面同步；嗅探仍固定 `SniffExecutor.ENGINE`（裁决 2）。
+2. `formatPreparingStatusIsMirroredAndASingleRowIsSelected`：`Preparing(QUEUED)` → `Preparing(SNIFFING)` 同步；单行 `Selecting` 自动选中，`canStartDownload` 立即可用。
+3. `sniffLocalFailureNeverReadsAsSuccessAndCarriesNoProtocolCode`：`Local(NO_SNIFF_RESULTS)` 落 `SniffPhase.Failed`，`code == null`，绝不落成功态。
+4. `downloadLocalFailureNeverReadsAsSuccessAndCarriesNoProtocolCode`：本地直链 403 → `DownloadPhase.Failed`，`code == null`，`ViaLocal` 的 `outputDir` / `allowedRoots` 只用手机沙箱根。
+5. `switchingToLocalClearsAndAuditsTheIgnoredMerge`：引擎模式勾着合并 → 切本地 → 状态落 `false`，审计 `merge_ignored reason=executor_switch`。
+6. `theBlockedMergeToggleLeavesAnAuditRowAndNeverToggles`：本地模式下编程调用 `toggleMerge(true)` 不生效，审计 `merge_ignored reason=local_direct_locked`。
+7. `strippedRangeAndSensitiveHintsLeaveAuditRows`：`Range` / `Cookie` 不上行，`Referer` 保留；审计分别记 `range_stripped header=range` 与 `sensitive_header_stripped header=cookie`。
+
+`merge_ignored` 的三个来源各有事实：`executor_switch`（用户真的切了执行者）、`local_direct_locked`（界面之外还想勾）、`no_ffmpeg`（状态被外部改脏后的防御分支）。三者都只描述客户端决定，不带协议码。
+
+### 24.3 变异体取证
+
+| 变异 | 改动 | 结果 |
+| --- | --- | --- |
+| M-24-A | `range_stripped` 事件名改为 `header_dropped` | `LocalDirectDownloaderTest` 17 条中**恰好 1 红**：`strippedRangeAndSensitiveHintsLeaveAuditRows` |
+| M-24-B | `local_direct_locked` 原因改为 `blocked` | `HomeViewModelBehaviorTest` 6 条中**恰好 1 红**：`theBlockedMergeToggleLeavesAnAuditRowAndNeverToggles` |
+
+两次均 `cp` 快照还原，`diff -q` 确认字节一致。
+
+### 24.4 全量结果
+
+- `testDebugUnitTest --rerun-tasks`：**109 tests / 0 failures / 0 errors / 0 skipped**。
+- `assembleDebug` 成功：`app-debug.apk` 31,802,623 字节（2026-11-02 13:27）。
+- 没有新增任何真机行为；本轮全部是 JVM 单测与静态契约。
+
+### 24.5 对 §23.4 的影响
+
+- **§23.4-2 已关闭**：`HomeViewModel` 不再直接 new `EngineClient`，连接态走注入的 `EngineInfo`；纯 JVM 单测可把状态推到 `Connected`。
+- **§23.4-4 已关闭**：FakeBackend 与两条中间态单测落地。
+- **§23.4-1 / 3 保留**：`LOCAL_WEBVIEW` 仍无界面可达路径，真机头观测仍在第 ③ 小步。
+
+### 24.6 本轮遗留
+
+1. **`FakeEngineInfo` 只模拟在线/离线两种结果**，没有模拟协议版本不符或空自检表；现有行为测试不需要，后续需要时再加。
+2. **`LogcatAuditLogger` 只做换行清洗，不做字段级脱敏**：调用方目前只传头名与固定原因串，不传 URL/凭据。若将来要记 URL，必须先加脱敏函数，不能直接拼。
+3. **审计断言依赖事件名与 `reason` 字符串**：这是有意为之——它们就是真机 `adb logcat -s BgvAudit` 的检索键，改名会同时红测试与取证口径。
+4. **Fake 后端不模拟流异常/超时**：`LocalFailures` 的超时窗口仍由 `LocalTimeoutTest` 用源码契约钉住，本轮不重复。
+

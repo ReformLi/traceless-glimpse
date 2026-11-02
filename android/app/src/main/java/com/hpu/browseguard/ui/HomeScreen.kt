@@ -70,7 +70,7 @@ import java.util.Locale
 fun HomeRoute(
     container: AppContainer,
     viewModel: HomeViewModel = viewModel(
-        factory = HomeViewModel.factory(container.settings, container),
+        factory = HomeViewModel.factory(container.settings, container, container.engineInfo, container.audit),
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()

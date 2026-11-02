@@ -22,7 +22,9 @@ class AppContainer(context: Context) : BackendProvider {
 
     private val app = context.applicationContext
     val settings: EngineSettings = EngineConfig(app)
+    val audit: AuditLogger = LogcatAuditLogger()
     private val client = EngineClient()
+    val engineInfo: EngineInfo = HttpEngineInfo(client)
     private val webViewSniffer = LocalWebViewSniffer()
 
     /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
@@ -39,6 +41,6 @@ class AppContainer(context: Context) : BackendProvider {
 
     override fun download(executor: DownloadExecutor): DownloadBackend = when (executor) {
         DownloadExecutor.ENGINE -> HttpDownloader(settings.baseUrl, client)
-        DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader()
+        DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader(audit = audit)
     }
 }
