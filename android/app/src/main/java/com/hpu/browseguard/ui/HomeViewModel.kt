@@ -22,6 +22,9 @@ import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.data.backend.toBackendFailure
+import com.hpu.browseguard.data.cookie.CookieConsentStore
+import com.hpu.browseguard.data.cookie.DenyAllCookieConsent
+import com.hpu.browseguard.data.cookie.cookieHostOf
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.formatSummary
 import com.hpu.browseguard.data.output.OutputPublish
@@ -41,6 +44,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.net.HttpURLConnection
 import java.util.UUID
 
 /** 引擎连接状态。 */
@@ -59,6 +63,12 @@ sealed interface SniffPhase {
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : SniffPhase
 }
 
+/** 画质表已就绪、等用户点「开始下载」的两个阶段共用的形状。 */
+interface FormatPickable {
+    val taskId: String
+    val formats: List<FormatInfo>
+}
+
 /** 嗅探 → 选画质 → 下载 → 进度 / 取消 的下载流程阶段。 */
 sealed interface DownloadPhase {
     data object Idle : DownloadPhase
@@ -67,7 +77,24 @@ sealed interface DownloadPhase {
     data class Preparing(val status: TaskStatus) : DownloadPhase
 
     /** 引擎给出可选格式表（PROTOCOL §6.3）。 */
-    data class Selecting(val taskId: String, val formats: List<FormatInfo>) : DownloadPhase
+    data class Selecting(
+        override val taskId: String,
+        override val formats: List<FormatInfo>,
+    ) : DownloadPhase, FormatPickable
+
+    /**
+     * 本机直链被站点用 401/403 拒了，而这一站的 Cookie 授权还没点头。
+     *
+     * 这不是失败：下载没开始、`.part` 没写、历史行不动。它停在界面上等一次
+     * 显式授权（M6-5 D1）——纯后台任务没有前台弹窗时，就是这个态在替用户记住
+     * 「差一次同意」，回来点同意即自动重试。
+     */
+    data class AwaitingCookieConsent(
+        override val taskId: String,
+        override val formats: List<FormatInfo>,
+        val host: String,
+        val status: Int,
+    ) : DownloadPhase, FormatPickable
 
     data class Running(val task: Task, val cancelRequested: Boolean = false) : DownloadPhase
 
@@ -115,11 +142,15 @@ data class HomeUiState(
     val outputDir: String?
         get() = (connection as? Connection.Connected)?.selfcheck?.outputDirAllowlist?.firstOrNull()
 
-    /** 有任务正跑着（等画质表或下载中）：换执行者会把两条链路的事实搅在一起，界面据此禁用开关。 */
+    /**
+     * 有任务正跑着（等画质表、下载中、等授权）：换执行者会把两条链路的事实搅在一起，
+     * 界面据此禁用开关。等授权也算在内——那张画质表本身就是重试要用的东西。
+     */
     val downloadInFlight: Boolean
         get() = download is DownloadPhase.Preparing ||
             download is DownloadPhase.Running ||
-            (download is DownloadPhase.Success && download.publishing)
+            (download is DownloadPhase.Success && download.publishing) ||
+            download is DownloadPhase.AwaitingCookieConsent
 
     /** 合并需要 FFmpeg，本地直链这一支没有——不是「暂不支持」，是压根没有执行者。 */
     val mergeAvailable: Boolean
@@ -138,22 +169,23 @@ data class HomeUiState(
      * 嗅探成功后才谈得上选画质；下载流程自己也在跑时不允许重复发起。
      *
      * 本地直链的「画质表」由嗅探结果合成，不需要引擎在线；引擎下载才要等自检。
+     * 等授权时不再让重挑画质——那张表本身就是重试要用的东西。
      */
     val canPickFormats: Boolean
         get() = sniff is SniffPhase.Success &&
             download !is DownloadPhase.Preparing &&
-            download !is DownloadPhase.Selecting &&
+            download !is FormatPickable &&
             download !is DownloadPhase.Running &&
             (downloadExecutor == DownloadExecutor.LOCAL_DIRECT || engineReady)
 
     val selectedFormat: FormatInfo?
-        get() = (download as? DownloadPhase.Selecting)?.formats?.firstOrNull { it.formatId == selectedFormatId }
+        get() = (download as? FormatPickable)?.formats?.firstOrNull { it.formatId == selectedFormatId }
 
     val namingTemplateError: String?
         get() = FormatSelection.namingTemplateError(namingTemplate.trim())
 
     val canStartDownload: Boolean
-        get() = download is DownloadPhase.Selecting && selectedFormat != null && namingTemplateError == null
+        get() = download is FormatPickable && selectedFormat != null && namingTemplateError == null
 
     private val engineReady: Boolean
         get() = connection is Connection.Connected &&
@@ -172,10 +204,20 @@ class HomeViewModel(
     private val engineInfo: EngineInfo,
     private val audit: AuditLogger,
     private val history: HistoryRepository,
+    /** 只有域名与授权位，Cookie 值永远不进这一层（也不进界面对象）。 */
+    private val consent: CookieConsentStore = DenyAllCookieConsent,
 ) : ViewModel() {
 
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
+
+    /**
+     * 授权之后要自动接着做下去的画质 id。
+     *
+     * 「同意即重试」会让嗅探 → 挑画质 → 下载这三步在用户只点一次的情况下连着跑完，
+     * 中途没有任何一处能再问用户「还要不要这条」——所以答案必须在进入等待态时记下来。
+     */
+    private var resumeFormatId: String? = null
 
     /** 当前这次嗅探/下载在历史里的行 id；一次用户动作只写一行。 */
     private var historyId: String? = null
@@ -268,6 +310,7 @@ class HomeViewModel(
     }
 
     fun editSourceUrl(value: String) {
+        resumeFormatId = null
         _state.update {
             it.copy(
                 sourceUrl = value,
@@ -279,6 +322,12 @@ class HomeViewModel(
     }
 
     fun sniff() {
+        // 用户主动重嗅 = 放弃「授权后续跑」那条线索，别再悄悄接着下别的任务。
+        resumeFormatId = null
+        startSniff()
+    }
+
+    private fun startSniff() {
         val snapshot = _state.value
         val sourceUrl = snapshot.sourceUrl.trim()
         if (sourceUrl.isEmpty() || !snapshot.canSniff) return
@@ -431,9 +480,12 @@ class HomeViewModel(
             is SniffEvent.Results -> {
                 record { markReady(it, format = null) }
                 _state.update { it.copy(sniff = SniffPhase.Success(event.results)) }
+                resumeAfterConsent()
             }
 
             is SniffEvent.Failed -> {
+                // 续跑的那一步在这断了：授权后重放嗅探却没拿到结果，就别再挂着「待会自动开下」。
+                resumeFormatId = null
                 val phase = event.failure.toSniffPhase()
                 record { markFailed(it, phase.code) }
                 _state.update { it.copy(sniff = phase) }
@@ -491,11 +543,17 @@ class HomeViewModel(
             // 「开始下载」按钮随 selectedFormat 就绪自动变成可点的高亮态。
             is DownloadEvent.Selecting -> {
                 attachHistoryTask(event.taskId)
+                val resume = resumeFormatId
                 _state.update {
                     it.copy(
                         download = DownloadPhase.Selecting(event.taskId, event.formats),
-                        selectedFormatId = event.formats.singleOrNull()?.formatId,
+                        selectedFormatId = event.formats.firstOrNull { f -> f.formatId == resume }?.formatId
+                            ?: event.formats.singleOrNull()?.formatId,
                     )
+                }
+                // 授权续跑的第二步：画质表回来后直接接上下载，中间不再问一次。
+                if (resume != null && _state.value.selectedFormat != null) {
+                    viewModelScope.launch { startDownload() }
                 }
             }
 
@@ -537,11 +595,83 @@ class HomeViewModel(
             }
 
             is DownloadEvent.Failed -> {
-                val phase = event.failure.toDownloadPhase()
-                record { markFailed(it, phase.code) }
-                _state.update { it.copy(download = phase) }
+                val awaiting = event.failure.asCookieConsentWait()
+                if (awaiting != null) {
+                    // 差一次同意，不是失败：历史行原样留着，`.part` 本来也没写过。
+                    _state.update { it.copy(download = awaiting) }
+                } else {
+                    val phase = event.failure.toDownloadPhase()
+                    record { markFailed(it, phase.code) }
+                    _state.update { it.copy(download = phase) }
+                }
             }
         }
+    }
+
+    /**
+     * 这一条 401/403 是不是「只是没授权」？三个条件同时成立才算：
+     * 下载交给本机、这一站还没授权、站点确实回了需要凭据的两个状态码。
+     *
+     * 已经授权过的站点不在此列——那时 403 是真的 403，不能再拿弹窗糊过去。
+     */
+    private fun BackendFailure.asCookieConsentWait(): DownloadPhase.AwaitingCookieConsent? {
+        val snapshot = _state.value
+        if (snapshot.downloadExecutor != DownloadExecutor.LOCAL_DIRECT) return null
+        val local = this as? BackendFailure.Local ?: return null
+        if (local.reason != LocalReason.LINK_UNLOADABLE) return null
+        val status = local.status ?: return null
+        if (status != HttpURLConnection.HTTP_UNAUTHORIZED && status != HttpURLConnection.HTTP_FORBIDDEN) {
+            return null
+        }
+        val picking = snapshot.download as? FormatPickable ?: return null
+        val mediaUrl = picking.mediaUrlFor(snapshot.selectedFormatId) ?: return null
+        val host = cookieHostOf(mediaUrl)
+        if (host.isBlank() || consent.isGranted(host)) return null
+        resumeFormatId = snapshot.selectedFormatId
+        audit.log("cookie_consent_required", mapOf("host" to host, "status" to status.toString()))
+        return DownloadPhase.AwaitingCookieConsent(picking.taskId, picking.formats, host, status)
+    }
+
+    /** 本机画质表的 id 就是直链的哈希，所以能从嗅探结果里原样找回去。 */
+    private fun FormatPickable.mediaUrlFor(formatId: String?): String? {
+        val id = formatId ?: formats.singleOrNull()?.formatId ?: return null
+        return (_state.value.sniff as? SniffPhase.Success)
+            ?.results
+            ?.firstOrNull { localTaskId(it.mediaUrl) == id }
+            ?.mediaUrl
+    }
+
+    /** 授权续跑的第一步：重放嗅探拿到 Cookie 后，替用户把「挑画质」这一步点掉。 */
+    private fun resumeAfterConsent() {
+        if (resumeFormatId == null) return
+        pickFormats()
+    }
+
+    /**
+     * 用户点了「同意并继续」：记授权，然后接着把那一步做完。
+     *
+     * 本机嗅探过的那一页还没被允许存 Cookie，所以必须先重放一次嗅探（这次允许存），
+     * 画质表出来后直接续上下载——用户只点了一次同意，中间不再问他。
+     */
+    fun grantCookieConsent() {
+        val awaiting = _state.value.download as? DownloadPhase.AwaitingCookieConsent ?: return
+        consent.grant(awaiting.host)
+        _state.update { it.copy(download = DownloadPhase.Selecting(awaiting.taskId, awaiting.formats)) }
+        if (_state.value.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
+            startSniff()
+        } else {
+            startDownload()
+        }
+    }
+
+    /** 用户点了「拒绝」：回到原有出口 `LINK_UNLOADABLE`，措辞与改造前一致。 */
+    fun denyCookieConsent() {
+        val awaiting = _state.value.download as? DownloadPhase.AwaitingCookieConsent ?: return
+        resumeFormatId = null
+        audit.log("cookie_consent_denied", mapOf("host" to awaiting.host))
+        val phase = LocalFailures.linkUnloadable(awaiting.status).toDownloadPhase()
+        record { markFailed(it, phase.code) }
+        _state.update { it.copy(download = phase) }
     }
 
     private fun writeDownloadTerminal(task: Task, phase: DownloadPhase) {
@@ -622,14 +752,16 @@ class HomeViewModel(
 
     fun startDownload() {
         val snapshot = _state.value
-        val selecting = snapshot.download as? DownloadPhase.Selecting ?: return
+        val picking = snapshot.download as? FormatPickable ?: return
         val format = snapshot.selectedFormat ?: return
         if (snapshot.namingTemplateError != null) return
+        // 用户自己按下的「开始下载」：授权续跑的意图到此作废，别让它挂到下一条任务上。
+        resumeFormatId = null
 
         downloadJob?.cancel()
         val request = when (snapshot.downloadExecutor) {
             DownloadExecutor.ENGINE -> StartRequest.ViaEngine(
-                taskId = selecting.taskId,
+                taskId = picking.taskId,
                 formatSelector = FormatSelection.selectorFor(format),
                 namingTemplate = snapshot.namingTemplate.trim().takeIf { it.isNotEmpty() },
                 postActions = if (snapshot.mergeSelected) listOf(PostAction(PostActionType.MERGE)) else null,
@@ -701,6 +833,7 @@ class HomeViewModel(
 
     fun resetDownload() {
         downloadJob?.cancel()
+        resumeFormatId = null
         _state.update { it.copy(download = DownloadPhase.Idle, selectedFormatId = null) }
     }
 
@@ -729,6 +862,7 @@ class HomeViewModel(
             engineInfo: EngineInfo,
             audit: AuditLogger,
             history: HistoryRepository,
+            consent: CookieConsentStore,
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -736,7 +870,7 @@ class HomeViewModel(
                     require(modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                         "HomeViewModel.Factory 不认识的类型：$modelClass"
                     }
-                    return HomeViewModel(settings, backends, engineInfo, audit, history) as T
+                    return HomeViewModel(settings, backends, engineInfo, audit, history, consent) as T
                 }
             }
     }

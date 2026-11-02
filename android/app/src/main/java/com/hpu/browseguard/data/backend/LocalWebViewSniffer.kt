@@ -9,6 +9,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.hpu.browseguard.data.AuditLogger
 import com.hpu.browseguard.data.NoopAuditLogger
+import com.hpu.browseguard.data.cookie.CookieConsentStore
+import com.hpu.browseguard.data.cookie.DenyAllCookieConsent
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.TaskStatus
 import java.time.Instant
@@ -40,6 +42,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 class LocalWebViewSniffer(
     private val context: Context,
     private val audit: AuditLogger = NoopAuditLogger,
+    private val consent: CookieConsentStore = DenyAllCookieConsent,
     private val timeoutMs: Long = LocalFailures.WEBVIEW_MS,
     private val quietMs: Long = QUIET_AFTER_LOAD_MS,
 ) : SniffBackend {
@@ -49,7 +52,7 @@ class LocalWebViewSniffer(
         var session: WebViewSession? = null
         try {
             session = withContext(Dispatchers.Main.immediate) {
-                WebViewSession(context.applicationContext, request.sourceUrl, audit, signals)
+                WebViewSession(context.applicationContext, request.sourceUrl, audit, signals, consent)
             }
             if (session.webView == null) {
                 audit.log("webview_session", mapOf("outcome" to "no_webview", "host" to hostOf(request.sourceUrl)))
@@ -155,6 +158,7 @@ class LocalWebViewSniffer(
         private val startUrl: String,
         private val audit: AuditLogger,
         private val signals: SendChannel<Signal>,
+        private val consent: CookieConsentStore,
     ) {
         val webView: WebView? = runCatching { WebView(context) }.getOrNull()
 
@@ -175,9 +179,15 @@ class LocalWebViewSniffer(
         @SuppressLint("SetJavaScriptEnabled")
         fun start(url: String) {
             val view = webView ?: return
-            // 页面 JS 写的 Cookie 要留在 WebView 的 CookieStore 里，下载前由
-            // WebViewCookieProvider 读取；这里只确保接收开关开着。
-            runCatching { CookieManager.getInstance().setAcceptCookie(true) }
+            // 默认关闭：这一站没授权，就不让页面写进 CookieStore（M6-5 D1）。
+            // 值本身不属于这里——授权后 WebView 收到的 Cookie 存在系统容器里，
+            // 下载前由 ConsentCookieProvider 读一次，绝不进 headersHint。
+            val granted = consent.isGranted(hostOf(url))
+            runCatching { CookieManager.getInstance().setAcceptCookie(granted) }
+            audit.log(
+                "webview_session",
+                mapOf("host" to hostOf(url), "accept_cookie" to if (granted) "on" else "off"),
+            )
             userAgent = view.settings.userAgentString ?: ""
             view.settings.javaScriptEnabled = true
             view.settings.domStorageEnabled = true

@@ -84,7 +84,7 @@ class BackendInjectionTest {
         assertTrue("连接态事实必须由组装根提供", container.contains("HttpEngineInfo(client)"))
         assertTrue("审计实现必须是 LogcatAuditLogger", container.contains("LogcatAuditLogger()"))
         assertTrue("下载器必须拿到审计通道", container.contains("audit = audit"))
-        assertTrue("Cookie 通道必须由组装根构造", container.contains("cookies = WebViewCookieProvider()"))
+        assertTrue("Cookie 通道必须由组装根构造", container.contains("cookies = ConsentCookieProvider("))
         val route = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
         assertTrue("首页工厂必须传入引擎事实", route.contains("container.engineInfo"))
         assertTrue("首页工厂必须传入审计", route.contains("container.audit"))
@@ -127,7 +127,7 @@ class BackendInjectionTest {
 
         assertFalse("ViewModel 不得持有 Cookie 通道", viewModel.contains("CookieProvider"))
         assertFalse("界面不得接触 Cookie 通道", route.contains("CookieProvider"))
-        assertTrue("组装根必须注入", container.contains("cookies = WebViewCookieProvider()"))
+        assertTrue("组装根必须注入", container.contains("cookies = ConsentCookieProvider(cookieVault, cookieConsents, audit)"))
         assertFalse("引擎后端不得被注入 Cookie", container.contains("HttpDownloader(settings.baseUrl, client, "))
 
         val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()

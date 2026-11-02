@@ -3,6 +3,7 @@ package com.hpu.browseguard.data
 import android.content.Context
 import android.os.Environment
 import com.hpu.browseguard.data.backend.BackendProvider
+import com.hpu.browseguard.data.backend.ConsentCookieProvider
 import com.hpu.browseguard.data.backend.DownloadBackend
 import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.HttpDownloader
@@ -11,7 +12,10 @@ import com.hpu.browseguard.data.backend.LocalDirectDownloader
 import com.hpu.browseguard.data.backend.LocalWebViewSniffer
 import com.hpu.browseguard.data.backend.SniffBackend
 import com.hpu.browseguard.data.backend.SniffExecutor
-import com.hpu.browseguard.data.backend.WebViewCookieProvider
+import com.hpu.browseguard.data.cookie.CookieConsentStore
+import com.hpu.browseguard.data.cookie.CookieVault
+import com.hpu.browseguard.data.cookie.PrefsCookieConsentStore
+import com.hpu.browseguard.data.cookie.WebViewCookieVault
 import com.hpu.browseguard.data.history.BrowseGuardDatabase
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.ReconcileReport
@@ -36,7 +40,14 @@ class AppContainer(context: Context) : BackendProvider {
     private val client = EngineClient()
     val engineInfo: EngineInfo = HttpEngineInfo(client)
     val outputs = SafOutputDirectory(app, audit)
-    private val webViewSniffer = LocalWebViewSniffer(app, audit)
+
+    /** 「这一站的 Cookie 可以读吗」——只有域名和时间，值不在这层。 */
+    val cookieConsents: CookieConsentStore = PrefsCookieConsentStore(app, audit)
+
+    /** WebView 的 Cookie 容器；`CookieManager.getInstance()` 到第一次用时再取。 */
+    val cookieVault: CookieVault by lazy { WebViewCookieVault(audit = audit) }
+
+    private val webViewSniffer = LocalWebViewSniffer(app, audit, cookieConsents)
 
     /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
     override val localSandboxRoot: String? = try {
@@ -54,7 +65,7 @@ class AppContainer(context: Context) : BackendProvider {
         DownloadExecutor.ENGINE -> HttpDownloader(settings.baseUrl, client)
         DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader(
             audit = audit,
-            cookies = WebViewCookieProvider(),
+            cookies = ConsentCookieProvider(cookieVault, cookieConsents, audit),
         )
     }
 

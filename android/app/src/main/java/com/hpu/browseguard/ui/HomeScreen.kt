@@ -102,6 +102,7 @@ fun HomeRoute(
             container.engineInfo,
             container.audit,
             container.history,
+            container.cookieConsents,
         ),
     ),
 ) {
@@ -123,6 +124,8 @@ fun HomeRoute(
         onStartDownload = viewModel::startDownload,
         onCancelDownload = viewModel::cancelDownload,
         onResetDownload = viewModel::resetDownload,
+        onGrantCookieConsent = viewModel::grantCookieConsent,
+        onDenyCookieConsent = viewModel::denyCookieConsent,
     )
 }
 
@@ -144,7 +147,10 @@ fun HomeScreen(
     onStartDownload: () -> Unit,
     onCancelDownload: () -> Unit,
     onResetDownload: () -> Unit,
+    onGrantCookieConsent: () -> Unit,
+    onDenyCookieConsent: () -> Unit,
 ) {
+    val awaiting = state.download as? DownloadPhase.AwaitingCookieConsent
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -180,7 +186,7 @@ fun HomeScreen(
         )
 
         val download = state.download
-        if (download is DownloadPhase.Selecting) {
+        if (download is FormatPickable) {
             Spacer(Modifier.height(16.dp))
             FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
         }
@@ -211,6 +217,18 @@ fun HomeScreen(
             text = stringResource(R.string.home_stage),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    // 阻断式：这一层不写历史、不标失败，任务就停在这里等一次显式点头。
+    awaiting?.let { phase ->
+        ConfirmDialog(
+            title = stringResource(R.string.cookie_consent_title, phase.host),
+            message = stringResource(R.string.cookie_consent_body),
+            confirmLabel = stringResource(R.string.cookie_consent_agree),
+            dismissLabel = stringResource(R.string.cookie_consent_reject),
+            onConfirm = onGrantCookieConsent,
+            onDismiss = onDenyCookieConsent,
         )
     }
 }
@@ -1654,6 +1672,8 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
             onStartDownload = {},
             onCancelDownload = {},
             onResetDownload = {},
+            onGrantCookieConsent = {},
+            onDenyCookieConsent = {},
         )
     }
 }
@@ -1829,6 +1849,26 @@ private fun HomeDoneLocalPreview() {
                     namingTemplate = "example-1080p.mp4",
                 ),
             ),
+        ),
+    )
+}
+
+/**
+ * 14 等待 Cookie 授权：本机直链被 403 拒了，任务停在这里——不是失败态。
+ * 对话框本身由系统另开窗，Preview 里看不全，真机取证见验收文档 §2。
+ */
+@Preview(name = "14 等待 Cookie 授权", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 3000)
+@Composable
+private fun HomeAwaitingCookieConsentPreview() {
+    PreviewHome(
+        previewState(
+            sourceUrl = PREVIEW_URL,
+            sniff = SniffPhase.Success(previewResults),
+            sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+            downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+            localSandboxRoot = PREVIEW_SANDBOX,
+            download = DownloadPhase.AwaitingCookieConsent("0192f3a4", previewFormats, "cdn.example.com", 403),
+            selectedFormatId = "137+140",
         ),
     )
 }

@@ -52,6 +52,7 @@ internal object LocalFailures {
         BackendFailure.Local(
             LocalReason.LINK_UNLOADABLE,
             "本地直链取不到内容 · 服务端回 HTTP $status，客户端本地判定",
+            status = status,
         )
 
     fun disk(what: String): BackendFailure.Local =

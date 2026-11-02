@@ -21,4 +21,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /** 「最近使用时间」只在内存里滚，切后台这一刀才落盘（M6-5 D3）。 */
+    override fun onStop() {
+        super.onStop()
+        container.cookieConsents.flushUsage()
+    }
 }

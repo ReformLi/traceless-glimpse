@@ -54,6 +54,24 @@
     <string name="settings_output_reset">恢复默认</string>
     <string name="settings_output_hint">只影响手机侧的本地下载；先写入应用目录，完成后复制到所选文件夹。电脑引擎的文件仍在电脑上。</string>
     <string name="settings_output_error">无法使用该文件夹：%1$s</string>
+
+    <string name="settings_cookie_section">Cookie 授权</string>
+    <string name="settings_cookie_empty">还没有授权过任何站点</string>
+    <string name="settings_cookie_count">已授权 %1$d 个站点</string>
+    <string name="settings_cookie_last_used">最近使用 %1$s</string>
+    <string name="settings_cookie_never_used">尚未使用过</string>
+    <string name="settings_cookie_revoke">撤销</string>
+    <string name="settings_cookie_revoke_title">撤销 %1$s 的授权？</string>
+    <string name="settings_cookie_revoke_body">只收回读取许可，下次这个站点再需要登录状态时会重新询问；应用里已存的 Cookie 值不会被删掉。</string>
+    <string name="settings_cookie_revoke_confirm">撤销</string>
+    <string name="settings_cookie_revoke_cancel">取消</string>
+    <string name="settings_cookie_clear">清除所有 Cookie</string>
+    <string name="settings_cookie_clear_title">清除所有 Cookie？</string>
+    <string name="settings_cookie_clear_body">应用内浏览器保存的全部 Cookie 值都会删除，此操作不可撤销。系统只给了整体清除的接口，不能按站点逐条删值；授权记录不受影响，要收回许可请用每行后面的「撤销」。</string>
+    <string name="settings_cookie_clear_confirm">清除</string>
+    <string name="settings_cookie_clear_cancel">取消</string>
+    <string name="settings_cookie_hint">本机下载读取的 Cookie 只留在手机上，不会发给电脑引擎。</string>
+
     <string name="settings_history_section">历史维护</string>
     <string name="settings_history_count">共 %1$d 条记录 · %2$d 条已完成</string>
     <string name="settings_history_loading">正在读取历史…</string>
@@ -191,6 +209,11 @@
     <string name="download_publishing">正在保存到所选文件夹…</string>
     <string name="download_published">%1$s（所选文件夹）</string>
     <string name="download_publish_failed">已下载到应用目录，但复制到所选文件夹失败：%1$s</string>
+
+    <string name="cookie_consent_title">允许读取 %1$s 的登录状态？</string>
+    <string name="cookie_consent_body">本机下载需读取您当前网页的登录状态（Cookie），仅用于本机直连下载，绝对不会发送给电脑引擎。\n\n若需使用您平时的登录状态，请先在本应用内打开该网页并登录。</string>
+    <string name="cookie_consent_agree">同意并继续</string>
+    <string name="cookie_consent_reject">拒绝</string>
 
     <string name="engine_panel_title">连接与引擎设置</string>
     <string name="engine_panel_expand">展开</string>

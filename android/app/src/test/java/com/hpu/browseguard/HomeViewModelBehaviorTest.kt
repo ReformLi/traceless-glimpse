@@ -11,6 +11,7 @@ import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.fakes.FakeAuditLogger
 import com.hpu.browseguard.fakes.FakeBackendProvider
+import com.hpu.browseguard.fakes.FakeCookieConsentStore
 import com.hpu.browseguard.fakes.FakeEngineInfo
 import com.hpu.browseguard.fakes.FakeEngineSettings
 import com.hpu.browseguard.fakes.FakeHistoryRepository
@@ -147,13 +148,14 @@ class HomeViewModelBehaviorTest {
         assertEquals(listOf(FakeBackendProvider.DEFAULT_SANDBOX), local.allowedRoots)
 
         fakes.provider.downloadBackend.emitStart(
-            DownloadEvent.Failed(LocalFailures.linkUnloadable(403)),
+            // 401/403 现在先落在「等待授权」态（M6-5），这条钉的是纯本地失败的出口，所以用 503。
+            DownloadEvent.Failed(LocalFailures.linkUnloadable(503)),
         )
 
         assertFalse("本地失败不得落成成功态", vm.state.value.download is DownloadPhase.Success)
         val failed = vm.state.value.download as DownloadPhase.Failed
-        assertNull("站点 403 也不是引擎的码", failed.code)
-        assertEquals(LocalFailures.linkUnloadable(403).message, failed.message)
+        assertNull("站点 503 也不是引擎的码", failed.code)
+        assertEquals(LocalFailures.linkUnloadable(503).message, failed.message)
     }
 
     @Test
@@ -422,9 +424,10 @@ class HomeViewModelBehaviorTest {
         val provider: FakeBackendProvider = FakeBackendProvider(),
         val audit: FakeAuditLogger = FakeAuditLogger(),
         val history: FakeHistoryRepository = FakeHistoryRepository(),
+        val consent: FakeCookieConsentStore = FakeCookieConsentStore(),
     ) {
         fun connectedViewModel(): HomeViewModel {
-            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit, history)
+            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit, history, consent)
             assertEquals(Connection.Connected::class.java, vm.state.value.connection.javaClass)
             return vm
         }

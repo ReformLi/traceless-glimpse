@@ -16,6 +16,8 @@ import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
+import com.hpu.browseguard.data.cookie.CookieConsentStore
+import com.hpu.browseguard.data.cookie.CookieVault
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.ReconcileReport
@@ -207,6 +209,74 @@ class FakeAuditLogger : AuditLogger {
     fun of(event: String): List<Entry> = events.filter { it.event == event }
 
     fun has(event: String): Boolean = events.any { it.event == event }
+}
+
+/**
+ * 授权表替身：`grant`/`revoke` 直接改内存集合，[flushUsage] 只计数。
+ *
+ * 「最近使用时间」在真实现里是内存改、边界写盘；这里用 [markUsedCount] 把调用次数
+ * 露出来，让 D3 的节流能被断言，而不是只能靠读代码相信。
+ */
+class FakeCookieConsentStore(private val now: () -> Long = System::currentTimeMillis) : CookieConsentStore {
+
+    private val granted: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+    private val usage: MutableMap<String, Long> = Collections.synchronizedMap(mutableMapOf())
+
+    var markUsedCount: Int = 0
+        private set
+    var flushCount: Int = 0
+        private set
+
+    override fun isGranted(host: String): Boolean = granted.contains(host)
+
+    override fun grant(host: String) {
+        granted += host
+        usage[host] = now()
+    }
+
+    override fun revoke(host: String) {
+        granted -= host
+        usage.remove(host)
+    }
+
+    override fun grantedHosts(): List<String> = synchronized(granted) { granted.sorted() }
+
+    override fun lastUsedAt(host: String): Long? = usage[host]
+
+    override fun markUsed(host: String) {
+        markUsedCount += 1
+        if (isGranted(host)) usage[host] = now()
+    }
+
+    override fun flushUsage() {
+        flushCount += 1
+    }
+}
+
+/** Cookie 值容器替身：谁读了、读了几次、清了几次都留在记录里。 */
+class FakeCookieVault(initial: Map<String, String> = emptyMap()) : CookieVault {
+
+    private val values: MutableMap<String, String> = Collections.synchronizedMap(initial.toMutableMap())
+
+    val readUrls: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    var clearCount: Int = 0
+        private set
+    var flushCount: Int = 0
+        private set
+
+    override fun read(url: String): String? {
+        readUrls += url
+        return values[url]?.takeIf { it.isNotBlank() }
+    }
+
+    override fun clearAll() {
+        clearCount += 1
+        synchronized(values) { values.clear() }
+    }
+
+    override fun flush() {
+        flushCount += 1
+    }
 }
 
 /** 内存版历史仓库：让 JVM 单测能看见 HomeViewModel 到底写了什么。 */

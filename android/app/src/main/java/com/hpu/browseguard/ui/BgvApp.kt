@@ -58,6 +58,7 @@ fun BgvApp(container: AppContainer) {
             container.engineInfo,
             container.audit,
             container.history,
+            container.cookieConsents,
         ),
     )
 

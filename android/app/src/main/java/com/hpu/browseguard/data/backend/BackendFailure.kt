@@ -25,6 +25,13 @@ sealed interface BackendFailure {
         val reason: LocalReason,
         val message: String,
         val retryable: Boolean = true,
+        /**
+         * 站点回的真实 HTTP 状态（只有 [LocalReason.LINK_UNLOADABLE] 才有值）。
+         *
+         * 界面靠它分辨「被拒得再要一次授权」和「这条直链本来就读不到」——状态码
+         * 是站点说的，不是我们猜的，所以仍然不带 §5 协议码。
+         */
+        val status: Int? = null,
     ) : BackendFailure
 }
 

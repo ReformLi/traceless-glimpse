@@ -62,6 +62,11 @@ import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.ui.components.ConfirmDialog
 import com.hpu.browseguard.ui.theme.BgvTheme
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @Composable
 fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
@@ -74,6 +79,9 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
     val clearing by historyViewModel.clearing.collectAsStateWithLifecycle()
     val outputLocation by container.outputs.location.collectAsStateWithLifecycle()
     var outputError by remember { mutableStateOf<String?>(null) }
+    // 授权表不是 Flow：进页面时读一次，撤销后立刻重读——列的就是这一份。
+    var cookieHosts by remember { mutableStateOf(container.cookieConsents.grantedHosts()) }
+    var confirmingClearCookies by remember { mutableStateOf(false) }
 
     val directoryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -92,6 +100,8 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         clearingHistory = clearing,
         outputLocation = outputLocation,
         outputError = outputError,
+        cookieHosts = cookieHosts,
+        cookieLastUsed = container.cookieConsents::lastUsedAt,
         onEditEngineUrl = homeViewModel::editEngineUrl,
         onSaveEngineUrl = homeViewModel::saveEngineUrl,
         onRefreshConnection = homeViewModel::refreshConnection,
@@ -106,7 +116,27 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
             container.outputs.forget()
         },
         onClearHistory = historyViewModel::clearAll,
+        onRevokeCookieConsent = { host ->
+            container.cookieConsents.revoke(host)
+            cookieHosts = container.cookieConsents.grantedHosts()
+        },
+        onRequestClearCookies = { confirmingClearCookies = true },
     )
+
+    if (confirmingClearCookies) {
+        ConfirmDialog(
+            title = stringResource(R.string.settings_cookie_clear_title),
+            message = stringResource(R.string.settings_cookie_clear_body),
+            confirmLabel = stringResource(R.string.settings_cookie_clear_confirm),
+            dismissLabel = stringResource(R.string.settings_cookie_clear_cancel),
+            onConfirm = {
+                confirmingClearCookies = false
+                container.cookieVault.clearAll()
+            },
+            onDismiss = { confirmingClearCookies = false },
+            destructive = true,
+        )
+    }
 }
 
 /**
@@ -122,6 +152,8 @@ fun SettingsScreen(
     clearingHistory: Boolean,
     outputLocation: OutputLocation,
     outputError: String?,
+    cookieHosts: List<String>,
+    cookieLastUsed: (String) -> Long?,
     onEditEngineUrl: (String) -> Unit,
     onSaveEngineUrl: () -> Unit,
     onRefreshConnection: () -> Unit,
@@ -130,6 +162,8 @@ fun SettingsScreen(
     onPickOutputDirectory: () -> Unit,
     onResetOutputDirectory: () -> Unit,
     onClearHistory: () -> Unit,
+    onRevokeCookieConsent: (String) -> Unit,
+    onRequestClearCookies: () -> Unit,
 ) {
     var confirmingClear by remember { mutableStateOf(false) }
 
@@ -183,6 +217,14 @@ fun SettingsScreen(
             error = outputError,
             onPick = onPickOutputDirectory,
             onReset = onResetOutputDirectory,
+        )
+
+        Spacer(Modifier.height(16.dp))
+        CookieSection(
+            hosts = cookieHosts,
+            lastUsed = cookieLastUsed,
+            onRequestClear = onRequestClearCookies,
+            onRevoke = onRevokeCookieConsent,
         )
 
         Spacer(Modifier.height(16.dp))
@@ -479,6 +521,62 @@ private fun OutputSection(
 }
 
 @Composable
+private fun CookieSection(
+    hosts: List<String>,
+    lastUsed: (String) -> Long?,
+    onRequestClear: () -> Unit,
+    onRevoke: (String) -> Unit,
+) {
+    SettingsCard(stringResource(R.string.settings_cookie_section)) {
+        if (hosts.isEmpty()) {
+            Text(
+                text = stringResource(R.string.settings_cookie_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                text = stringResource(R.string.settings_cookie_count, hosts.size),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            hosts.forEach { host ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = host, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = lastUsed(host)?.let {
+                                stringResource(R.string.settings_cookie_last_used, cookieTimeLabel(it))
+                            } ?: stringResource(R.string.settings_cookie_never_used),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = { onRevoke(host) }) {
+                        Text(stringResource(R.string.settings_cookie_revoke))
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        OutlinedButton(onClick = onRequestClear, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = stringResource(R.string.settings_cookie_clear),
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.settings_cookie_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun HistorySection(
     history: HistoryUiState,
     clearing: Boolean,
@@ -594,6 +692,15 @@ private fun CookiePolicy.cookieText(): String = stringResource(
     },
 )
 
+private val COOKIE_TIME_TODAY: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
+private val COOKIE_TIME_EARLIER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.ROOT)
+
+private fun cookieTimeLabel(millis: Long): String {
+    val zone = ZoneId.systemDefault()
+    val time = Instant.ofEpochMilli(millis).atZone(zone)
+    return time.format(if (time.toLocalDate() == LocalDate.now(zone)) COOKIE_TIME_TODAY else COOKIE_TIME_EARLIER)
+}
+
 @Preview(showBackground = true, backgroundColor = 0xFFF6F8FA)
 @Composable
 private fun SettingsScreenPreview() {
@@ -645,6 +752,8 @@ private fun SettingsScreenPreview() {
             clearingHistory = false,
             outputLocation = OutputLocation(treeUri = "content://preview/tree", displayName = "Download"),
             outputError = null,
+            cookieHosts = listOf("cdn.example.com", "www.example.com"),
+            cookieLastUsed = { host -> if (host == "cdn.example.com") System.currentTimeMillis() else null },
             onEditEngineUrl = {},
             onSaveEngineUrl = {},
             onRefreshConnection = {},
@@ -653,6 +762,8 @@ private fun SettingsScreenPreview() {
             onPickOutputDirectory = {},
             onResetOutputDirectory = {},
             onClearHistory = {},
+            onRevokeCookieConsent = {},
+            onRequestClearCookies = {},
         )
     }
 }
