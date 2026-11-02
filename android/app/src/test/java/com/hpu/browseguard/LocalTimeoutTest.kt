@@ -34,19 +34,21 @@ class LocalTimeoutTest {
             LocalFailures.sniffTimeout(),
             LocalFailures.prepareTimeout(),
             LocalFailures.downloadTimeout(),
+            LocalFailures.webViewTimeout(),
         )
         assertTrue(
-            "三条都必须归本地超时，不许混进协议失败",
+            "四条都必须归本地超时，不许混进协议失败",
             failures.all { it.reason == LocalReason.TIMEOUT },
         )
         val phases = listOf(
             failures[0].toSniffPhase().code,
             failures[1].toDownloadPhase().code,
             failures[2].toDownloadPhase().code,
+            failures[3].toSniffPhase().code,
         )
         phases.forEach { assertNull("本地失败映射后仍不得携带 §5 协议码", it) }
-        assertTrue("三条都标了本地计时", failures.all { it.message.contains("本地计时") })
-        assertTrue("三条都可重试", failures.all { it.retryable })
+        assertTrue("四条都标了本地计时", failures.all { it.message.contains("本地计时") })
+        assertTrue("四条都可重试", failures.all { it.retryable })
     }
 
     /** 三条文案与窗口逐字钉住：改了常量或措辞，这里先红，而不是等截图发现。 */
@@ -58,9 +60,11 @@ class LocalTimeoutTest {
             "下载超时 · 客户端本地计时 1800s 到点，任务仍在引擎侧运行",
             LocalFailures.downloadTimeout().message,
         )
+        assertEquals("手机 WebView 嗅探超时 · 客户端本地计时 30s 到点", LocalFailures.webViewTimeout().message)
         assertEquals(90_000L, LocalFailures.SNIFF_MS)
         assertEquals(120_000L, LocalFailures.PREPARE_MS)
         assertEquals(1_800_000L, LocalFailures.DOWNLOAD_MS)
+        assertEquals(30_000L, LocalFailures.WEBVIEW_MS)
     }
 
     /**

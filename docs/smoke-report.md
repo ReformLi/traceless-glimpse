@@ -2718,3 +2718,71 @@ header 观测日志再定稿。
 3. **审计断言依赖事件名与 `reason` 字符串**：这是有意为之——它们就是真机 `adb logcat -s BgvAudit` 的检索键，改名会同时红测试与取证口径。
 4. **Fake 后端不模拟流异常/超时**：`LocalFailures` 的超时窗口仍由 `LocalTimeoutTest` 用源码契约钉住，本轮不重复。
 
+## 25. M4 第 3 步 ③：真实 WebView 嗅探与 MuMu 头观测
+
+### 25.1 落地表
+
+| 文件 | 改动 |
+| --- | --- |
+| `data/backend/SniffHeaderPolicy.kt`（新） | 嗅探/下载共享的黑名单与审计：`range`/`if-range` → `range_stripped`，其余凭据头 → `sensitive_header_stripped` |
+| `data/backend/LocalSniffMapping.kt`（新） | 纯 JVM 映射：只收单文件直链、去重键、构造 `SniffResult`、进入 `headersHint` 前过滤 |
+| `data/backend/LocalWebViewSniffer.kt` | 空壳换成真实实现：主线程建/载/销毁 WebView，后台回调只判定 + `trySend`，`channelFlow` 收候选 |
+| `data/backend/LocalDirectDownloader.kt` | 头过滤改走 `SniffHeaderPolicy`（行为不变，规则单源） |
+| `data/backend/LocalFailures.kt` | 新增 `WEBVIEW_MS = 30s`、`webViewTimeout()`、`webViewNoMedia()`；`webViewUnavailable(detail)` 可带具体原因 |
+| `data/AppContainer.kt` | `LocalWebViewSniffer(app, audit)` |
+| `test/.../LocalSniffMappingTest.kt`（新） | 6 条：单文件、切片/清单排除、头过滤、Referer/UA 合成、签名 query、去重 |
+| `test/.../BackendInjectionTest.kt` | WebView 失败路径改契约断言；新增「两个本地入口共用同一套头策略」静态守卫 |
+| `test/.../LocalTimeoutTest.kt` | 本地超时从三条扩到四条（含 WebView 30s） |
+| `androidTest/.../LocalWebViewSnifferDeviceTest.kt`（新） | 真机观测件：`pageUrl` 由 instrumentation 参数传入，断言候选与头集合 |
+
+### 25.2 实现语义
+
+1. **线程**：`WebView` 的构造、设置、`loadUrl`、`destroy` 全在 `Dispatchers.Main.immediate`；`shouldInterceptRequest` 回调只读 `@Volatile` 的页面 URL/UA、写 `Channel.trySend`，不碰视图。
+2. **候选**：只认 `mp4/m4v/mov/mkv/webm/m4a/mp3/aac/ogg/oga/opus/wav/flac`；`.m3u8/.mpd/.ts/.m4s` 与无后缀 URL 不产结果。去重键是去掉 fragment 的完整 URL，查询串保留（签名直链靠它）。
+3. **头**：回调把每个请求的 host / 扩展名 / 方法 / 头名清单 / Referer（脱 query）/ UA（截断）/ Cookie 是否存在 / Range 打到 `webview_request`；候选的 `headersHint` 先过 `SniffHeaderPolicy.sanitize`，缺失时用页面 URL 与 `WebSettings.getUserAgentString()` 合成 Referer/UA。
+4. **出口**：有候选 → `Results`；页面正常但无候选 → `webViewNoMedia()`；30s 无信号 → `webViewTimeout()`；WebView 起不来/主框架加载失败 → `webViewUnavailable(detail)`。全部是 `BackendFailure.Local`，界面 `code == null`。
+5. **收尾**：`finally` 用 `NonCancellable + Main` 销毁 WebView；取消 ViewModel 的嗅探协程不会留下一个还活着的离屏网页。
+
+### 25.3 MuMu 真机取证（2026-11-02）
+
+设备：`SM-S9080`，Android 15，WebView 为系统 Chromium。fixture 由 `engine/testsupport.media_server --port 8731 --bulk` 提供，`adb reverse tcp:8731 tcp:8731`；页面地址只经 instrumentation 参数传入。
+
+| 页面 | 拦截请求 | 其中 Range | 候选 | 结果 |
+| --- | --- | --- | --- | --- |
+| `/page-bulk.html` | 5 | 3（`bytes=0-0` / `bytes=0-` / `bytes=4161536-`） | 1（`/media/bulk.mp4`） | `outcome=candidates`，`loaded=true` |
+| `/page.html?sid=webview-obs` | 4 | 1（`sample.mp4` 的 `bytes=0-`） | 1（`/media/sample.mp4`） | `outcome=candidates`，`loaded=true`；m3u8 被排除 |
+
+原始审计行（节选）：
+
+```
+webview_request host=127.0.0.1 ext=mp4 method=GET headers=accept,range,referer,user-agent
+  referer=http://127.0.0.1/page-bulk.html user_agent=Mozilla/5.0 ... cookie=absent range=bytes=0-0
+webview_session outcome=candidates host=127.0.0.1 requests=5 ranges=3 candidates=1 loaded=true
+device_result_url=http://127.0.0.1:8731/media/bulk.mp4 headers=[accept, accept-encoding, referer, user-agent]
+```
+
+**成功率口径**：两个 fixture 页面都给出了直链（2/2）；`mp4` 请求全部被看到（4/4），同一 URL 的多次 Range 去重为 1 条；HLS 清单没有产生假行（0/1）。这是 fixture 结果，不外推到任意站点。
+
+### 25.4 关键头结论（回答 §23.3 的「待真机确认」）
+
+1. **Referer 与 User-Agent 确实在 `requestHeaders` 里**：本机 WebView 的媒体请求同时带了 `referer` 与 `user-agent`。合成逻辑仍保留，作为「某些版本/某些请求不带」的兜底，但当前设备上不是唯一来源。
+2. **Cookie 不在 `requestHeaders` 里，尽管服务器已收到**：`/page.html` 先由 JS 写 `sid`，media_server 记录 `/media/hls/master.m3u8` 与 `/media/sample.mp4` 的 `cookie_present=true`；同期 `webview_request` 的头名清单没有 `cookie`。这直接证实：**要支持 Cookie 站点，必须走 `CookieManager` 或显式通道，不能等 `requestHeaders`**。
+3. **Range 必然出现**：两条页面都观察到 `bytes=0-0` / `bytes=0-` / 大偏移分段；候选结果的 `headersHint` 已无 `range`，下载器侧还会再过滤一次。
+4. **未决**：是否把 `CookieManager.getCookie(url)` 接成下载前的显式通道，需要同步改协议脱敏与 `StartRequest.ViaLocal`；在裁决前，Cookie 站点会落到 `LINK_UNLOADABLE(403)`，界面按既有文案提示连接电脑，不做静默降级。
+
+### 25.5 变异体与全量
+
+- **M-25-A**：从 `SniffHeaderPolicy.FORBIDDEN_HEADERS` 移除 `"range"` → `LocalSniffMappingTest` 1 红、`LocalDirectDownloaderTest` 2 红，共 3 条精准转红；`cp` 还原后 `diff -q` 字节一致。
+- JVM：**116 tests / 0 failures / 0 errors / 0 skipped**。
+- 真机：`connectedDebugAndroidTest` 1/1 通过；`adb logcat -s BgvAudit` 取到上表全部审计行。
+- APK：31,835,391 字节（2026-11-02 13:32）。
+- 环境清理：media_server 按命令行核对 PID 后终止，`8731` 已关闭；`adb reverse --remove tcp:8731` 已执行，reverse 列表为空。
+
+### 25.6 遗留
+
+1. **`LOCAL_WEBVIEW` 仍无界面可达路径**（§23.4-1 保留）：`HomeViewModel.sniff()` 固定 `SniffExecutor.ENGINE`，本轮真机观测由 instrumentation 直接驱动嗅探器。入口切换/PC 不可达降级是下一步的联合裁决点。
+2. **Cookie 通道未接**：`headersHint` 永不夹带 Cookie；Cookie 站点的本地下载仍会 403。是否新增 `CookieProvider` 要单独裁决。
+3. **只测了 fixture 页面**：真实互联网页面的懒加载、防盗链、重定向、`blob:`/MSE 场景未覆盖；离屏 WebView 可能不触发依赖可见性的加载。
+4. **`headersHint` 仍保留 `accept` / `accept-encoding` 等非凭据头**：当前只做黑名单过滤，最终白名单策略等 Cookie 裁决一起定。
+5. **设备观测件依赖 media_server 与 `adb reverse`**：不在默认单测路径里，命令是 `./gradlew :android:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.hpu.browseguard.LocalWebViewSnifferDeviceTest`。
+

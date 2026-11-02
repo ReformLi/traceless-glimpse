@@ -25,7 +25,7 @@ class AppContainer(context: Context) : BackendProvider {
     val audit: AuditLogger = LogcatAuditLogger()
     private val client = EngineClient()
     val engineInfo: EngineInfo = HttpEngineInfo(client)
-    private val webViewSniffer = LocalWebViewSniffer()
+    private val webViewSniffer = LocalWebViewSniffer(app, audit)
 
     /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
     override val localSandboxRoot: String? = try {

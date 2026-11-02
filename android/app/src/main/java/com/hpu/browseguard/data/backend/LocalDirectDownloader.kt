@@ -213,16 +213,9 @@ class LocalDirectDownloader(
     private fun exchange(link: SniffResult, from: Long): okhttp3.Response? {
         val builder = Request.Builder().url(link.mediaUrl).header("Accept", "*/*")
         if (from > 0L) builder.header("Range", "bytes=$from-")
-        link.headersHint.forEach { (name, value) ->
-            val lower = name.lowercase()
-            if (lower !in FORBIDDEN_HEADERS) {
-                builder.header(name, value)
-            } else if (lower == "range" || lower == "if-range") {
-                // 嗅探时的探测 Range 回放会把「206 + 1 字节」伪装成下载完成（§22 P0）。
-                audit.log("range_stripped", mapOf("header" to lower))
-            } else {
-                audit.log("sensitive_header_stripped", mapOf("header" to lower))
-            }
+        SniffHeaderPolicy.auditStripped(audit, link.headersHint)
+        SniffHeaderPolicy.sanitize(link.headersHint).forEach { (name, value) ->
+            builder.header(name, value)
         }
         val response = http.newCall(builder.build()).execute()
         if (response.code == 416) {
@@ -274,17 +267,6 @@ class LocalDirectDownloader(
     private companion object {
         /** 画质表这一行的“任务”不属于引擎，用一个固定串占位，界面不拿它发请求。 */
         const val LOCAL_TABLE_ID = "local"
-
-        /** `headersHint` 协议上已脱敏（§3.2），但那是引擎侧的约定；本机落地前再筛一遍。 */
-        val FORBIDDEN_HEADERS = setOf(
-            "cookie",
-            "authorization",
-            "proxy-authorization",
-            "set-cookie",
-            // 嗅探时浏览器可能只取 1 字节探测，这份 Range 会被回放成「206 + 1 字节 = 完成」。
-            "range",
-            "if-range",
-        )
 
         val LOCAL_HTTP = OkHttpClient.Builder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)

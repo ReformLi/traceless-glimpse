@@ -1,0 +1,120 @@
+package com.hpu.browseguard
+
+import com.hpu.browseguard.data.backend.LocalSniffMapping
+import com.hpu.browseguard.shared.model.MediaStreamType
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * WebView 请求 → `SniffResult` 的纯逻辑（JVM 可测）。
+ *
+ * 真机只负责证明「能拦到请求」；这里负责证明拦到之后**不会**把 Range/Cookie
+ * 带进下载、不会把 HLS 切片当成一条可下载结果、不会丢掉签名查询串。
+ */
+class LocalSniffMappingTest {
+
+    @Test
+    fun directFilesBecomeOneDownloadableResult() {
+        val result = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/v/clip.mp4?token=abc",
+            pageUrl = "https://example.com/watch",
+            userAgent = "BGV-UA",
+            requestHeaders = emptyMap(),
+            discoveredAt = NOW,
+        )!!
+
+        assertEquals("https://cdn.example.com/v/clip.mp4?token=abc", result.mediaUrl)
+        assertEquals(MediaStreamType.MP4, result.type)
+        assertEquals("mp4", result.container)
+        assertFalse("WebView 这一层不做 DRM 推断", result.drmDetected)
+        assertEquals(LocalSniffMapping.SESSION_TASK_ID, result.taskId)
+    }
+
+    /** 清单与切片交给本地下载器只会下出残片：宁可不给，也不给一条会假成功的行。 */
+    @Test
+    fun manifestsSegmentsAndUnknownExtensionsAreRejected() {
+        listOf(
+            "https://cdn.example.com/master.m3u8",
+            "https://cdn.example.com/manifest.mpd",
+            "https://cdn.example.com/seg0.ts",
+            "https://cdn.example.com/chunk-1.m4s",
+            "https://cdn.example.com/evil.exe",
+            "https://cdn.example.com/v/videoplayback",
+        ).forEach { url ->
+            assertNull("不该成为候选：$url", LocalSniffMapping.toResult(url, null, "", emptyMap(), NOW))
+        }
+    }
+
+    /** 进入 `headersHint` 之前就过滤：下载侧再过滤一次，但这里不能先漏出去。 */
+    @Test
+    fun rangeCookieAndAuthorizationNeverReachHeadersHint() {
+        val result = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/v/clip.mp4",
+            pageUrl = "https://example.com/watch",
+            userAgent = "BGV-UA",
+            requestHeaders = mapOf(
+                "Range" to "bytes=0-0",
+                "Cookie" to "sid=secret",
+                "Authorization" to "Bearer leaked",
+                "Referer" to "https://ref.example/page",
+                "User-Agent" to "Browser-UA",
+            ),
+            discoveredAt = NOW,
+        )!!
+
+        assertNull(result.headersHint["range"])
+        assertNull(result.headersHint["cookie"])
+        assertNull(result.headersHint["authorization"])
+        assertEquals("https://ref.example/page", result.headersHint["referer"])
+        assertEquals("Browser-UA", result.headersHint["user-agent"])
+    }
+
+    /** WebView 拦截时 Referer/UA 常常不在 `requestHeaders` 里：用页面侧捕获的值补上。 */
+    @Test
+    fun refererAndUserAgentAreSynthesizedWhenTheBrowserDidNotSendThem() {
+        val result = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/v/clip.mp4",
+            pageUrl = "https://example.com/watch?ep=3",
+            userAgent = "Captured-UA",
+            requestHeaders = emptyMap(),
+            discoveredAt = NOW,
+        )!!
+
+        assertEquals("https://example.com/watch?ep=3", result.headersHint["referer"])
+        assertEquals("Captured-UA", result.headersHint["user-agent"])
+    }
+
+    /** 签名直链靠查询串，去重键与结果都必须保留；fragment 与请求无关。 */
+    @Test
+    fun signatureQueryIsKeptAndFragmentIsDropped() {
+        val result = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/v/clip.mp4?token=abc#t=10",
+            pageUrl = null,
+            userAgent = "",
+            requestHeaders = emptyMap(),
+            discoveredAt = NOW,
+        )!!
+
+        assertEquals("https://cdn.example.com/v/clip.mp4?token=abc", result.mediaUrl)
+        assertEquals(
+            "https://cdn.example.com/v/clip.mp4?token=abc",
+            LocalSniffMapping.dedupeKey("https://cdn.example.com/v/clip.mp4?token=abc#t=10"),
+        )
+    }
+
+    /** 同一路径不同 Range 只产出一条结果：去重键只认 URL，不认请求头。 */
+    @Test
+    fun theSameUrlIsDedupedRegardlessOfRangeHeaders() {
+        val keyA = LocalSniffMapping.dedupeKey("https://cdn.example.com/v/clip.mp4?token=abc")
+        val keyB = LocalSniffMapping.dedupeKey("https://cdn.example.com/v/clip.mp4?token=abc#t=1")
+        assertEquals(keyA, keyB)
+        assertTrue(keyA!!.endsWith("token=abc"))
+    }
+
+    private companion object {
+        const val NOW = "2026-11-02T10:00:00Z"
+    }
+}

@@ -1,16 +1,9 @@
 package com.hpu.browseguard
 
 import com.hpu.browseguard.data.LogcatAuditLogger
-import com.hpu.browseguard.data.backend.BackendFailure
-import com.hpu.browseguard.data.backend.LocalReason
-import com.hpu.browseguard.data.backend.LocalWebViewSniffer
-import com.hpu.browseguard.data.backend.SniffEvent
-import com.hpu.browseguard.data.backend.SniffRequest
-import com.hpu.browseguard.shared.model.CookiePolicy
+import com.hpu.browseguard.data.backend.LocalFailures
 import com.hpu.browseguard.ui.toSniffPhase
 import java.io.File
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -91,17 +84,28 @@ class BackendInjectionTest {
         assertEquals("真机取证只认这一个 TAG", "BgvAudit", LogcatAuditLogger.TAG)
     }
 
+    /** WebView 起不来与页面没有媒体是两种事实，且都不得借 §5 码。 */
     @Test
-    fun theWebViewShellFailsLocallyWithoutBorrowingAProtocolCode() = runBlocking {
-        val events = LocalWebViewSniffer()
-            .sniff(SniffRequest("https://example.com/page", CookiePolicy.NONE, "/tmp"))
-            .toList()
+    fun webViewFailuresAreLocalOnlyAndSayWhichFactTheyAre() {
+        val unavailable = LocalFailures.webViewUnavailable()
+        assertNull("本地判定不得借 §5 码", unavailable.toSniffPhase().code)
+        assertTrue("不可用要引导到连接电脑", unavailable.message.contains("请连接电脑"))
 
-        val failed = events.single() as SniffEvent.Failed
-        val local = failed.failure as BackendFailure.Local
-        assertEquals(LocalReason.WEBVIEW_UNAVAILABLE, local.reason)
-        assertNull("本地判定不得借 §5 码", failed.failure.toSniffPhase().code)
-        assertTrue("文案要引导到连接电脑", local.message.contains("请连接电脑"))
+        val noMedia = LocalFailures.webViewNoMedia()
+        assertNull(noMedia.toSniffPhase().code)
+        assertTrue("没有媒体要自证是本地判定", noMedia.message.contains("客户端本地判定"))
+        assertFalse("没有媒体不等于不可用", noMedia.message.contains("不可用"))
+    }
+
+    /** 两个本地入口必须共用同一份头过滤规则，避免一边剥、一边放。 */
+    @Test
+    fun bothLocalBackendsUseTheSameHeaderPolicy() {
+        val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
+        val mapping = File("$SRC_ROOT/data/backend/LocalSniffMapping.kt").readText()
+        val sniffer = File("$SRC_ROOT/data/backend/LocalWebViewSniffer.kt").readText()
+        assertTrue("下载侧必须走共享策略", downloader.contains("SniffHeaderPolicy.sanitize("))
+        assertTrue("嗅探侧必须在构造 SniffResult 前走共享策略", mapping.contains("SniffHeaderPolicy.sanitize("))
+        assertTrue("WebView 必须经纯映射层产结果", sniffer.contains("LocalSniffMapping.toResult("))
     }
 
     private companion object {

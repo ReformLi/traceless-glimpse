@@ -11,6 +11,9 @@ package com.hpu.browseguard.data.backend
 internal object LocalFailures {
     const val SNIFF_MS = 90_000L
     const val PREPARE_MS = 120_000L
+
+    /** 手机 WebView 会话窗口：比引擎嗅探短，页面离线时不该让用户干等 90 秒。 */
+    const val WEBVIEW_MS = 30_000L
     const val DOWNLOAD_MS = 30 * 60_000L
 
     const val POLL_INTERVAL_MS = 400L
@@ -55,10 +58,27 @@ internal object LocalFailures {
         BackendFailure.Local(LocalReason.OUTPUT_DIR_REJECTED, "本地写入目录未通过沙箱校验 · $what，客户端本地判定")
 
     /** WebView 嗅探当前不可用；措辞引导用户回到「连接电脑」这条已知可行的路。 */
-    fun webViewUnavailable(): BackendFailure.Local =
+    fun webViewUnavailable(detail: String = ""): BackendFailure.Local =
         BackendFailure.Local(
             LocalReason.WEBVIEW_UNAVAILABLE,
-            "手机 WebView 嗅探不可用 · 请连接电脑，客户端本地判定",
+            if (detail.isBlank()) {
+                "手机 WebView 嗅探不可用 · 请连接电脑，客户端本地判定"
+            } else {
+                "手机 WebView 嗅探不可用 · $detail，客户端本地判定"
+            },
+        )
+
+    /** WebView 会话正常结束，但没有任何可下载直链：不是「不可用」，是页面确实没有。 */
+    fun webViewNoMedia(): BackendFailure.Local =
+        BackendFailure.Local(
+            LocalReason.NO_SNIFF_RESULTS,
+            "未发现可用媒体 · 手机 WebView 未拦截到直链，客户端本地判定",
+        )
+
+    fun webViewTimeout(): BackendFailure.Local =
+        BackendFailure.Local(
+            LocalReason.TIMEOUT,
+            "手机 WebView 嗅探超时 · 客户端本地计时 ${seconds(WEBVIEW_MS)} 到点",
         )
 
     private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
