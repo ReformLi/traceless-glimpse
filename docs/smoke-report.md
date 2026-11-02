@@ -2427,3 +2427,119 @@ Range 续传（`bytes=40-`）且断点计入已下、服务端不理 Range 时�
 5. **进度采样窗口本地与引擎共用 `DOWNLOAD_POLL_INTERVAL_MS = 800ms`**。语义其实不同（一个是轮询间隔，
    一个是界面刷新节流），凑用一个常量省了一处配置，但改引擎轮询会连带改本地刷新，第 3 步接线时该分开。
 
+> §21.5 的第 1–3 条已由 §22 关闭；第 4、5 条仍然有效。§21.1 里有三处行号/行为已被 §22.5 勘误，以 §22 为准。
+
+## 22. M4 第 2 步 ③ 补课：缺口①② + 并发/命名空间/单行表 + MuMu 设备取证（2026-11-02）
+
+本轮五件事：切换并发安全、本地句柄命名空间、单直链自动选中、缺口①（本地不许假装合并）、
+缺口②（写盘前沙箱）。做完后按裁决先上 MuMu 实测本地直链全链路，设备上又暴露了一条
+JVM 单测看不见的 P0（嗅探 `Range` 被回放成「1 字节即完成」），一并修完。
+
+### 22.1 五条裁决的落地形态
+
+| # | 裁决 | 落地 | 关键点 |
+| --- | --- | --- | --- |
+| 1 | 有任务在跑时切换不能打断/丢状态 | [HomeViewModel.kt:188](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L188) `selectDownloadExecutor()` 先看 `downloadInFlight`（:100，`Preparing \|\| Running`），为真直接 `return`；[HomeScreen.kt:279](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L279)/[:285](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L285) 两颗按钮 `enabled = !state.downloadInFlight`；[:295](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L295) 换用 [strings.xml:24](file:///E:/code/android/BrowseGuardVid/android/app/src/main/res/values/strings.xml#L24)「有任务正在进行：等它结束或取消后才能切换执行者」并用错误色 | 选「拒绝切换」而不是「排队到任务结束」：排队会让开关显示的目标与实际执行者不一致；拒绝时当前任务、进度、`.part` 全部原样 |
+| 2 | 本地句柄必须 `local_` 前缀，HTTP 入口硬拒 | [LocalTaskSnapshot.kt:54](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L54) `LOCAL_TASK_PREFIX = "local_"`、[:57](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L57) `localTaskId()`、[:61](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L61) `isLocalTaskId()`；[HttpDownloader.kt:77](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L77) `start` 与 [:109](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L109) `cancel` 入口调 `requireRemoteTaskId()`（[:122](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L122) 定义，`require` 抛 `IllegalArgumentException`，**先于任何网络调用**） | 用 `require` 而不是返回 `BackendFailure`：拿错句柄是编程错误，不是运行时可恢复的失败，不能被 UI 吞成一行错误文案 |
+| 3 | 只有一个直链时自动选中 | [HomeViewModel.kt:304](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L304) `selectedFormatId = event.formats.singleOrNull()?.formatId` | 多行仍保持「未选中」让用户点；只有恰好一行时按钮直接可点 |
+| 4 | 缺口①：本地不许假装合并 | UI：[HomeViewModel.kt:104](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L104) `mergeAvailable = executor == ENGINE`；[:331](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L331) `toggleMerge` 第二道门；[:372](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L372) 本地支若勾选则记 `merge_ignored executor=local_direct reason=no_ffmpeg` 后忽略；[HomeScreen.kt:540](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L540) 起整行 `clickable/Checkbox` 置灰 + [:563](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L563) 提示 [strings.xml:57](file:///E:/code/android/BrowseGuardVid/android/app/src/main/res/values/strings.xml#L57)「本地模式不支持合并，请连接引擎」。后端：[DownloadBackend.kt:80](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L80) `ViaLocal` **类型上没有** `postActions` 字段，组错请求编译期就红；引擎后端收到 `ViaLocal` 在 [HttpDownloader.kt:74](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L74) `error()` 炸出 | 「禁用 + 说明」而不是隐藏：隐藏会让用户以为功能消失；置灰能说明「为什么这里不能勾」。审计行只在真的勾着切过去时出现，切到本地模式时 `mergeSelected` 已被清掉，正常路径不刷日志 |
+| 5 | 缺口②：任何写盘先过沙箱，不允许 `DISK` 兜底 | [LocalOutputSandbox.kt:21](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalOutputSandbox.kt#L21) 用 `canonicalFile` 做包含判定（`..`、软链都会被解析）；[LocalDirectDownloader.kt:81](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L81) 在 `openForWrite` 之前调用；不通过 → [BackendFailure.kt:55](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt#L55) 新增 `OUTPUT_DIR_REJECTED`（[LocalFailures.kt:55](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L55)），**一个字节都不写**；白名单根由 [DownloadBackend.kt:83](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L83) `ViaLocal.allowedRoots` 传入，[HomeViewModel.kt:353](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L353) 从 `localSandboxRoot` 取值 | 空白名单、白名单根不存在、目标逃出根，三种都拒。`DISK` 仍保留，但只表示「沙箱已通过、真写时 IO 失败」，不再承担「目录不对」 |
+
+**必须点名的一处语义偏差（请确认）**：裁决原文要求「先过 `BGV_OUTPUT_DIR_ALLOWLIST` 的沙箱校验」。
+该环境变量由**引擎进程**解析（`engine/main.py` 的 `_load_output_dir_allowlist`，默认 `%USERPROFILE%\Videos\BGV`），
+是一串**电脑侧**路径；Android 上既不存在这些目录，也不应把电脑路径当手机写盘授权。
+因此本轮把它落地为**手机侧等价物**：由界面层声明应用专属外部存储的 Download 目录
+（[HomeViewModel.kt:138](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L138)，
+`getExternalFilesDir(DIRECTORY_DOWNLOADS)`，不需要任何存储权限），下载器只接受落在该根之内的路径。
+如果你要的是「复用它字面上的那份环境变量」，这在 Android 上无法成立；如果你要的是「写盘必须有白名单约束」，
+本轮的实现满足，且比「拿引擎白名单第一项直接当写盘根」（§21 的做法）更严——那份列表被手机忽略之后，
+本地写盘不再引用任何引擎侧路径。
+
+### 22.2 设备取证：MuMu Android 15 本地直链全链路
+
+环境：MuMu Android 15，`adb connect 192.168.31.57:5555`；引擎 `real` 模式 + `BGV_SSRF_ALLOWLIST=127.0.0.1` +
+`BGV_DEV_ALLOW_SSRF_BYPASS=1`（仅本轮临时，用完即删）；`testsupport.media_server --port 8731 --bulk`
+（fixture `bulk.mp4` 4,218,400 字节，`chunk_delay_ms=300` 拖慢便于观察）；`adb reverse tcp:8730` / `tcp:8731`；
+安装 `app-debug.apk` 32,064,774 字节（含本轮全部改动）。
+
+| # | 动作 | 现场观察 | 截图 |
+| --- | --- | --- | --- |
+| 1 | 设置区切「本地直链下载」 | 选中态落在本地按钮，合并行立即置灰并出现「本地模式不支持合并，请连接引擎」 | [m4c-1-local-mode.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-1-local-mode.png) |
+| 2 | 输入 `page-bulk.html` → 嗅探 | 引擎返回单条 MP4；画质表**只有一行且自动选中**，合并复选框未勾且不可点 | [m4c-2-single-format-merge-off.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-2-single-format-merge-off.png) |
+| 3 | 点下载 | 进度跳动：「1.1 MB / 4.0 MB · 212.9 KB/s · 剩余 13s」 | [m4c-3-progress.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-3-progress.png) |
+| 4 | 中途取消 | 卡片转「已取消」；`ls -l` 两次（间隔 3s）`.part` 均为 **2,498,560 字节**，字节数冻结 | [m4c-4-cancelled.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-4-cancelled.png) |
+| 5 | 再点下载 | 服务端日志出现 `range=bytes=2498560-`（与 `.part` 一致），不是整段重下 | [m4c-5-resume-start.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-5-resume-start.png) |
+| 6 | 跑完 | 产物 4,218,400 字节，`md5 796c7026e90862595a340eedbd153883` 与 fixture 相同；`.part` 已消失 | [m4c-6-done.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-6-done.png) |
+| 7 | 下载中切执行者 | 两颗执行者按钮同时置灰，提示换成「有任务正在进行：等它结束或取消后才能切换执行者」，当前进度不动 | [m4c-7-switch-busy.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-7-switch-busy.png) |
+
+落盘路径（scoped storage 的直接证据）：`/storage/emulated/0/Android/data/com.hpu.browseguard/files/Download/bulk.mp4`，
+`adb shell` 可见（`-rw-rw---- u0_a4 ext_data_rw 4218400`）；`run-as` 列该目录得到 **Permission denied**——
+应用专属外部目录对 app uid 可写、不经存储权限，这正是沙箱根选在这里的原因。
+
+服务端请求行（`/tmp/bgv-media.log`，播放器 UA 与下载器 UA 同为 Chromium，日志里都记成 `client=playwright`）：
+
+```
+12:47:15.458 path=/media/bulk.mp4 range=bytes=0-0      ← 设备暴露的 P0：回放嗅探 Range
+12:49:28.196 path=/media/bulk.mp4 range=-              ← 修复后整段下载
+12:50:58.514 path=/media/bulk.mp4 range=bytes=2498560- ← 取消后续传
+12:51:32.458 path=/media/bulk.mp4 range=-              ← 完成后重下一次（.part 已不存在）
+```
+
+引擎侧 `ssrf_allowlist_bypass host=127.0.0.1` 在两次嗅探中共出现 6 行，与本轮临时白名单门控一致；
+全程无应用崩溃、无 `SecurityException`、无 `FileNotFoundException`。`adb.log` 里偶见 SIGSEGV 是
+MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
+
+### 22.3 设备暴露的新 P0：嗅探 `Range` 被回放成「1 字节即完成」
+
+**现象**：第一次本地下载，界面显示「下载完成 已下载 1 B」，沙箱里的 `bulk.mp4` 只有 **1 字节**。
+证据：[m4c-0-range-bug-1byte.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-0-range-bug-1byte.png)
+与上面服务端 `12:47:15 range=bytes=0-0`。
+
+**根因**：引擎嗅探时 Playwright 会先发 `Range: bytes=0-0` 探测（服务端日志里同一轮还有
+`bytes=0-` / `bytes=4161536-` / `bytes=65536-`），这个头被写进 `headersHint`；本地下载器回放了
+`headersHint` 的全部非黑名单头，服务端如实回 `206 + 1 字节`，下载器又按 206 的长度收尾——
+**协议上完全合法，语义上是错的**。JVM 单测里 fixture 的 `headersHint` 没带 Range，所以看不见。
+
+**修法**：[LocalDirectDownloader.kt:268](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L268)
+把 `range` / `if-range` 加进 `FORBIDDEN_HEADERS`，Range 只能由下载器按 `.part` 自己的字节数生成。
+回归测试 [LocalDirectDownloaderTest.kt:347](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/LocalDirectDownloaderTest.kt#L347)
+`sniffedRangeHintIsNotReplayedAsTheDownloadRequest`：hint 里塞 `range`/`if-range`，断言录制到的请求两个头都为 `null`
+且落盘是完整 100 字节。修复后设备复跑即 `12:49:28 range=-`。
+
+### 22.4 本轮测试与变异体（现场复跑）
+
+套件 `:android:app:testDebugUnitTest --rerun` → **97 passed / 0 failed / 0 errors / 0 skipped**
+（③ 基线 85；新增 `LocalDirectDownloaderTest` 3 条沙箱/命名空间 + 1 条 Range、
+`LocalHandleIsolationTest` 4 条、`LocalModeContractTest` 4 条）。
+各类：`LocalDirectDownloaderTest` 16、`LocalHandleIsolationTest` 4、`LocalModeContractTest` 4、其余 73。
+`assembleDebug` 通过，`app-debug.apk` 32,064,774 字节，与设备所装一致。
+
+| 变异体 | 做法 | 红名单 | 还原 |
+| --- | --- | --- | --- |
+| G | 从 `FORBIDDEN_HEADERS` 删掉 `range` / `if-range` 两行（集合仍合法） | **仅** `sniffedRangeHintIsNotReplayedAsTheDownloadRequest`（16 条中 1 红） | `/tmp/mut_range_orig.kt` 还原，`diff -q` 逐字节一致 |
+| H | 删掉 `LocalDirectDownloader.kt:81` 的整段沙箱判定（`allowedRoots` 变成未使用参数，仍是合法 Kotlin） | `outputDirOutsideTheSandboxIsRefusedBeforeAnythingIsWritten` + `emptyAllowlistRefusesInsteadOfFallingBackToAnotherDirectory`（16 条中 2 红） | `/tmp/mut_sandbox_orig.kt` 还原，`diff -q` 逐字节一致 |
+
+两条变异体都只打中「为本条写的测试」，没有连带炸别的类——说明守卫的箭头是单向的，不是碰巧全红。
+还原后重跑全量 97/0/0/0。
+
+### 22.5 对 §21 的勘误（以本节为准）
+
+| # | §21 原文 | 现状 | 原因 |
+| --- | --- | --- | --- |
+| 1 | `LocalTaskSnapshot` 的 `id = "local-" + …`（:48） | `local_` 前缀，[LocalTaskSnapshot.kt:54](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L54) | 裁决 2 明确要求 `local_`；下划线也让前缀判定不会与 UUID 混淆 |
+| 2 | `FORBIDDEN_HEADERS` 只有 `cookie / authorization / proxy-authorization / set-cookie`（:259） | 6 项，增加 `range / if-range`（:268） | §22.3 设备 P0 |
+| 3 | `selectDownloadExecutor()`「落盘 + 取消在跑的 `downloadJob` + 回 `Idle`」（:157） | 有任务在跑时**拒绝切换**，不取消、不回 Idle（:188–:191） | 裁决 1；取消会丢当前任务状态，按钮置灰 + 提示是用户要的「不许瞬断」 |
+| 4 | `ViaLocal` 只带 `link + outputDir`（:74） | 多一个 `allowedRoots`（:80–:83） | 缺口②：写盘根必须显式声明并被校验 |
+| 5 | 本地写盘根取引擎 `selfcheck.outputDirAllowlist` 第一项 | 改取手机侧 `localSandboxRoot`，**不再引用引擎侧目录** | 引擎白名单是电脑路径，在手机上不可用也不该被当作授权 |
+| 6 | `LocalReason` 共 7 个 | 新增 `OUTPUT_DIR_REJECTED`，共 8 个 | 缺口②要求「没试就拒」与「写了但失败」可区分 |
+| 7 | ⑨ 处行号漂移 | 见 §22.1 当前行号 | 新增代码后旧行号失效 |
+
+### 22.6 仍开放的遗留
+
+1. **`BGV_OUTPUT_DIR_ALLOWLIST` 的语义偏差待你确认**（见 §22.1 末尾）：字面复用不可能，手机侧等价物已落地。
+2. **`LocalWebViewSniffer` 仍未写**，裁决 2 明示留到下一步；细节 4 的「嗅探入口切换 + PC 不可达降级」也随之下一步设计。
+3. **`localSandboxRoot` 只在进程启动时取一次**。外部存储若中途重挂，`mkdirs()` 已经执行过，后续写盘会
+   失败成 `Local(DISK)`（沙箱仍会先判，目录不存在时判为 reject）。这不是安全缺口，但提示文案会偏「磁盘」。
+4. **本地链路与引擎链路共用一个 `DOWNLOAD_POLL_INTERVAL_MS = 800ms`**（§21.5-5 原样保留）。
+5. **本轮设备取证只覆盖本地直链**；引擎模式下载在 UI 加了「执行中禁用切换」后未再跑真机，回归面靠 97 条单测兜底。
+

@@ -339,6 +339,27 @@ class LocalDirectDownloaderTest {
         }
     }
 
+    /**
+     * 嗅探 hint 里的 `Range` 是浏览器探测留下的残留：回放它会得到 206 + 1 字节，
+     * 然后被当成整段下载完成——真机 MuMu 实测踩到过（§21）。
+     */
+    @Test
+    fun sniffedRangeHintIsNotReplayedAsTheDownloadRequest() {
+        server.enqueue(reply(200, payload))
+        val link = link("/media/clip.mp4").copy(
+            headersHint = mapOf("range" to "bytes=0-0", "if-range" to "\"etag\""),
+        )
+        val events = runBlocking { downloader.start(viaLocal(link)).toList() }
+
+        val done = events.last() as DownloadEvent.Terminal
+        assertEquals(TaskStatus.DONE, done.task.status)
+        assertEquals("没有断点就必须整段拿", 100L, done.task.progress!!.bytesDownloaded)
+        val recorded = server.takeRequest()
+        assertNull("Range 只能由下载器按 .part 自己决定", recorded.headers["range"])
+        assertNull(recorded.headers["if-range"])
+        assertEquals(payload, File(out, "clip.mp4").readText())
+    }
+
     private fun prepare(results: List<SniffResult>) = runBlocking {
         downloader.prepare(
             PrepareRequest(
