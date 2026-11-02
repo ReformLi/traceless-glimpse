@@ -69,6 +69,7 @@ from log_redaction import install_log_redaction
 from persistence import get_store
 from services import downloader as downloader_service
 from services import environment as environment_service
+from services import failures as failures_service
 from services import formats as formats_service
 from services import merger as merger_service
 from services.task_worker import TaskWorker
@@ -473,12 +474,28 @@ def _download_real(record: TaskRecord) -> None:
         _fail_task(task, ErrorCode(exc.code), exc.detail)
         return
     except downloader_service.DownloadIntegrityError as exc:
-        logger.warning("download_integrity_failed task_id=%s reason=%s", task.id, exc)
-        _fail_task(task, ErrorCode.PARTIAL_DOWNLOAD)
+        # 「产物不完整」是这类异常的默认语义，但里面也混着 HTTP 状态（download_direct
+        # 对非 200/206 直接抛 `HTTP 403` 这种），归因表先分清再兜 PARTIAL_DOWNLOAD
+        code, detail = failures_service.classify_download_failure(
+            exc, fallback=ErrorCode.PARTIAL_DOWNLOAD
+        )
+        logger.warning(
+            "download_integrity_failed task_id=%s code=%s type=%s",
+            task.id,
+            code.value,
+            type(exc).__name__,
+        )
+        _fail_task(task, code, detail)
         return
     except Exception as exc:  # noqa: BLE001 —— 下载失败不得让 API 500
-        logger.warning("download_failed task_id=%s type=%s", task.id, type(exc).__name__)
-        _fail_task(task, ErrorCode.UNKNOWN, {"reason": "download_failed"})
+        code, detail = failures_service.classify_download_failure(exc)
+        logger.warning(
+            "download_failed task_id=%s code=%s type=%s",
+            task.id,
+            code.value,
+            type(exc).__name__,
+        )
+        _fail_task(task, code, detail)
         return
     if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
         # 收尾竞态：下载刚好在取消前一瞬完成——终态已是 cancelled，不覆盖成 done

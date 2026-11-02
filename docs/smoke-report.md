@@ -1844,7 +1844,7 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
 **P0（本轮已修，§19.4）**：逃逸异常没有出口 → 任务永久停在 `sniffing` / `downloading`。
 判定依据正是用户给的口径「凡导致任务永久停滞的立刻 P0 直接修」，且修复前四条用例全部实测卡死。
 
-**P1（本轮裁决：三条全修。①已升 P0 并落地＝§19.7）**：
+**P1（本轮裁决：三条全修。①已升 P0 并落地＝§19.7；②已落地＝§19.8；③见 §19.9）**：
 
 1. **`postActions` 被静默丢弃**（**已修**：按裁决升为 P0，见 §19.7）。`merging` / `post_processing` 无入口，
    [services/merger.py](file:///E:/code/android/BrowseGuardVid/engine/services/merger.py) 有实现、有自己的单测，
@@ -1856,7 +1856,7 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
    给这两个状态写了「合并音视频中」「后处理中」两条**取不到值的屏显文案**——和本轮修掉的死分支同一形状。
    建议分两档：本轮先补 `post_actions_ignored` 审计行（一行，不动行为）；接线 `merge_streams` +
    引入 `merging` 状态与 `MERGE_FAILED` 出口归 M4 下载链路批次。**两档都没做，等点头。**
-2. **`downloading` 的失败归因塌成 `UNKNOWN`**：`NETWORK_TIMEOUT` / `DNS_FAILURE` / `TLS_ERROR` /
+2. **`downloading` 的失败归因塌成 `UNKNOWN`**（**已修**：按裁决落地，见 §19.8）：`NETWORK_TIMEOUT` / `DNS_FAILURE` / `TLS_ERROR` /
    `NETWORK_HTTP_ERROR` / `RATE_LIMITED` / `DISK_FULL` / `WRITE_PERMISSION_DENIED` / `ENGINE_BUSY`
    八个码在引擎侧没有任何生产者，全被 :362 的 `except Exception` 吞掉。用户看到的是一句「未知错误」，
    重试按钮的 `retryable` 也跟着失真（`UNKNOWN` 不可重试，而这几个里有一半是 `retryable=true`）。
@@ -2083,3 +2083,88 @@ Gradle 未复跑——`ProtocolCopy.kt` 那两条屏显文案从此理论上取�
 遗留（不掩饰）：`TRANSCODE_FAILED` / `ENGINE_BUSY` 仍零生产者。转码未接线（只有 `post_action_unsupported`
 审计行）；`ENGINE_BUSY` 需要引擎真的会「拒活」才有意义（当前 worker 队列无界，拒不了活），**不造码**。
 
+### 19.8 P1② 修复：下载失败归因按 §5 落码（2026-11-02）
+
+裁决口径：「把网络/磁盘错误按 §5 正确映射，不要全塞 `UNKNOWN`」。这也是 §19.5 接口约束 3
+（`DownloadEvent.Failed` 必须带真码 + 真 `retryable`）的前提——映射表不落地，抽象层只能传 `UNKNOWN`。
+
+四条设计决定：
+
+1. **归因表独立成模块**（[services/failures.py](file:///E:/code/android/BrowseGuardVid/engine/services/failures.py)），
+   不写在 `except` 里。理由：同一条表要被两处 `except`（完整性 / 兜底）和桩、real 两套用例共用，
+   贴在 `main.py` 里就只能是第二份真相。
+2. **证据优先级＝异常类型 → 机制文本 → HTTP 状态**，且机制描述**压过**状态码：
+   `HTTP Error 504` 加「timed out」时归 `NETWORK_TIMEOUT`，状态降级成 `detail["status"]` 附注。
+   504 是网关转述，真正致命的是读超时，两者的 `retryable` 与用户该做的事不同。
+3. **判不出来就说判不出来**：`fallback` 由调用方给语义——`DownloadIntegrityError` 兜 `PARTIAL_DOWNLOAD`
+   （这类异常的确定含义就是「产物不完整」），其余兜 `UNKNOWN`；**绝不拿 `NETWORK_*` 冒充**。
+   同 §19.4 的不造码原则。
+4. **detail 只放 `reason` / `status`，异常文本一律不落**（§1.7 脱敏）。用例分别盯两侧：
+   `test_detail_never_carries_the_exception_text`（桩，令牌表 `://` / host / `cookie` / `referer` / `.m3u8`）、
+   `test_attribution_does_not_leak_the_url_into_logs_or_detail`（real，`caplog` 全文扫）。
+
+落点：[`classify_download_failure`](file:///E:/code/android/BrowseGuardVid/engine/services/failures.py#L156)
+（`main.py:479` 与 `main.py:491` 两处 `except` 各调一次，审计行由 `type=异常类名` 换成同时带 `code=…`，
+这样屏上的码和日志能对上）。
+
+七码的生产者（§19.3 缺口 2 的名单，全部由 real 用例现场打出，不是映射表单测）：
+
+| §5 码 | 类型证据 | 文本 / 状态证据 | real 端到端用例 |
+| --- | --- | --- | --- |
+| `NETWORK_TIMEOUT` | `socket.timeout` / `TimeoutError` / `httpx.*Timeout`（**空消息也认**） | `timed out` / `read operation timed` | `test_transport_failure_end_to_end[exc0/exc1]` |
+| `DNS_FAILURE` | `socket.gaierror` | `getaddrinfo` / `name resolution` | `[exc2]` |
+| `TLS_ERROR` | `ssl.SSLError` | `certificate verify failed` | `[exc3]` |
+| `DISK_FULL` | `OSError` errno `ENOSPC`/`EDQUOT`、WinError `39`/`112` | `no space left` | `[exc4]` |
+| `WRITE_PERMISSION_DENIED` | `PermissionError`、errno `EACCES`/`EPERM`/`EROFS`、WinError `5` | `permission denied` / `read-only file system` | `[exc5]` |
+| `NETWORK_HTTP_ERROR` | — | 前缀式三位状态（404/500/502/503…） | `test_http_status_end_to_end` |
+| `RATE_LIMITED` | — | `429` / `too many requests` | `[429]` |
+| `PARTIAL_DOWNLOAD` | `httpx.RemoteProtocolError` | `peer closed connection…`（httpx 原话） | `[exc6]` + `test_empty_body_still_lands_partial_download` |
+
+顺带一条 `AUTH_REQUIRED`（401/403，`retryable=False`）：**审计时漏记**——§19.3 的八个码名单里没有它，
+而它当时同样零生产者（全仓 grep 只有 `models.py` 的枚举与码表两处）。本轮状态 Pass 把它补上了，
+按实说，不算 P1② 认领的范围，只是留痕。
+
+取证（现场复跑，[engine/test_failure_attribution.py](file:///E:/code/android/BrowseGuardVid/engine/test_failure_attribution.py)
+42 条 + [engine/tests_real/test_failure_attribution_real.py](file:///E:/code/android/BrowseGuardVid/engine/tests_real/test_failure_attribution_real.py) 16 条）：
+
+| 用例族 | 断言 | 结果 |
+| --- | --- | --- |
+| 桩 8 条 `test_exception_type_decides_before_text` | 类型先于文本，空消息超时也归对码 | 绿 |
+| 桩 11 条 `test_wrapped_failure_text_is_attributed` | yt-dlp 把下层失败压成一行文本（含被包成 `HTTP 403` 的写法）后仍判得出 | 绿 |
+| 桩 4 条 `test_http_status_lands_in_detail_machine_readably` | `detail` 里 `status` 是整数不是字符串，重试策略可直接读 | 绿 |
+| 桩 `test_integrity_error_falls_back_to_partial_download` | 完整性异常无依时兜 `PARTIAL_DOWNLOAD`，不落 `UNKNOWN` | 绿 |
+| 桩 2 条 `test_detail_never_carries_the_exception_text` | detail 不含 `://` / host / `cookie` / `referer` / `secret` / `session` / `.m3u8` | 绿 |
+| 桩 `test_windows_disk_full_and_write_denied_come_from_winerror` | Windows 只给 `winerror` 不给 `errno` 时也分得开 | 绿 |
+| 桩 `test_cause_chain_is_walked_not_just_the_outermost_exception` | 内层 `gaierror` 被 yt-dlp 包住仍认得出 | 绿 |
+| 桩 `test_self_referencing_chain_does_not_hang` | `__cause__` 自指不死循环（带 `seen` 集） | 绿 |
+| 桩 `test_timeout_beats_a_gateway_status_when_both_appear` / `…mechanism_description_wins_over_status…` | 优先级不反客为主，状态留在 detail | 绿 |
+| 桩 `test_undecidable_failure_says_so_instead_of_borrowing_a_network_code` | 判不出来＝`UNKNOWN`，不借网络码 | 绿 |
+| 桩 `test_mapped_codes_keep_their_retryable_semantics`（10 行） | 码 → §5 码表 `retryable` 逐项相等 | 绿 |
+| real 5 条 `test_http_status_end_to_end` | 真 `download_direct` + `httpx.MockTransport`，码/`detail`/`retryable` 全中 | 绿 |
+| real 7 条 `test_transport_failure_end_to_end` | 真下载器抛出真异常，终态 `failed` + `download_failed … code=…` 审计行 | 绿 |
+| real `test_the_seven_network_and_storage_codes_now_have_producers` | 8 个 handler 跑一遍，断言「审计时零生产者的七个码」⊆ 实际产出的码集合 | 绿 |
+| real `test_attribution_does_not_leak_the_url_into_logs_or_detail` | 日志与 detail 都不含 URL 片段 | 绿 |
+| real `test_undecidable_failure_says_unknown_instead_of_borrowing_a_network_code` | 真链路里抛 `ValueError` → `UNKNOWN`，不凑成 `NETWORK_HTTP_ERROR` | 绿 |
+
+真/假边界：real 侧唯一的假件是**传输层**（`httpx.MockTransport`，把状态码与异常注入真 `download_direct`），
+归因、`_fail_task`、状态机、审计行、落盘校验全走真代码。
+
+变异复跑（证明用例不空转，四个变异体各自跑完立即还原，`git diff` 与原文逐字节相等）：
+
+| 变异体 | 桩红 | real 红 | 说明 |
+| --- | --- | --- | --- |
+| A：丢弃类型 Pass 的结果 | 4 | 1 | 只有「空消息超时」必须靠类型：桩侧 `TimeoutError()` / `ConnectTimeout("")` / `ReadTimeout("")` 三条，加 WinError 磁盘满一条；real 侧只有 `ReadTimeout("")` 一条。其余类型用例的异常对象恰好自带可读文本，会被文本层兜住——**这不等于文本层可替代类型层**，只说明用例覆盖面长这样 |
+| B：`_code_from_status` 恒 `None` | 8 | 5 | 状态 Pass 真在生产码 |
+| C：`chain` 退化成只看最外层 | 1 | 0 | 链条遍历只有桩那条专用例依赖；real 侧的异常是直接抛的，没有包装层，**这是个覆盖面缺口，不是绿**（见下方遗留） |
+| D：`_STATUS_BY_CODE = {}` | 4 | 2 | 401/403 的 `AUTH_REQUIRED` 归属有人守 |
+
+套件基线（修复后复跑）：引擎桩 **222 passed / 176 deselected**、引擎 real **175 passed + 1 xfailed**。
+Android 侧未改代码。数量核对（三条都实测，不是做算术）：HEAD 干净抽取 **179 passed**；
+工作树移除本轮新文件后 **180 passed**——多的 1 条不是新用例，而是既有静态守卫
+`test_error_codes.py::test_referenced_error_codes_exist` 的参数集自动扫到了新模块 `failures.py`；
+再加 42 条归因用例 ＝ 222。real 侧 175 − 16 ＝ 159，与 §19.7 记录一致。
+
+遗留（不掩饰）：
+- `ENGINE_BUSY` 仍零生产者（理由同 §19.7：worker 队列无界，拒不了活），**不造码**。
+- 变异 C 暴露的 real 侧缺口：没有「下层异常被 yt-dlp 包一层再抛」的端到端用例，链条遍历在 real 只靠桩守。
+  登记为已知缺口，按 §19.4 的口径归 M4 第 2 步 `DownloadBackend` 事件流的用例批次一起补，本轮不扩范围。
