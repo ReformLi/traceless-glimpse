@@ -1052,8 +1052,9 @@ private fun SuccessDownloadContent(
     val task = phase.task
     val localMode = state.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
     // 本地链条没有 outputPath（那是引擎协议的字段），产物名在 namingTemplate 槽位里。
-    val path = if (localMode) localOutputPath(task) else task.outputPath
-    val openable = localMode && path != null
+    val stagingPath = if (localMode) localOutputPath(task) else task.outputPath
+    val path = phase.publishedPath ?: stagingPath
+    val openable = localMode && path != null && !phase.publishing
     var openProblem by remember { mutableStateOf<OpenFileProblem?>(null) }
 
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1072,7 +1073,13 @@ private fun SuccessDownloadContent(
     Spacer(Modifier.height(12.dp))
     InfoRow(
         label = stringResource(R.string.download_output_path),
-        value = path ?: task.outputDir,
+        value = when {
+            phase.publishing -> stringResource(R.string.download_publishing)
+            phase.publishedName != null ->
+                stringResource(R.string.download_published, phase.publishedName)
+
+            else -> path ?: task.outputDir
+        },
     )
     task.namingTemplate?.let {
         InfoRow(
@@ -1105,12 +1112,20 @@ private fun SuccessDownloadContent(
             Text(stringResource(R.string.download_again))
         }
     }
-    if (!openable) {
+    if (!openable && !phase.publishing) {
         Spacer(Modifier.height(8.dp))
         Text(
             text = stringResource(R.string.download_open_pc_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    phase.publishWarning?.let { warning ->
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = stringResource(R.string.download_publish_failed, warning),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
         )
     }
     openProblem?.let { problem ->

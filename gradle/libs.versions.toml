@@ -14,6 +14,7 @@ coreKtx = "1.10.1"
 # KSP 独立版本线（2.3.x）与 Kotlin 版本解耦；2.4.21 走 KSP2。
 ksp = "2.3.12"
 room = "2.8.5"
+documentFile = "1.0.0"
 clikt = "5.1.0"
 mcpSdk = "0.16.0"
 kotlinLogging = "8.0.4"
@@ -44,6 +45,7 @@ androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lif
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentFile" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

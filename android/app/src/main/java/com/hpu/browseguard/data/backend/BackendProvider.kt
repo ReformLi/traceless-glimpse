@@ -1,5 +1,8 @@
 package com.hpu.browseguard.data.backend
 
+import com.hpu.browseguard.data.output.OutputPublish
+import java.io.File
+
 /**
  * 嗅探执行者。
  *
@@ -29,4 +32,10 @@ interface BackendProvider {
     fun sniff(executor: SniffExecutor = SniffExecutor.ENGINE): SniffBackend
 
     fun download(executor: DownloadExecutor): DownloadBackend
+
+    /**
+     * 手机侧产物落盘后的最终去向：没选 SAF 目录就原样留在应用目录。
+     * 默认「未配置」，JVM 单测不为这条路径准备目录也能跑。
+     */
+    suspend fun publishOutput(source: File): OutputPublish = OutputPublish.NotConfigured
 }

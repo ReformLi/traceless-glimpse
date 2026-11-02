@@ -24,6 +24,7 @@ import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.data.backend.toBackendFailure
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.formatSummary
+import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.UUID
 
 /** 引擎连接状态。 */
@@ -68,7 +70,18 @@ sealed interface DownloadPhase {
     data class Selecting(val taskId: String, val formats: List<FormatInfo>) : DownloadPhase
 
     data class Running(val task: Task, val cancelRequested: Boolean = false) : DownloadPhase
-    data class Success(val task: Task) : DownloadPhase
+
+    /**
+     * 下载已结束；本地产物还可能正在复制到 SAF 目录。
+     * [publishing] 期间「打开文件」不可点，避免打开一个马上要被移走的 staging 文件。
+     */
+    data class Success(
+        val task: Task,
+        val publishedPath: String? = null,
+        val publishedName: String? = null,
+        val publishing: Boolean = false,
+        val publishWarning: String? = null,
+    ) : DownloadPhase
     data class Cancelled(val task: Task) : DownloadPhase
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : DownloadPhase
 }
@@ -104,7 +117,9 @@ data class HomeUiState(
 
     /** 有任务正跑着（等画质表或下载中）：换执行者会把两条链路的事实搅在一起，界面据此禁用开关。 */
     val downloadInFlight: Boolean
-        get() = download is DownloadPhase.Preparing || download is DownloadPhase.Running
+        get() = download is DownloadPhase.Preparing ||
+            download is DownloadPhase.Running ||
+            (download is DownloadPhase.Success && download.publishing)
 
     /** 合并需要 FFmpeg，本地直链这一支没有——不是「暂不支持」，是压根没有执行者。 */
     val mergeAvailable: Boolean
@@ -510,8 +525,15 @@ class HomeViewModel(
             is DownloadEvent.Terminal -> {
                 attachHistoryTask(event.task.id)
                 val phase = event.task.toFinalPhase()
-                writeDownloadTerminal(event.task, phase)
-                _state.update { it.copy(download = phase) }
+                val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
+                if (phase is DownloadPhase.Success && isLocal) {
+                    // 本地产物还要经过一次可选复制；先让界面进入「保存中」，别提前宣告落盘位置。
+                    _state.update { it.copy(download = phase.copy(publishing = true)) }
+                    publishLocalSuccess(phase.task)
+                } else {
+                    writeDownloadTerminal(event.task, phase)
+                    _state.update { it.copy(download = phase) }
+                }
             }
 
             is DownloadEvent.Failed -> {
@@ -533,6 +555,51 @@ class HomeViewModel(
             is DownloadPhase.Cancelled -> record { markCancelled(it) }
             is DownloadPhase.Failed -> record { markFailed(it, phase.code) }
             else -> Unit
+        }
+    }
+
+    /**
+     * 本地下载完成后的最终落点：选了 SAF 就复制过去，没选就留在应用目录。
+     *
+     * 复制失败不篡改下载结果——文件还在 staging，记录写 staging 路径并让界面显示警告；
+     * 只有复制成功才把历史路径改成 `content://`。
+     */
+    private fun publishLocalSuccess(task: Task) {
+        val staging = localOutputPath(task)
+        val format = _state.value.selectedFormat?.let(::formatSummary)
+        val historyRow = historyId
+        viewModelScope.launch {
+            val result = if (staging == null) {
+                OutputPublish.Failed("本地产物路径缺失，未保存")
+            } else {
+                backends.publishOutput(File(staging))
+            }
+            val recordPath = when (result) {
+                is OutputPublish.Published -> result.uri
+                else -> staging
+            }
+            historyRow?.let { id ->
+                viewModelScope.launch { history.markDone(id, outputPath = recordPath, format = format) }
+            }
+            _state.update { state ->
+                val success = state.download as? DownloadPhase.Success ?: return@update state
+                state.copy(
+                    download = when (result) {
+                        is OutputPublish.Published -> success.copy(
+                            publishedPath = result.uri,
+                            publishedName = result.name,
+                            publishing = false,
+                        )
+
+                        OutputPublish.NotConfigured -> success.copy(publishing = false)
+
+                        is OutputPublish.Failed -> success.copy(
+                            publishing = false,
+                            publishWarning = result.reason,
+                        )
+                    },
+                )
+            }
         }
     }
 

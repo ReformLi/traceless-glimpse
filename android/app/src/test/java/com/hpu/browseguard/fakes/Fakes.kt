@@ -22,10 +22,12 @@ import com.hpu.browseguard.data.history.ReconcileReport
 import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.history.TaskLookup
 import com.hpu.browseguard.data.history.defaultHistoryTitle
+import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.shared.model.Task
+import java.io.File
 import java.util.Collections
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -107,6 +109,15 @@ class FakeBackendProvider(
         private set
     var lastDownloadExecutor: DownloadExecutor? = null
         private set
+
+    /** 默认未配置 SAF，保持接入前的「留在应用目录」行为；测试按需改成成功/失败。 */
+    var publishResult: OutputPublish = OutputPublish.NotConfigured
+    val publishRequests: MutableList<File> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun publishOutput(source: File): OutputPublish {
+        publishRequests += source
+        return publishResult
+    }
 
     override fun sniff(executor: SniffExecutor): SniffBackend {
         sniffExecutors += executor
@@ -270,6 +281,13 @@ class FakeHistoryRepository : HistoryRepository {
         calls += "delete"
         state.value = state.value.filterNot { it.id == id }
         return false
+    }
+
+    override suspend fun deleteAll(): Int {
+        calls += "deleteAll"
+        val removed = state.value.size
+        state.value = emptyList()
+        return removed
     }
 
     override suspend fun reconcile(

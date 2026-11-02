@@ -17,6 +17,8 @@ class RoomHistoryRepository(
     private val dao: DownloadRecordDao,
     private val sandboxRoot: String?,
     private val now: () -> Long = System::currentTimeMillis,
+    /** SAF 文档删除；默认不删，JVM 单测没有 ContentResolver。 */
+    private val deleteDocument: (String) -> Boolean = { false },
 ) : HistoryRepository {
 
     override val records: Flow<List<DownloadRecord>> = dao.observeAll()
@@ -92,9 +94,17 @@ class RoomHistoryRepository(
         val shared = record.outputPath?.let { path ->
             dao.findByOutputPath(path).any { it.id != id }
         } ?: false
-        val removed = if (shared) false else record.outputPath?.let(::deleteInsideSandbox) ?: false
+        val removed = if (shared) false else record.outputPath?.let(::deleteOutput) ?: false
         dao.deleteById(id)
         return removed
+    }
+
+    override suspend fun deleteAll(): Int {
+        val all = dao.getAll()
+        // 全部记录都要走，任何产物都不再存在第二份引用，可以逐个清理。
+        all.mapNotNull { it.outputPath }.distinct().forEach(::deleteOutput)
+        dao.deleteAll()
+        return all.size
     }
 
     override suspend fun reconcile(
@@ -147,6 +157,9 @@ class RoomHistoryRepository(
         val current = dao.findById(id) ?: return
         dao.upsert(transform(current).copy(updatedAt = now()))
     }
+
+    private fun deleteOutput(path: String): Boolean =
+        if (path.startsWith("content://")) deleteDocument(path) else deleteInsideSandbox(path)
 
     private fun deleteInsideSandbox(path: String): Boolean {
         val target = insideSandbox(path) ?: return false

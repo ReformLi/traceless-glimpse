@@ -17,6 +17,9 @@ import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.ReconcileReport
 import com.hpu.browseguard.data.history.RoomHistoryRepository
 import com.hpu.browseguard.data.history.TaskLookup
+import com.hpu.browseguard.data.output.OutputPublish
+import com.hpu.browseguard.data.output.SafOutputDirectory
+import java.io.File
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -32,6 +35,7 @@ class AppContainer(context: Context) : BackendProvider {
     val audit: AuditLogger = LogcatAuditLogger()
     private val client = EngineClient()
     val engineInfo: EngineInfo = HttpEngineInfo(client)
+    val outputs = SafOutputDirectory(app, audit)
     private val webViewSniffer = LocalWebViewSniffer(app, audit)
 
     /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
@@ -54,10 +58,16 @@ class AppContainer(context: Context) : BackendProvider {
         )
     }
 
+    override suspend fun publishOutput(source: File): OutputPublish = outputs.publish(source)
+
     private val database by lazy { BrowseGuardDatabase.build(app) }
 
     val history: HistoryRepository by lazy {
-        RoomHistoryRepository(database.downloadRecords(), localSandboxRoot)
+        RoomHistoryRepository(
+            dao = database.downloadRecords(),
+            sandboxRoot = localSandboxRoot,
+            deleteDocument = outputs::delete,
+        )
     }
 
     /**

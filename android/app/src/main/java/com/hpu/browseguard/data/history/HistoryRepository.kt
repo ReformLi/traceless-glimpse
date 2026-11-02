@@ -59,6 +59,9 @@ interface HistoryRepository {
      */
     suspend fun delete(id: String): Boolean
 
+    /** 清空全部记录，并清理应用目录里不再被引用的产物；返回删掉的记录数。 */
+    suspend fun deleteAll(): Int
+
     /**
      * 冷启动对账。
      *

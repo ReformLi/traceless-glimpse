@@ -70,6 +70,31 @@ class RoomHistoryRepositoryTest {
     }
 
     @Test
+    fun deleteAllRemovesEveryRowAndEverySandboxFile() = runTest {
+        val sandbox = folder.newFolder("Download")
+        val first = File(sandbox, "one.mp4").apply { writeText("one") }
+        val second = File(sandbox, "two.mp4").apply { writeText("two") }
+        val shared = File(sandbox, "shared.mp4").apply { writeText("shared") }
+        val outside = folder.newFile("outside.mp4").apply { writeText("keep") }
+        val dao = FakeDao()
+        dao.rows["1"] = record("1", RecordStatus.DONE, first.absolutePath)
+        dao.rows["2"] = record("2", RecordStatus.FAILED, second.absolutePath)
+        dao.rows["3"] = record("3", RecordStatus.DONE, shared.absolutePath)
+        dao.rows["4"] = record("4", RecordStatus.DONE, shared.absolutePath)
+        dao.rows["5"] = record("5", RecordStatus.DONE, outside.absolutePath)
+        val repo = RoomHistoryRepository(dao, sandbox.absolutePath)
+
+        val removed = repo.deleteAll()
+
+        assertEquals(5, removed)
+        assertTrue(dao.rows.isEmpty())
+        assertFalse(first.exists())
+        assertFalse(second.exists())
+        assertFalse("清空后不存在其他引用，共享产物也应清理", shared.exists())
+        assertTrue("沙箱外文件不得删除", outside.exists())
+    }
+
+    @Test
     fun engineOfflinePreservesRemoteRowsAndNeverCallsLookup() = runTest {
         val dao = FakeDao()
         dao.rows["sniff"] = record("sniff", RecordStatus.SNIFFING, null, taskId = "t1")
@@ -220,6 +245,11 @@ class RoomHistoryRepositoryTest {
 
         override suspend fun deleteById(id: String) {
             rows.remove(id)
+            publish()
+        }
+
+        override suspend fun deleteAll() {
+            rows.clear()
             publish()
         }
 

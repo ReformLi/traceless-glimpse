@@ -8,6 +8,7 @@ import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.data.history.RecordStatus
+import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.fakes.FakeAuditLogger
 import com.hpu.browseguard.fakes.FakeBackendProvider
 import com.hpu.browseguard.fakes.FakeEngineInfo
@@ -28,6 +29,7 @@ import com.hpu.browseguard.ui.Connection
 import com.hpu.browseguard.ui.DownloadPhase
 import com.hpu.browseguard.ui.HomeViewModel
 import com.hpu.browseguard.ui.SniffPhase
+import com.hpu.browseguard.ui.localOutputPath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -360,6 +362,61 @@ class HomeViewModelBehaviorTest {
         assertNull("客户端判定不得借 §5 协议码", row.errorCode)
     }
 
+    /** 没选 SAF：本地产物留在应用目录，界面与历史都指向 staging，不显示假警告。 */
+    @Test
+    fun localSuccessWithoutSafKeepsStagingPath() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val vm = fakes.connectedViewModel()
+        val task = fakes.reachLocalSuccess(vm)
+
+        val phase = vm.state.value.download as DownloadPhase.Success
+        assertFalse("复制流程结束后不能再挡着打开文件", phase.publishing)
+        assertNull(phase.publishedPath)
+        assertNull(phase.publishWarning)
+
+        val row = fakes.history.rows.single()
+        assertEquals(RecordStatus.DONE, row.status)
+        assertEquals(localOutputPath(task), row.outputPath)
+        assertEquals(localOutputPath(task), fakes.provider.publishRequests.single().path)
+    }
+
+    /** 选了 SAF 且复制成功：历史与界面都改成 content://，staging 不再是最终落点。 */
+    @Test
+    fun localSuccessPublishedToSafRecordsTheContentUri() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        fakes.provider.publishResult = OutputPublish.Published("content://tree/doc/clip.mp4", "clip.mp4")
+        val vm = fakes.connectedViewModel()
+        fakes.reachLocalSuccess(vm)
+
+        val phase = vm.state.value.download as DownloadPhase.Success
+        assertEquals("content://tree/doc/clip.mp4", phase.publishedPath)
+        assertEquals("clip.mp4", phase.publishedName)
+        assertFalse(phase.publishing)
+        assertNull(phase.publishWarning)
+
+        val row = fakes.history.rows.single()
+        assertEquals(RecordStatus.DONE, row.status)
+        assertEquals("content://tree/doc/clip.mp4", row.outputPath)
+    }
+
+    /** 复制失败不篡改下载结果：记录仍指向 staging，警告必须让用户看见。 */
+    @Test
+    fun localSuccessKeepsStagingAndWarnsWhenSafCopyFails() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        fakes.provider.publishResult = OutputPublish.Failed("所选文件夹的授权已失效，请在设置中重新选择")
+        val vm = fakes.connectedViewModel()
+        val task = fakes.reachLocalSuccess(vm)
+
+        val phase = vm.state.value.download as DownloadPhase.Success
+        assertFalse(phase.publishing)
+        assertNull("复制失败不能冒充已保存", phase.publishedPath)
+        assertTrue("警告原文必须透传：${phase.publishWarning}", phase.publishWarning!!.contains("授权已失效"))
+
+        val row = fakes.history.rows.single()
+        assertEquals("文件还在 staging，记录不能丢", RecordStatus.DONE, row.status)
+        assertEquals(localOutputPath(task), row.outputPath)
+    }
+
     private class Fakes(
         val settings: FakeEngineSettings = FakeEngineSettings(),
         val provider: FakeBackendProvider = FakeBackendProvider(),
@@ -377,6 +434,22 @@ class HomeViewModelBehaviorTest {
             vm.sniff()
             provider.sniffBackend.emit(SniffEvent.Results(results))
             assertEquals(SniffPhase.Success(results), vm.state.value.sniff)
+        }
+
+        /** 本地直链一路走到成功终态；SAF 复制是否成功由 [FakeBackendProvider.publishResult] 决定。 */
+        suspend fun reachLocalSuccess(vm: HomeViewModel): Task {
+            val link = sniffResult()
+            reachSniffSuccess(vm, listOf(link))
+            vm.pickFormats()
+            provider.downloadBackend.emitPrepare(
+                DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
+            )
+            vm.startDownload()
+            provider.downloadBackend.emitStart(DownloadEvent.Started(task(TaskStatus.DOWNLOADING)))
+            val terminal = task(TaskStatus.DONE)
+            provider.downloadBackend.emitStart(DownloadEvent.Terminal(terminal))
+            assertTrue(vm.state.value.download is DownloadPhase.Success)
+            return terminal
         }
     }
 

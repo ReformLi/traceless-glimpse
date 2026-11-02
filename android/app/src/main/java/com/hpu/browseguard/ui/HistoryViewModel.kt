@@ -8,8 +8,10 @@ import com.hpu.browseguard.data.history.HistoryRepository
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -33,8 +35,23 @@ class HistoryViewModel(private val history: HistoryRepository) : ViewModel() {
         .map { records -> HistoryUiState(groups = groupHistory(records), loading = false) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HistoryUiState())
 
+    private val _clearing = MutableStateFlow(false)
+    val clearing: StateFlow<Boolean> = _clearing.asStateFlow()
+
     fun delete(id: String) {
         viewModelScope.launch { history.delete(id) }
+    }
+
+    fun clearAll() {
+        if (_clearing.value) return
+        viewModelScope.launch {
+            _clearing.value = true
+            try {
+                history.deleteAll()
+            } finally {
+                _clearing.value = false
+            }
+        }
     }
 
     companion object {

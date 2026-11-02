@@ -111,7 +111,7 @@ fun BgvApp(container: AppContainer) {
                         },
                     )
 
-                    AppDestination.SETTINGS -> SettingsScreen()
+                    AppDestination.SETTINGS -> SettingsRoute(container, homeViewModel)
                 }
             }
         }
