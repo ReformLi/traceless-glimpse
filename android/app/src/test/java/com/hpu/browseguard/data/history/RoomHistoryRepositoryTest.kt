@@ -1,5 +1,6 @@
 package com.hpu.browseguard.data.history
 
+import com.hpu.browseguard.fakes.FakeAuditLogger
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.Task
 import com.hpu.browseguard.shared.model.TaskMode
@@ -166,6 +167,41 @@ class RoomHistoryRepositoryTest {
         val recovered = dao.rows["download"]!!
         assertEquals(RecordStatus.DONE, recovered.status)
         assertEquals("E:\\Videos\\BGV\\clip.mp4", recovered.outputPath)
+    }
+
+    /**
+     * 一次嗅探会话只有一行，重试走的还是同一行：后来的失败/取消不能把
+     * 「已经成功、产物还在盘上」的记录抹成失败（MuMu 实测过这条降级）。
+     */
+    @Test
+    fun aCompletedRecordSurvivesLaterFailureAndCancellation() = runTest {
+        val dao = FakeDao()
+        dao.rows["1"] = record("1", RecordStatus.DOWNLOADING, null)
+        val audit = FakeAuditLogger()
+        val repo = RoomHistoryRepository(dao, null, now = { 999 }, audit = audit)
+
+        repo.markDone("1", outputPath = "/sandbox/clip.mp4", format = "720p")
+        repo.markFailed("1", errorCode = null)
+        repo.markCancelled("1")
+
+        val row = dao.rows.getValue("1")
+        assertEquals("已完成是终态", RecordStatus.DONE, row.status)
+        assertEquals("/sandbox/clip.mp4", row.outputPath)
+        assertEquals("拒绝改写必须留审计行", 2, audit.of("history_done_kept").size)
+    }
+
+    @Test
+    fun aStillInProgressRecordIsTerminalizedByFailureAndCancellation() = runTest {
+        val dao = FakeDao()
+        dao.rows["1"] = record("1", RecordStatus.DOWNLOADING, null)
+        dao.rows["2"] = record("2", RecordStatus.SNIFFING, null)
+        val repo = RoomHistoryRepository(dao, null, now = { 999 })
+
+        repo.markFailed("1", errorCode = null)
+        repo.markCancelled("2")
+
+        assertEquals(RecordStatus.FAILED, dao.rows.getValue("1").status)
+        assertEquals(RecordStatus.CANCELLED, dao.rows.getValue("2").status)
     }
 
     private fun record(

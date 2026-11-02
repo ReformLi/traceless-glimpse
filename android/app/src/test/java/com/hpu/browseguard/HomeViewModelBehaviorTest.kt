@@ -481,6 +481,27 @@ class HomeViewModelBehaviorTest {
     }
 
     /**
+     * 成功之后撤销授权、再点一次下载并被拒：界面照样报 403，但那次成功的记录不动——
+     * 产物还在盘上，历史页指着一份完好的文件说「失败」是把用户往错的方向带。
+     */
+    @Test
+    fun aDeclinedRetryNeverRewritesACompletedRecord() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val vm = fakes.connectedViewModel()
+        val task = fakes.reachLocalSuccess(vm)
+        val link = sniffResult()
+
+        fakes.reachLocalSelectingAfter(vm, link)
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+        vm.denyCookieConsent()
+
+        assertTrue("界面上仍要说清这次没成", vm.state.value.download is DownloadPhase.Failed)
+        val row = fakes.history.rows.single()
+        assertEquals("重试被拒不许改写已完成的记录", RecordStatus.DONE, row.status)
+        assertEquals(localOutputPath(task), row.outputPath)
+    }
+
+    /**
      * 点「同意并继续」= 一次点击跑完三步：重放本机嗅探（这次才允许页面存 Cookie）
      * → 画质表回来 → 自动开下。中间不能再问用户第二次。
      */

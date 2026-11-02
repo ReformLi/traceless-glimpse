@@ -6,8 +6,11 @@ import com.hpu.browseguard.shared.model.TaskStatus
 import com.hpu.browseguard.ui.displayLabel
 import com.hpu.browseguard.ui.displayWithWire
 import com.hpu.browseguard.ui.homeSubtitleRes
+import com.hpu.browseguard.ui.runsEntirelyLocally
 import com.hpu.browseguard.ui.wireName
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** 状态展示文案（收尾③第 3 类）：中文措辞对齐 PROTOCOL §4 状态机语义，线名同时保留。 */
@@ -84,6 +87,27 @@ class ProtocolCopyTest {
                 "嗅探=${executors.first} 下载=${executors.second}",
                 slots,
                 homeSubtitleRes(executors.first, executors.second),
+            )
+        }
+    }
+
+    /**
+     * 「本机嗅探 · 不需要电脑」只在两条链路都不碰引擎时成立（M6-5 现场取证发现）。
+     *
+     * 回归点：MuMu 上把下载切到电脑引擎、嗅探留在本机，连接卡片仍写着「不需要电脑」，
+     * 而这一次下载确实要电脑在线——用户据此判断的是断网还能不能干活。
+     */
+    @Test
+    fun onlyFullyLocalCombinationClaimsNoComputer() {
+        assertTrue(runsEntirelyLocally(SniffExecutor.LOCAL_WEBVIEW, DownloadExecutor.LOCAL_DIRECT))
+        listOf(
+            SniffExecutor.ENGINE to DownloadExecutor.ENGINE,
+            SniffExecutor.ENGINE to DownloadExecutor.LOCAL_DIRECT,
+            SniffExecutor.LOCAL_WEBVIEW to DownloadExecutor.ENGINE,
+        ).forEach { (sniff, download) ->
+            assertFalse(
+                "嗅探=$sniff 下载=$download 仍然要碰电脑引擎",
+                runsEntirelyLocally(sniff, download),
             )
         }
     }

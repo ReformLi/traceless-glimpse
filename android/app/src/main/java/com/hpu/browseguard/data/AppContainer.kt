@@ -78,6 +78,7 @@ class AppContainer(context: Context) : BackendProvider {
             dao = database.downloadRecords(),
             sandboxRoot = localSandboxRoot,
             deleteDocument = outputs::delete,
+            audit = audit,
         )
     }
 

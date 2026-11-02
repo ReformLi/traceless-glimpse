@@ -1420,7 +1420,7 @@ private fun SelfcheckRows(selfcheck: SelfcheckResponse) {
 private fun engineSummary(state: HomeUiState): String {
     val connection = state.connection
     return when {
-        state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW ->
+        runsEntirelyLocally(state.sniffExecutor, state.downloadExecutor) ->
             stringResource(R.string.engine_panel_summary_local)
 
         connection is Connection.Connected -> stringResource(

@@ -11,8 +11,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  *
  * 默认关闭：没有授权记录就是不许读。这里只有域名与时间戳，Cookie 值始终留在
  * WebView 自己的 CookieStore 里，由 `ConsentCookieProvider` 在授权成立后读取。
- * 授权/撤销立即落盘（安全事实不能只活到进程结束），[markUsed] 相反——只改内存，
- * 由 [flushUsage] 在生命周期边界统一写（一次 403 重试会连着打好几次）。
+ * 授权/撤销立即落盘（安全事实不能只活到进程结束），[markUsed] 相反——首次使用写一次
+ * 底，之后的更新只改内存，由 [flushUsage] 在生命周期边界统一写（一次 403 重试会连着打好几次）。
  */
 interface CookieConsentStore {
     fun isGranted(host: String): Boolean
@@ -93,7 +93,13 @@ class PrefsCookieConsentStore(
     }
 
     override fun markUsed(host: String) {
-        if (isGranted(host)) usage[host] = now()
+        if (!isGranted(host)) return
+        val millis = now()
+        val firstEver = prefs.getLong(usedKey(host), 0L) == 0L
+        usage[host] = millis
+        // 第一次使用立即落盘：进程被杀（重装/崩溃）之后设置页不该说「尚未使用过」。
+        // 之后的更新仍然只改内存，由 flushUsage 在生命周期边界统一写。
+        if (firstEver) prefs.edit().putLong(usedKey(host), millis).apply()
     }
 
     override fun flushUsage() {

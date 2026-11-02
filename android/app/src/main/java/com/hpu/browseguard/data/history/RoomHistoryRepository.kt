@@ -1,5 +1,7 @@
 package com.hpu.browseguard.data.history
 
+import com.hpu.browseguard.data.AuditLogger
+import com.hpu.browseguard.data.NoopAuditLogger
 import com.hpu.browseguard.data.backend.isLocalTaskId
 import com.hpu.browseguard.shared.model.Task
 import com.hpu.browseguard.shared.model.TaskStatus
@@ -19,6 +21,7 @@ class RoomHistoryRepository(
     private val now: () -> Long = System::currentTimeMillis,
     /** SAF 文档删除；默认不删，JVM 单测没有 ContentResolver。 */
     private val deleteDocument: (String) -> Boolean = { false },
+    private val audit: AuditLogger = NoopAuditLogger,
 ) : HistoryRepository {
 
     override val records: Flow<List<DownloadRecord>> = dao.observeAll()
@@ -81,11 +84,25 @@ class RoomHistoryRepository(
     }
 
     override suspend fun markFailed(id: String, errorCode: String?) {
+        if (keepDone(id, "failed")) return
         mutate(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode) }
     }
 
     override suspend fun markCancelled(id: String) {
+        if (keepDone(id, "cancelled")) return
         mutate(id) { it.copy(status = RecordStatus.CANCELLED) }
+    }
+
+    /**
+     * 已完成是终态：后来的失败或取消不能把它改写成「没成」——产物还在盘上，
+     * 历史页却说失败，用户只会以为文件丢了（MuMu 实测：撤销 Cookie 授权后重试被拒，
+     * 上一次成功的记录被就地刷成 FAILED，而 `protected.mp4` 仍在 Download 目录里）。
+     * 拒绝改写要留一行审计，不做静默降级。
+     */
+    private suspend fun keepDone(id: String, refused: String): Boolean {
+        if (dao.findById(id)?.status != RecordStatus.DONE) return false
+        audit.log("history_done_kept", mapOf("id" to id, "refused" to refused))
+        return true
     }
 
     override suspend fun delete(id: String): Boolean {

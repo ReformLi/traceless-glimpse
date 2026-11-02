@@ -49,8 +49,13 @@ interface HistoryRepository {
 
     suspend fun markDone(id: String, outputPath: String?, format: String?)
 
+    /**
+     * 记一次失败。[markDone] 之后的记录是终态，实现必须拒绝把它改写成失败——
+     * 重试走同一行，而第一次的产物还在盘上。
+     */
     suspend fun markFailed(id: String, errorCode: String?)
 
+    /** 同 [markFailed]：已完成的记录不因后来的取消而改写。 */
     suspend fun markCancelled(id: String)
 
     /**

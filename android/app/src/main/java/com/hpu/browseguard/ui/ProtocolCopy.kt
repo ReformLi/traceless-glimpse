@@ -56,3 +56,14 @@ fun homeSubtitleRes(
         DownloadExecutor.LOCAL_DIRECT -> R.string.home_subtitle_download_local
     },
 )
+
+/**
+ * 「不需要电脑」成立吗——两条链路都得留在本机。
+ *
+ * 「连接与引擎设置」卡片曾经只看嗅探一侧，下载切到电脑引擎后仍宣称不需要电脑；
+ * 用户据此判断的是断网还能不能干活，写错就是误判。
+ */
+fun runsEntirelyLocally(
+    sniff: SniffExecutor,
+    download: DownloadExecutor,
+): Boolean = sniff == SniffExecutor.LOCAL_WEBVIEW && download == DownloadExecutor.LOCAL_DIRECT

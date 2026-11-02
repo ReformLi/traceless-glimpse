@@ -339,11 +339,14 @@ class FakeHistoryRepository : HistoryRepository {
 
     override suspend fun markFailed(id: String, errorCode: String?) {
         calls += "markFailed"
+        // 与 RoomHistoryRepository 同一条契约：已完成的记录不被后来的失败改写。
+        if (state.value.any { it.id == id && it.status == RecordStatus.DONE }) return
         update(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode) }
     }
 
     override suspend fun markCancelled(id: String) {
         calls += "markCancelled"
+        if (state.value.any { it.id == id && it.status == RecordStatus.DONE }) return
         update(id) { it.copy(status = RecordStatus.CANCELLED) }
     }
 

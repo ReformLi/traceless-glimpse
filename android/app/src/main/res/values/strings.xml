@@ -61,16 +61,12 @@
     <string name="settings_cookie_last_used">最近使用 %1$s</string>
     <string name="settings_cookie_never_used">尚未使用过</string>
     <string name="settings_cookie_revoke">撤销</string>
-    <string name="settings_cookie_revoke_title">撤销 %1$s 的授权？</string>
-    <string name="settings_cookie_revoke_body">只收回读取许可，下次这个站点再需要登录状态时会重新询问；应用里已存的 Cookie 值不会被删掉。</string>
-    <string name="settings_cookie_revoke_confirm">撤销</string>
-    <string name="settings_cookie_revoke_cancel">取消</string>
     <string name="settings_cookie_clear">清除所有 Cookie</string>
     <string name="settings_cookie_clear_title">清除所有 Cookie？</string>
     <string name="settings_cookie_clear_body">应用内浏览器保存的全部 Cookie 值都会删除，此操作不可撤销。系统只给了整体清除的接口，不能按站点逐条删值；授权记录不受影响，要收回许可请用每行后面的「撤销」。</string>
     <string name="settings_cookie_clear_confirm">清除</string>
     <string name="settings_cookie_clear_cancel">取消</string>
-    <string name="settings_cookie_hint">本机下载读取的 Cookie 只留在手机上，不会发给电脑引擎。</string>
+    <string name="settings_cookie_hint">本机下载读取的 Cookie 只留在手机上，不会发给电脑引擎。撤销只收回读取许可，已存的值仍在，下次会重新询问；要彻底删值用「清除所有 Cookie」。</string>
 
     <string name="settings_history_section">历史维护</string>
     <string name="settings_history_count">共 %1$d 条记录 · %2$d 条已完成</string>
