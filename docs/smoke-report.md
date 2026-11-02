@@ -1844,9 +1844,9 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
 **P0（本轮已修，§19.4）**：逃逸异常没有出口 → 任务永久停在 `sniffing` / `downloading`。
 判定依据正是用户给的口径「凡导致任务永久停滞的立刻 P0 直接修」，且修复前四条用例全部实测卡死。
 
-**P1（等裁决，未动代码）**：
+**P1（本轮裁决：三条全修。①已升 P0 并落地＝§19.7）**：
 
-1. **`postActions` 被静默丢弃**。`merging` / `post_processing` 无入口，
+1. **`postActions` 被静默丢弃**（**已修**：按裁决升为 P0，见 §19.7）。`merging` / `post_processing` 无入口，
    [services/merger.py](file:///E:/code/android/BrowseGuardVid/engine/services/merger.py) 有实现、有自己的单测，
    但 `main.py` 与 `services/downloader.py` **都不调用它**（grep 全仓：`merge_streams` 只出现在 `tests_real/test_merger_*`）。
    后果链：客户端「合并音视频」开关 → [HomeViewModel.kt:273](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L273)
@@ -2014,4 +2014,72 @@ sealed interface DownloadEvent {
   「29 码 / 20 无生产者」就是这么算错的，校正在该节内留痕。
 - **注释里的条数也是代码**：Kotlin `ErrorPayload.kt` 写「共 29 个」而枚举有 30 条，
   和 4b 那两次「注释/文案与实际行为相反」是同一类问题；已改为 30 并把 `NOT_FOUND` 记进新增说明。
+
+### 19.7 P1① 升 P0 修复：`merging` 真接线 + 引擎侧 FFmpeg 落地（2026-11-02）
+
+裁决口径：「`merging` 和 `post_processing` 没进状态机说明下载链路是半成品，用户选了合并实际没合」。
+本轮把 `merge` 这条后处理动作真正接上；`post_processing`（转码）仍**不接线**，但不再静默——
+`post_action_unsupported types=…` 审计行见下。
+
+三条设计决定（都是先碰壁才定下来的）：
+
+1. **不让 yt-dlp 一次下完**。`-f best` 遇到只有分离轨的源时，由它内置 `FFmpegMerger` 自己合：
+   产物确实是单文件，但那一次 FFmpeg 调用对引擎不可见，§3.7 的 `merge` 动作与 §4 的
+   `downloading → merging` 转移就永远没有落点。且 yt-dlp **没有** `--no-merge` 这类 compat 开关（实测）。
+   所以改成两次「单格式单轨」下载（`bestvideo` + `bestaudio`），每次都无可合，合并才真的归
+   [services/merger.py](file:///E:/code/android/BrowseGuardVid/engine/services/merger.py) 执行
+   （`services/downloader.py` 的 `download_tracks`）。
+2. **可拆性判定发生在下载之前，用元数据格式表判定**，不靠捕获下载异常猜。`bestvideo`/`bestaudio`
+   是「仅单轨」选择器，在只有 muxed 流的源上直接抛 `Requested format is not available`——
+   与 4b-2 同一课：信息不足时不能等到执行期才醒
+   （`services/formats.py` 的 `has_separate_tracks` / `track_expressions`）。
+3. **中间轨用同目录带标签名**（`Title.bgv-video.mp4` / `Title.bgv-audio.m4a`），不开临时子目录：
+   `security.validate_output_target` 要求产物**直接**位于输出目录。合并产物名由视频轨名去掉标签段得到，
+   `drop_track_files` 只认带标签的名字，不认识的文件绝不动手。
+
+落点（[engine/main.py](file:///E:/code/android/BrowseGuardVid/engine/main.py)）：
+
+- `main.py:324 _merge_plan`：要不要拆轨，三个跳过理由各留一行
+  `post_action_noop … reason=single_file_source / selector_not_splittable / no_separate_tracks`；
+  没点合并则一行都不打（不制造噪声）。`main.py:272 _audit_post_actions`
+  对未实现的动作打 `post_action_unsupported types=…`。口径同 4b-2：**降级可以，无痕不行**。
+- `main.py:358 _merge_stage`：`downloading → merging` → 真 `merge_streams` → 成功回收中间轨、
+  失败落 **`MERGE_FAILED`**（§5 里这个码第一次有生产者）。两条现场边界单独处理：合并前就存在的
+  同名产物**不删**（失败归失败，不顺手销毁用户文件）；本次自己造出来的半截文件**才**回收。
+  合并途中取消 → 产物保留、终态归 `cancelled`，不被 `done` 覆盖。
+- 桩模式也走完整状态：`downloading → merging → done`，客户端那两条屏显文案不再是死分支。
+
+取证（现场复跑，不是推理）：
+
+| 用例（`tests_real/test_merge_wiring.py`） | 断言 | 结果 |
+| --- | --- | --- |
+| `test_merge_routes_through_merging_and_replaces_inputs_with_product` | FFmpeg 被调时 `status==merging`；产物＝`Sample.mp4`；目录无 `*bgv-*` | 绿 |
+| `test_real_ffmpeg_merge_produces_one_dual_track_file` | **真 FFmpeg** 合出的单文件，ffprobe 数出 `{video, audio}` 两条流 | 绿 |
+| `test_merge_failure_lands_merge_failed_and_spares_prior_product` | `failed` + `MERGE_FAILED`（非 `UNKNOWN`），既有产物一字节未动 | 绿 |
+| `test_merge_failure_removes_the_garbage_it_just_made` | 本次造的半截产物被回收 | 绿 |
+| `test_cancel_during_merge_keeps_product_and_cancelled_wins` | 终态 `cancelled`、`error is None`、文件保留、`merge_cancelled` 留痕 | 绿 |
+| `test_direct_source_keeps_single_file_path_and_audits_the_noop` | 直链不拆轨 + `post_action_noop reason=single_file_source` | 绿 |
+| `test_download_tracks_reports_combined_bytes_with_audio_offset` | 进度序列逐元相等：`[(A,A),(A+V,A+V)]` | 绿 |
+| `test_download_tracks_reclaims_both_inputs_when_second_track_fails` | 顺序 `bestaudio→bestvideo`，半途失败也回收 | 绿 |
+| 桩侧 6 条（`test_merge_semantics.py`） | 表达式表、三个 noop 理由互可区分、桩状态机过 `merging`、`post_action_unsupported` | 绿 |
+
+假/真边界写在 docstring 里：接线用例用假下载器 + 假合并函数；真 FFmpeg 用例把**网络取字节**换成
+「复制真素材到轨名」，合并与 ffprobe 校验都走真代码。
+
+变异复跑（证明用例不空转）：
+
+| 变异体 | 预期症状 | 实测红名单 |
+| --- | --- | --- |
+| 删掉 `_merge_stage` 里的 `downloading → merging` 转移 | FFmpeg 在非 merging 态执行 | `test_merge_routes_through_merging…` 红（桩侧 6 条不受影响，代码路径确实分开） |
+| `has_separate_tracks` 退化成本地有响应就走（`bool(items)`） | muxed-only 源被误判可拆 | `test_has_separate_tracks_requires_both_single_tracks`、`test_merge_plan_reasons_are_distinguishable` 红 |
+| 失败清理改成无条件 `target.unlink()` | 顺手销毁用户既有产物 | `test_merge_failure_lands_merge_failed_and_spares_prior_product` 红 |
+| 成功后不再回收中间轨 | 用户目录留工地 | 接线用例 + 真 FFmpeg 用例双双红 |
+| 进度不加音频偏移 | 进度条从 30% 跳回 5% | `test_download_tracks_reports_combined_bytes_with_audio_offset` 红 |
+
+套件基线（修复后复跑）：引擎桩 **179 passed / 160 deselected**（+6 条 §19.7 语义用例）、
+引擎 real **159 passed + 1 xfailed**（+8 条 §19.7 接线/真合并用例）。Android 侧本轮未改代码、
+Gradle 未复跑——`ProtocolCopy.kt` 那两条屏显文案从此理论上取到值，但**设备取证要等真机轮**，不在此处冒充证据。
+
+遗留（不掩饰）：`TRANSCODE_FAILED` / `ENGINE_BUSY` 仍零生产者。转码未接线（只有 `post_action_unsupported`
+审计行）；`ENGINE_BUSY` 需要引擎真的会「拒活」才有意义（当前 worker 队列无界，拒不了活），**不造码**。
 

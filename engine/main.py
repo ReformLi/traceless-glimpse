@@ -27,6 +27,7 @@ import random
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -48,6 +49,7 @@ from models import (
     FormatSource,
     MediaStreamType,
     PostAction,
+    PostActionType,
     Progress,
     Resolution,
     SniffResult,
@@ -68,6 +70,7 @@ from persistence import get_store
 from services import downloader as downloader_service
 from services import environment as environment_service
 from services import formats as formats_service
+from services import merger as merger_service
 from services.task_worker import TaskWorker
 
 logger = logging.getLogger("bgv.engine")
@@ -211,8 +214,9 @@ def reset_state() -> None:
 
 
 def _begin_download(record: TaskRecord) -> None:
-    """进入 downloading：状态转移 + 初始进度 + 计数器（唯一下载计数点）。"""
+    """进入 downloading：状态转移 + 初始进度 + 计数器（唯一下载计数点）+ 后处理动作审计。"""
     _transition(record.task, TaskStatus.DOWNLOADING)
+    _audit_post_actions(record.task)
     record.task.progress = Progress(
         phase="downloading",
         bytesDownloaded=0,
@@ -265,6 +269,37 @@ def _do_download(record: TaskRecord) -> None:
         _download_safely(record)
 
 
+def _audit_post_actions(task: Task) -> None:
+    """M1 只实现 ``merge``：其余白名单动作收到即记审计行，不收进「静默丢弃」。
+
+    挂在「进入 downloading」这个唯一入口上（``_begin_download``），桩与 real、
+    自动领取与 ``POST /download`` 四条路都过它。没有这行日志，「引擎到底做没做」
+    在日志层面就无从回答（§19.3 缺口 1 的判定依据）。
+    """
+    others = [
+        action.type.value for action in task.postActions if action.type != PostActionType.MERGE
+    ]
+    if others:
+        logger.info("post_action_unsupported task_id=%s types=%s", task.id, ",".join(others))
+
+
+def _merge_requested(task: Task) -> bool:
+    return any(action.type == PostActionType.MERGE for action in task.postActions)
+
+
+def _finish_stub_download(task: Task) -> None:
+    """桩语义的下载完成：写死 fixture 字节数，只为让状态机走完，不代表真产物。"""
+    task.progress = Progress(
+        phase="done",
+        bytesDownloaded=524288000,
+        bytesTotal=524288000,
+        speedBps=0,
+        etaSeconds=0,
+        percent=100.0,
+    )
+    _transition(task, TaskStatus.DONE)
+
+
 _FORMAT_UNAVAILABLE_MESSAGES = {
     "exact_format_id_unsupported": "M1 暂不支持精确 formatId",
     "max_height_required": "max_height 策略必须提供 maxHeight",
@@ -284,6 +319,76 @@ def _format_unavailable_detail(reason: str) -> dict[str, Any]:
 def _format_no_match_detail(exc: Any) -> dict[str, Any]:
     """无匹配时额外带 requested / available，让客户端能解释「为什么这条选不了」。"""
     return {**exc.detail, "message": _FORMAT_UNAVAILABLE_MESSAGES[exc.detail["reason"]]}
+
+
+def _merge_plan(
+    record: TaskRecord, format_expression: str
+) -> formats_service.TrackExpressions | None:
+    """本次下载是否走「分轨下载 + 引擎侧合并」；每个跳过理由当场记审计行。
+
+    §3.7 把 ``merge`` 定义成「合并分离音视频轨」，所以只有源里**确实**有两条单轨时
+    才谈得上合并。其余情况（直链单文件、纯音频选择器、源里没有单轨变体）合并无从下手，
+    但客户端的开关确实被按下了——不能静默吞掉，必须留一行可 grep 的 ``post_action_noop``
+    （同 4b-2 ``selector_degraded`` 的裁决口径：降级可以，无痕不行）。
+    """
+    task = record.task
+    if not _merge_requested(task):
+        return None
+    if record.sniff is None:
+        return None  # 上游已按 NO_MEDIA_FOUND 落 failed
+    if record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
+        logger.info(
+            "post_action_noop task_id=%s type=merge reason=single_file_source", task.id
+        )
+        return None
+    tracks = formats_service.track_expressions(format_expression)
+    if tracks is None:
+        logger.info(
+            "post_action_noop task_id=%s type=merge reason=selector_not_splittable", task.id
+        )
+        return None
+    if not formats_service.has_separate_tracks(record.formats):
+        logger.info(
+            "post_action_noop task_id=%s type=merge reason=no_separate_tracks", task.id
+        )
+        return None
+    return tracks
+
+
+def _merge_stage(record: TaskRecord, video: Path, audio: Path) -> Path | None:
+    """``downloading → merging`` + 真实 FFmpeg 合并；返回产物路径或 ``None``。
+
+    ``None`` 表示这次下载已经落 ``failed``（合并失败）或已被取消，调用方不得再置 ``done``。
+    合并失败只删**这次自己造出来的**文件：目标名如果合并前就在（上一轮成功产物同名），
+    留着不删——失败归失败，不许顺手销毁用户已有的文件。
+    """
+    task = record.task
+    target = downloader_service.merged_target_for(video)
+    target_existed = target.exists()
+    _transition(task, TaskStatus.MERGING)
+    task.progress = Progress(
+        phase="merging",
+        bytesDownloaded=task.progress.bytesDownloaded if task.progress else 0,
+        bytesTotal=task.progress.bytesTotal if task.progress else 0,
+        speedBps=0,
+        etaSeconds=0,
+        percent=100.0,
+    )
+    try:
+        merged = merger_service.merge_streams(video, audio, target)
+    except merger_service.MergeError as exc:
+        logger.warning("merge_failed task_id=%s reason=%s", task.id, exc)
+        downloader_service.drop_track_files([video, audio])
+        if not target_existed:
+            target.unlink(missing_ok=True)
+        _fail_task(task, ErrorCode.MERGE_FAILED, {"reason": "merge_failed"})
+        return None
+    downloader_service.drop_track_files([video, audio])
+    if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
+        # 合并期间点取消：产物已经合好了，保留文件但状态归 cancelled，不改判 done
+        logger.info("merge_cancelled task_id=%s bytes=%d", task.id, merged.stat().st_size)
+        return None
+    return merged
 
 
 def _download_real(record: TaskRecord) -> None:
@@ -324,8 +429,22 @@ def _download_real(record: TaskRecord) -> None:
     # 协作式断流 + 真实进度：两条下载循环各自在写块之前查标志
     should_abort = record.cancel_requested.is_set
     on_progress = _make_progress_recorder(task)
+    merge_plan = _merge_plan(record, format_expression)
+    tracks: tuple[Path, Path] | None = None
     try:
-        if record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
+        if merge_plan is not None:
+            # 客户端点了合并：先拿两条单轨，再由 _merge_stage 真的调 FFmpeg
+            tracks = downloader_service.download_tracks(
+                record.sniff.mediaUrl,
+                task.outputDir,
+                video_expression=merge_plan.video,
+                audio_expression=merge_plan.audio,
+                task_id=task.id,
+                cookie_policy=task.cookiePolicy.value,
+                should_abort=should_abort,
+                on_progress=on_progress,
+            )
+        elif record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
             # 单文件直链走 download_direct；HLS/DASH 交给 yt-dlp
             path = downloader_service.download_direct(
                 record.sniff.mediaUrl,
@@ -365,6 +484,10 @@ def _download_real(record: TaskRecord) -> None:
         # 收尾竞态：下载刚好在取消前一瞬完成——终态已是 cancelled，不覆盖成 done
         logger.info("download_cancelled task_id=%s", task.id)
         return
+    if tracks is not None:
+        path = _merge_stage(record, tracks[0], tracks[1])
+        if path is None:
+            return  # 合并失败已落 failed；合并期间被取消则终态归 cancelled
     task.progress = Progress(
         phase="done",
         bytesDownloaded=path.stat().st_size,
@@ -551,8 +674,8 @@ def _advance(record: TaskRecord) -> None:
     - sniffing → （real 模式：先做 Playwright 嗅探 + yt-dlp 格式解析）
       mode=sniff ? done : formatSelector 为空或 DRM ? awaiting_selection
       : downloading（自动领取）；
-    - downloading → done（stub 语义：下载瞬时完成；real 模式由 _download_real 直达
-      done / failed）。
+    - downloading → done（stub 语义：下载瞬时完成；点了 merge 则先走 merging 一站再 done，
+      与 §4 的转移表一致；real 模式由 _download_real / _merge_stage 直达 done / failed）。
 
     real 模式下嗅探与下载在本线程内**阻塞**执行（阶段 4 既有偏差）。
     """
@@ -577,18 +700,19 @@ def _advance(record: TaskRecord) -> None:
             _do_download(record)
             record.last_selector_key = _selector_key(task.formatSelector)
     elif task.status == TaskStatus.DOWNLOADING and ENGINE_MODE == "stub":
-        task.progress = Progress(
-            phase="done",
-            bytesDownloaded=524288000,
-            bytesTotal=524288000,
-            speedBps=0,
-            etaSeconds=0,
-            percent=100.0,
+        if _merge_requested(task):
+            # 桩也走 §4 的 merging 一站：客户端「合并音视频中」的文案在桩下得能出现，
+            # 否则那条屏显分支只有 real 联调时才看得见（本轮审计正是被这类死分支咬过）
+            _transition(task, TaskStatus.MERGING)
+        else:
+            _finish_stub_download(task)
+    elif task.status == TaskStatus.MERGING and ENGINE_MODE == "stub":
+        _finish_stub_download(task)
+    elif task.status in {TaskStatus.DOWNLOADING, TaskStatus.MERGING}:
+        # real 模式这两个态归 _download_real / _merge_stage 所有：推进只会伪造 done 与字节数
+        logger.info(
+            "advance_skipped_downloading task_id=%s status=%s", task.id, task.status.value
         )
-        _transition(task, TaskStatus.DONE)
-    elif task.status == TaskStatus.DOWNLOADING:
-        # real 模式的 downloading 归 `_download_real` 所有：在这里推进会伪造 done 与字节数
-        logger.info("advance_skipped_downloading task_id=%s", task.id)
 
 
 def _selector_key(selector: FormatSelector) -> str:

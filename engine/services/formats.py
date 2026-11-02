@@ -114,6 +114,45 @@ class ResolvedFormat(NamedTuple):
     degraded_reason: str | None = None
 
 
+class TrackExpressions(NamedTuple):
+    """分离轨下载的两条表达式：`video` 只有画面、`audio` 只有声音，合出来才是一个完整文件。"""
+
+    video: str
+    audio: str
+
+
+_TRACK_SPLITTABLE = re.compile(r"^best(?:\[height<=(?P<cap>\d+)\])?$")
+
+
+def track_expressions(expression: str) -> TrackExpressions | None:
+    """把已解析的单文件表达式拆成分离轨表达式；拆不动就返回 ``None``（不猜）。
+
+    只有 ``best`` / ``best[height<=N]`` 这一族有对应的 ``bestvideo`` 写法：
+    ``bestaudio`` 本来就是纯音频选择器，没有视频轨可合，合并请求对它无意义；
+    精确 formatId 在 M1 已被 :func:`ytdlp_format_expression` 显式拒绝，走不到这里。
+    """
+    match = _TRACK_SPLITTABLE.match(expression)
+    if not match:
+        return None
+    cap = match.group("cap")
+    video = f"bestvideo[height<={cap}]" if cap else "bestvideo"
+    return TrackExpressions(video=video, audio="bestaudio")
+
+
+def has_separate_tracks(formats: list[FormatInfo] | None) -> bool:
+    """格式表里是否真的同时存在「仅视频」与「仅音频」两条轨——``merge`` 能否落地的前提。
+
+    ``bestvideo`` / ``bestaudio`` 在 yt-dlp 语义里是**仅**含该类轨道的变体；只有混合流
+    （音画同条，HLS 常见）的源没有 audio-only 变体，直接向它要 ``bestaudio`` 会得到
+    ``Requested format is not available``。所以拆轨与否必须在下载之前按元数据判定，
+    不能等下载器抛错再猜——同 4b-2「判定必须发生在调用下载器之前」那条教训。
+    """
+    items = formats or []
+    return any(item.hasVideo and not item.hasAudio for item in items) and any(
+        item.hasAudio and not item.hasVideo for item in items
+    )
+
+
 def resolve_format_expression(
     selector: FormatSelector | None,
     formats: list[FormatInfo] | None,

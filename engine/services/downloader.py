@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 import httpx
@@ -316,6 +316,7 @@ def download_media(
     ydl_factory: Callable[[dict[str, Any]], Any] | None = None,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[int, int | None], None] | None = None,
+    filename_tag: str | None = None,
 ) -> Path:
     """下载到 ``output_dir``，返回产物路径（已通过完整性校验）。
 
@@ -331,6 +332,11 @@ def download_media(
     引擎侧的 ``.part`` 续传只服务 :func:`download_direct`；
     将来若要清理这些残留，只在 failed 终态按清理策略做，不在下载中途动它们。
     （详见 STUB_VS_REAL.md 与 smoke-report §11.5-4。）
+
+    ``filename_tag`` 只服务 :func:`download_tracks`：两次下载共用同一个 ``%(title)s``，
+    不加标签时第二条轨会**覆盖**第一条（容器相同就同名）。标签插在标题与扩展名之间
+    （``Title.bgv-video.mp4``）；产物名仍过 ``validate_output_filename``——白名单看的是
+    扩展名，中间多一段不参与判定。单文件下载不传标签。
     """
     validator(media_url)
     out_dir = prepare_output_dir(output_dir)
@@ -357,11 +363,14 @@ def download_media(
             on_progress(int(d.get("downloaded_bytes") or 0), int(total) if total else None)
 
     def _options(cookiefile: Path | None) -> dict[str, Any]:
+        template = (
+            f"%(title)s.{filename_tag}.%(ext)s" if filename_tag else "%(title)s.%(ext)s"
+        )
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
-            "outtmpl": str(out_dir / "%(title)s.%(ext)s"),
+            "outtmpl": str(out_dir / template),
             "format": format_expression,
             "socket_timeout": 30,
         }
@@ -430,3 +439,102 @@ def download_media(
         raise DownloadIntegrityError(f"ffprobe 无法解析产物：{target.name}")
     logger.info("download_complete task_id=%s bytes=%d", task_id, target.stat().st_size)
     return target
+
+
+# 分离轨中间文件的命名标签：合并完成后由 :func:`drop_track_files` 回收。
+TRACK_TAG_VIDEO = "bgv-video"
+TRACK_TAG_AUDIO = "bgv-audio"
+
+
+def download_tracks(
+    media_url: str,
+    output_dir: str | Path,
+    *,
+    video_expression: str,
+    audio_expression: str,
+    task_id: str = "unknown",
+    cookie_policy: str = "none",
+    validator: Callable[[str], str] = validate_outbound_url,
+    ydl_factory: Callable[[dict[str, Any]], Any] | None = None,
+    should_abort: Callable[[], bool] | None = None,
+    on_progress: Callable[[int, int | None], None] | None = None,
+) -> tuple[Path, Path]:
+    """分两次下载「仅视频轨 + 仅音频轨」，返回 ``(video, audio)``，**不合并**。
+
+    为什么不让 yt-dlp 一次下完：``-f best`` 遇到只有分离轨的源会由它内置
+    ``FFmpegMerger`` 自己合，产物确实是单文件，但那次 FFmpeg 调用对引擎不可见——
+    协议 §3.7 的 ``merge`` 动作与 §4 的 ``downloading → merging`` 转移因此永远没有落点
+    （M4 第 1 步审计的 P0）。拆成两个单格式下载后，每一次都只有一条轨、yt-dlp 无可合，
+    合并这一步才真的归 :mod:`services.merger` 执行。
+
+    先下音频轨（通常小得多），视频轨失败时两条一起回收——中间轨名由音频轨唯一确定
+    （同一 ``%(title)s`` 换标签），所以删得准，不会碰别人的文件。
+
+    ``on_progress`` 上报的是两轨**合计**字节：视频段在已落盘的音频字节上加偏移；
+    视频段总字节探不到时报 ``None``（不拿音频那一段冒充全局进度）。
+    """
+    state = {"offset": 0}
+
+    def _on_video_bytes(downloaded: int, total: int | None) -> None:
+        base = state["offset"]
+        on_progress(base + downloaded, base + total if total else None)
+
+    audio = download_media(
+        media_url,
+        output_dir,
+        task_id=task_id,
+        format_expression=audio_expression,
+        cookie_policy=cookie_policy,
+        validator=validator,
+        ydl_factory=ydl_factory,
+        should_abort=should_abort,
+        on_progress=on_progress,
+        filename_tag=TRACK_TAG_AUDIO,
+    )
+    state["offset"] = audio.stat().st_size
+    try:
+        video = download_media(
+            media_url,
+            output_dir,
+            task_id=task_id,
+            format_expression=video_expression,
+            cookie_policy=cookie_policy,
+            validator=validator,
+            ydl_factory=ydl_factory,
+            should_abort=should_abort,
+            on_progress=_on_video_bytes if on_progress is not None else None,
+            filename_tag=TRACK_TAG_VIDEO,
+        )
+    except Exception:
+        partial_video = audio.with_name(
+            audio.name.replace(f".{TRACK_TAG_AUDIO}", f".{TRACK_TAG_VIDEO}")
+        )
+        drop_track_files([audio, partial_video])
+        raise
+    logger.info("tracks_downloaded task_id=%s bytes=%d", task_id, state["offset"])
+    return video, audio
+
+
+def merged_target_for(video_path: Path) -> Path:
+    """合并产物名：去掉视频轨的 ``.bgv-video`` 标签段，回到 ``%(title)s.%(ext)s``。"""
+    return video_path.with_name(video_path.name.replace(f".{TRACK_TAG_VIDEO}", "", 1))
+
+
+def drop_track_files(paths: Iterable[Path]) -> None:
+    """回收本模块自己下的分离轨中间文件。
+
+    只删**带轨标签**的名字——不认识的文件绝不动手；用户输出目录里属于别的任务的
+    ``.part`` / ``.ytdl`` 残留由 yt-dlp 自己管（见 smoke-report §11.5-4）。
+    """
+    for path in paths:
+        if TRACK_TAG_VIDEO not in path.name and TRACK_TAG_AUDIO not in path.name:
+            logger.warning("track_cleanup_skipped reason=unlabeled name=%s", path.name)
+            continue
+        try:
+            if path.is_file():
+                path.unlink()
+                logger.info("track_file_dropped name=%s", path.name)
+        except OSError as exc:  # Windows 上被占用时宁可留残片，也不掩盖合并结果
+            logger.warning(
+                "track_cleanup_failed name=%s type=%s", path.name, type(exc).__name__
+            )
