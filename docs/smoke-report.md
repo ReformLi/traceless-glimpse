@@ -2328,3 +2328,102 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
    FakeBackend 接线时（第 3 步）需要把它改成注入。
 4. **③ 未开工**：`LocalDirectDownloader`（OkHttp + `.part`）与 `LocalWebViewSniffer`
    及 `capabilities`/`LocalReason` 新增成员，按裁决「设置里全局切换」接线。
+   → 前者已由 §21 落地，`LocalWebViewSniffer` 按裁决本轮不接线，仍挂在 §21.5。
+
+## 21. M4 第 2 步 ③：`LocalDirectDownloader` 落地 + 「下载执行者」全局切换（2026-11-02）
+
+四条裁决（本轮逐条问出来的，不是我自己选的）：
+
+| # | 裁决 | 落地位置 |
+| --- | --- | --- |
+| 1 | 开关放**设置里全局切换** | [EngineConfig.kt:47](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineConfig.kt#L47) `downloadExecutor`（SharedPreferences 持久化，默认 `ENGINE`）+ [HomeScreen.kt:240](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L240) 引擎卡片里两颗按钮 |
+| 2 | **只切下载执行者**，嗅探固定走引擎 | `sniff()` 仍然 `HttpSniffer(...)` 一条路；`LocalWebViewSniffer` 本轮不接线 |
+| 3 | 本地模式**仍经画质表一屏** | [LocalDirectDownloader.kt:38](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L38) `prepare()` 由嗅探结果合成一行表 |
+| 4 | 进度与终态用**合成 `Task` 快照**承载 + **不回传守卫** | [LocalTaskSnapshot.kt:24](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L24) + [TaskNeverGoesOnTheWireTest.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/TaskNeverGoesOnTheWireTest.kt) |
+
+### 21.1 落地形态
+
+| 文件 | 职责 | 关键点 |
+| --- | --- | --- |
+| [DownloadBackend.kt:17](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L17) | `DownloadExecutor` 枚举 | `ENGINE` / `LOCAL_DIRECT`，注释写死「只切下载这一段」 |
+| [:63](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L63) | `sealed interface StartRequest` | `ViaEngine`(:66) 带 `formatSelector/namingTemplate/postActions`；`ViaLocal`(:74) 只带 `link + outputDir` |
+| [:56](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L56) | `PrepareRequest.sniffResults` | 默认 `emptyList()`——引擎实现不读它，本地实现靠它合表（§6.3 画质表属于另一个任务，本地没有那个任务） |
+| [LocalDirectDownloader.kt:34](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L34) | 第三个 `DownloadBackend` | 纯 OkHttp + `RandomAccessFile`，`.part` 续传；416 清断点重下一轮；不碰 yt-dlp、不碰 FFmpeg |
+| [:188](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L188) / [:272](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L272) | 协作式取消 | `cancel()` 只登记标志返回 `null`；`internal object Cancellations` 进程级，按 `localTaskId(mediaUrl)` 对齐 |
+| [:259](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L259) | `FORBIDDEN_HEADERS` | `cookie / authorization / proxy-authorization / set-cookie` 二次过滤 `headersHint`——协议脱敏是引擎侧的约定，本机不白拿 |
+| [LocalTaskSnapshot.kt:24](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L24) | 界面镜像 `Task` | `id = "local-" + …`(:48)、`progress.phase = "local_direct"`(:52 起)、`error` 恒 `null`、`postActions = emptyList()`、`cookiePolicy = NONE` |
+| [LocalFailures.kt:41](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L41) | 三条本地新判定 | `unsupportedLink`(:41) / `linkUnloadable`(:44) / `disk`(:50)，措辞一律自证「客户端本地判定」 |
+| [HomeViewModel.kt:245](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L245) | 按执行者选后端 | `downloadBackend()`；[:157](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L157) `selectDownloadExecutor()` 落盘 + 取消在跑的 `downloadJob` + 回 `Idle`；[:304](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L304) 本地支按 `localTaskId` 找回直链，找不回就写失败阶段，不让按钮变哑 |
+
+### 21.2 三条设计决定
+
+1. **两支 `StartRequest` 而不是一个数据类塞可空字段**。`ViaLocal` 压根不收 `postActions`——
+   直链本身就是完整音视频文件，「合并」在这一支没有对应动作。用可空字段等于把「本地模式选了合并会怎样」
+   留给运行时猜；两支类型让组错请求在编译期暴露，跨支调用（引擎后端收到 `ViaLocal`）用 `error()`
+   炸出来，单测 `engineRequestAgainstTheLocalDownloaderFailsLoudly` 钉住这条。
+2. **取消标志必须进程级**。§20.6 遗留 3 说「后端每次点击现场 `new`」，本地链路正好撞上它：
+   `start` 与 `cancel` 是两个不同时刻构造的两个实例，标志挂在对象上就永远点不中。
+   于是按 `localTaskId(mediaUrl)`（由直链本身决定，不靠调用方传）在进程级注册表里对齐。
+   第 3 步把它改成注入后，这张表仍然需要——只是不再是「被迫」。
+3. **快照只进 `_state`，方向性由守卫钉**。裁决 4 的「不回传」不是约定而是三条静态断言：
+   出站编码点恰好 2 个且只喂 `TaskCreateRequest`/`DownloadRequest`；`Task.serializer()` 只出现在
+   `decode(...)` 位、一次也不进 `encode(...)`（按括号配对取实参，不是整行正则——同一行常既有
+   `decode(` 又有 `encode(`）；`LocalTaskSnapshot.kt` / `LocalDirectDownloader.kt` 里不许出现
+   `EngineClient`、`client.`、两个请求体类型或 `encode(`（注释行豁免，否则文档里提一句「不上行」就红）。
+
+### 21.3 对 §19.5 草图与 §20.3 的接续
+
+| # | 草图/前节的说法 | 本节落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | §20.3-4 `LocalReason` 草图有 `NO_DIRECT_LINK / WEBVIEW_UNAVAILABLE / URL_UNLOADABLE`，落地当时只有 4 个成员 | 新增 `UNSUPPORTED_LINK / LINK_UNLOADABLE / DISK`（现共 7 个） | 就是「③ 时按实际新增，不改名」那笔账。`WEBVIEW_UNAVAILABLE` 仍**没有生产者**（裁决 2：嗅探固定走引擎），继续不写 |
+| 2 | §20.3-3 `capabilities` 未实现 | 仍未实现 | 本地模式下「可选性」靠 `prepare()` 直接返回一行表 + 失败走 `Failed(Local)` 表达，今天不需要 `capabilities` 位 |
+| 3 | §20.3-6 `TaskHandle` 未引入 | 仍未引入，但 `localTaskId()` 已经是事实上的句柄 | 引擎侧句柄仍是 `taskId` 字符串；等第 3 步 FakeBackend 有「跨实现取消」的真实需求再抽 |
+
+### 21.4 取证（现场复跑）
+
+套件：`:android:app:testDebugUnitTest --rerun` → ③ 后 **85 passed / 0 failed / 0 skipped**
+（②④ 基线 70）。逐类：`LocalDirectDownloaderTest` 12、`TaskNeverGoesOnTheWireTest` 3、
+`PollLoopStateWritebackTest` 3（用例数没变，纳管的环从 3 条增至 4 条）。
+`assembleDebug` 同时通过，产物 `app-debug.apk` 32,063,862 字节——本地链路没引入任何新依赖。
+
+`LocalDirectDownloaderTest` 覆盖的是**行为**（MockWebServer 真发真收）：全量落盘 + `done`、
+Range 续传（`bytes=40-`）且断点计入已下、服务端不理 Range 时归零重下、416 清死断点重下一轮、
+403 → `Local(LINK_UNLOADABLE)` 且 `toDownloadPhase().code == null`、800ms 采样窗口内进度单调递增、
+取消后 `.part` 字节与快照报数一致且不改名、合表只收非 DRM 的 HTTP(S) 行、三条「没什么可下」各归各种、
+组错请求支炸 `IllegalStateException`、`cookie/authorization/proxy-authorization/set-cookie`
+四个头不上行（`referer/user-agent` 保留）。
+
+变异体复跑（每个都用「语法合法、语义退化」的写法，跑完立即从 `/tmp/mut*_orig.kt` 还原并 `diff` 确认逐字节一致，
+`grep -rn "leak\|pushSnapshot" android/app/src/main/` 命中 **0 行**）：
+
+| 变异体 | 红名单 | 观察 |
+| --- | --- | --- |
+| D：删掉 `LocalDirectDownloader.kt:145-156` 的 `emit(DownloadEvent.Progress(…))`，保留 `if (now - lastReport >= …)` 空壳 | `everyPollLoopEmitsItsStatusAfterThePoll` + `writebackHappensAfterThePollNotBefore` + `progressIsSampledWhileBytesMonotonicallyGrow` | 静态与行为**同时**红：新加的第四条环不是纸面纳管 |
+| E：`EngineClient` 加一个 `pushSnapshot()`，把界面镜像 `Task` 用 `encode(task, Task.serializer())` POST 回去 | **仅** `everyEncodeSiteUsesAnAllowedRequestBody` + `taskSerializerNeverFeedsAnEncode` | 其余 83 条全绿——「快照不上行」只有这两条看得见；§20 的两条 `Protocol` 守卫看不见它 |
+| F：`LocalDirectDownloader` 里加一个字段 `com.hpu.browseguard.data.EngineClient()` | **仅** `localSideStaysOffTheWire` | 第一版写成裸 `EngineClient()`（不补 import）**编译失败**，不是合法变异体；换成全限定名才跑通——这条按方法论记一笔 |
+
+守卫自身的两处修正是本轮踩出来的，不是设计优点：
+`PollLoopStateWritebackTest` 原来按整行匹配 `emit(DownloadEvent.Progress(`，而本地实现里 `emit(` 与
+事件名为了行宽拆成两行，**真代码被误判成漏发**；改成「函数体去空白后再匹配」。
+`pollLoopsAreAllRegistered` 原来硬比「`client.task(` 的 3 个调用点 == 纳管文件集合」，
+第四条不取任务的本地环一进表就把集合比歪；改成按 `pollAnchor` 分组计数，引擎环与本地环都受枚举约束。
+
+### 21.5 遗留（登记，不掩饰）
+
+1. **本地模式下「合并音视频」复选框是空操作**（P1）。`FormatCard` 的合并行不分执行者一直显示
+   （[HomeScreen.kt:535](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L535)），
+   而 `ViaLocal` 不收 `postActions`，用户勾与不勾结果一样。裁决 1–4 没授权我改那一屏的控件，
+   所以本轮只登记。可选的一行修法是「本地模式下该行不渲染」，另一条是「渲染但禁用 + 说明」——
+   要哪条请指。
+2. **本轮没有设备取证**。证据等级＝「12 条 JVM 行为单测（MockWebServer 真收发）+ 3 条静态守卫 +
+   3 组变异体 + assembleDebug」。真机上「切到本地直链 → 嗅探 → 画质表 → 下载 → `.part` 续传」
+   的链路，以及 `outputDir` 落在 selfcheck 白名单目录时的真实写盘权限，都还没演过。
+3. **本地链路不校验 `outputDir`**。目录取自引擎 `selfcheck.outputDirAllowlist` 的第一项
+   （快照 getter [HomeViewModel.kt:87](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L87)，
+   嗅探 :181、画质表 :223 同源），本机没再做一次「这个目录还在不在白名单里」的复核。
+   引擎换过地址或自检结果过期时，写盘会失败成
+   `Local(DISK)`——失败可辨，但那是兜底而不是约束。
+4. **`LocalWebViewSniffer` 仍未写**（裁决 2 明示本轮不接线）。因此 §18.5 的「嗅探兜底两条腿」目前只落地下载那条。
+5. **进度采样窗口本地与引擎共用 `DOWNLOAD_POLL_INTERVAL_MS = 800ms`**。语义其实不同（一个是轮询间隔，
+   一个是界面刷新节流），凑用一个常量省了一处配置，但改引擎轮询会连带改本地刷新，第 3 步接线时该分开。
+
