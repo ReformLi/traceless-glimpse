@@ -1,6 +1,9 @@
 package com.hpu.browseguard
 
-import com.hpu.browseguard.ui.LocalRefusals
+import com.hpu.browseguard.data.backend.LocalFailures
+import com.hpu.browseguard.data.backend.LocalReason
+import com.hpu.browseguard.ui.toDownloadPhase
+import com.hpu.browseguard.ui.toSniffPhase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -18,23 +21,28 @@ class LocalRefusalTest {
 
     @Test
     fun emptyArrayRefusalsCarryNoProtocolCode() {
-        val sniff = LocalRefusals.sniffResults()
-        val formats = LocalRefusals.formats()
-        listOf(sniff.message to sniff.code, formats.message to formats.code).forEach { (message, code) ->
-            assertNull("本地判定不得携带 §5 协议码：$message", code)
-        }
+        val failures = listOf(LocalFailures.noSniffResults(), LocalFailures.noFormats())
+        assertTrue(
+            "两条都是本地判定，reason 分别是空结果表 / 空格式表",
+            failures.map { it.reason } == listOf(LocalReason.NO_SNIFF_RESULTS, LocalReason.NO_FORMATS),
+        )
+        val codes = listOf(
+            failures[0].toSniffPhase().code,
+            failures[1].toDownloadPhase().code,
+        )
+        codes.forEach { assertNull("本地判定不得携带 §5 协议码", it) }
         assertTrue(
             "两条都自证是本地判定",
-            listOf(sniff.message, formats.message).all { it.contains("客户端本地判定") },
+            failures.all { it.message.contains("客户端本地判定") },
         )
-        assertTrue(sniff.retryable && formats.retryable)
+        assertTrue("两条都可重试", failures.all { it.retryable })
     }
 
     /** 措辞与窗口逐字钉住：改文案先在这里红，不等截图。 */
     @Test
     fun refusalTextsNameWhatTheEngineReturned() {
-        assertEquals("未发现可用媒体 · 引擎回空结果表，客户端本地判定", LocalRefusals.sniffResults().message)
-        assertEquals("未发现可用画质 · 引擎回空格式表，客户端本地判定", LocalRefusals.formats().message)
+        assertEquals("未发现可用媒体 · 引擎回空结果表，客户端本地判定", LocalFailures.noSniffResults().message)
+        assertEquals("未发现可用画质 · 引擎回空格式表，客户端本地判定", LocalFailures.noFormats().message)
     }
 
     /**

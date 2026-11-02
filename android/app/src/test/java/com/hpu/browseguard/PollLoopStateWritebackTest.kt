@@ -5,85 +5,119 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 轮询循环必须把读到的状态写回 UI 镜像（收尾③ 之后的 MuMu 物理验收轮，P1）。
+ * 轮询环必须把读到的状态发出去（收尾③ 之后的 MuMu 物理验收轮，P1；M4 第 2 步① 搬迁）。
  *
- * `HomeViewModel` 里 `await*` 一族是「读引擎、等状态」的轮询，界面看的是 `_state` 里的
- * sealed 镜像。轮询只 return 不回写，镜像就永远停在点击那一刻的初始 `QUEUED`，
- * 于是 `sniffing` / `format_preparing` 两条屏显文案变成永远不会命中的死分支。
- * 这条守卫把「回写」钉成结构约束，而不是靠人记得。
+ * 界面看的是 `_state` 里的 sealed 镜像。轮询只 return 不回写，镜像就永远停在点击那一刻的
+ * 初始 `QUEUED`，于是 `sniffing` / `format_preparing` 两条屏显文案变成永远不会命中的死分支。
  *
- * 为什么是静态守卫而不是行为单测：`HomeViewModel` 自己 `EngineClient()` 直接实例化，
- * 现阶段没法把假引擎注进去。M4 第 3 步落 FakeBackend 后，这里换成行为断言
- * （推一轮假任务 → 断言 `_state` 里出现 `sniffing` / `format_preparing`）。
+ * 搬迁记录（§19.5 迁移影响 1）：嗅探那条环原来叫 `HomeViewModel.awaitTerminal()`，
+ * 现在住在 `data/backend/HttpSniffer.kt` 里，「回写」的形式从 `_state.update` 换成发 `SniffEvent.Status`，
+ * 语义不变——守卫跟着换了锚点，并用「删掉发 Status 那行」的变异体复跑过（见 §20 取证）。
+ * 另外两条环（`awaitAwaitingSelection` / `awaitDownloadTerminal`）第 2 步② 才搬，
+ * 锚点仍指向 ViewModel。
+ *
+ * 为什么还是静态守卫而不是行为单测：`HomeViewModel` 现在仍然自己 `new` 后端，
+ * 假引擎进不来。M4 第 3 步落 FakeBackend 后整族换成行为断言。
  */
 class PollLoopStateWritebackTest {
 
-    private val viewModelSource: List<String> by lazy {
-        val root = File("src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt")
-        assertTrue("扫描路径没找对（工作目录应为 android/app）：$root", root.isFile)
-        root.readLines()
+    /**
+     * 每条轮询环 ↔ 它必须发出的状态。
+     *
+     * [emitAnchor] 必须出现在同一函数体内、`client.task(` 之后——写在取任务之前
+     * 等于回写上一轮的旧值。
+     */
+    private data class Loop(
+        val file: String,
+        val function: String,
+        val emitAnchor: String,
+        val whatGoesStale: String,
+    )
+
+    private val loops = listOf(
+        Loop(
+            "$SRC_ROOT/data/backend/HttpSniffer.kt",
+            "fun sniff(",
+            "emit(SniffEvent.Status(",
+            "SniffPhase.Running 停在初始 QUEUED，界面拿不到 sniffing",
+        ),
+        Loop(
+            "$SRC_ROOT/ui/HomeViewModel.kt",
+            "fun awaitAwaitingSelection(",
+            "DownloadPhase.Preparing(",
+            "Preparing.status 停在初始 QUEUED，「画质解析中」是过时报数",
+        ),
+        Loop(
+            "$SRC_ROOT/ui/HomeViewModel.kt",
+            "fun awaitDownloadTerminal(",
+            "DownloadPhase.Running(",
+            "进度条不刷新，取消后的冻结进度也无从写回",
+        ),
+    )
+
+    @Test
+    fun everyPollLoopEmitsItsStatusAfterThePoll() {
+        val problems = mutableListOf<String>()
+        loops.forEach { loop ->
+            val body = functionBody(loop)
+                ?: run {
+                    problems += "${loop.function} 没找到（改名了？）"
+                    return@forEach
+                }
+            if ("client.task(" !in body) {
+                problems += "${loop.function} 不是轮询循环，请同步本表"
+            }
+            if (loop.emitAnchor !in body) {
+                problems += "${loop.function} 只 return 不发状态：${loop.whatGoesStale}"
+            }
+        }
+        assertTrue("轮询环漏发状态：$problems", problems.isEmpty())
+    }
+
+    /** 回写在取任务之后，不在之前。 */
+    @Test
+    fun writebackHappensAfterThePollNotBefore() {
+        loops.forEach { loop ->
+            val body = requireNotNull(functionBody(loop)) { "${loop.function} 没找到" }
+            val poll = body.indexOf("client.task(")
+            val writeback = body.indexOf(loop.emitAnchor)
+            assertTrue("${loop.function} 的发状态不在取任务之后", poll in 0 until writeback)
+        }
     }
 
     /**
-     * 每个轮询循环 ↔ 它必须回写的 UI 镜像阶段。
-     *
-     * 左侧是轮询函数名，右侧是「回写目标」——写进 `while` 体里的 `_state.update` 之后
-     * 必须出现的构造调用。缺一个即判失败，措辞直接指出界面会看到什么假数。
+     * 守卫别扫成空集，也别漏掉新写的环：全 `src/main` 里 `client.task(` 的调用点
+     * 必须恰好三条，且都在这两个文件里、都被上表纳管。
      */
     @Test
-    fun everyAwaitLoopWritesItsStatusBackToItsPhase() {
-        val required = linkedMapOf(
-            "awaitTerminal" to "SniffPhase.Running(",
-            "awaitAwaitingSelection" to "DownloadPhase.Preparing(",
-            "awaitDownloadTerminal" to "DownloadPhase.Running(",
-        )
-        val missing = mutableListOf<String>()
-        required.forEach { (functionName, phaseCtor) ->
-            val body = functionBody(functionName)
-            if (body == null) {
-                missing += "$functionName 没找到（函数改名了？）"
-                return@forEach
-            }
-            if ("client.task(" !in body) {
-                missing += "$functionName 不是轮询循环，请同步本表"
-            }
-            if (phaseCtor !in body) {
-                missing += "$functionName 只 return 不回写：界面将停在点击时的初始 QUEUED，" +
-                    "$phaseCtor 成死分支"
-            }
+    fun pollLoopsAreAllRegistered() {
+        val sites = File(SRC_ROOT).walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .flatMap { file -> file.readLines().mapIndexedNotNull { index, line ->
+                if ("client.task(" in line) "${file.name}:${index + 1}" else null
+            } }
+            .toList()
+        assertTrue("预期三条轮询取任务，实际 $sites", sites.size == 3)
+        val managed = loops.map { it.file.substringAfterLast('/') }.toSet()
+        val covered = sites.map { it.substringBefore(':') }.toSet()
+        assertTrue("有轮询环没被本表纳管：$covered vs $managed", covered == managed)
+    }
+
+    private fun functionBody(loop: Loop): String? {
+        val lines = File(loop.file).let { f ->
+            assertTrue("扫描路径没找对（工作目录应为 android/app）：$f", f.isFile)
+            f.readLines()
         }
-        assertTrue("轮询循环漏写 UI 镜像回写：$missing", missing.isEmpty())
-    }
-
-    /** 守卫别扫成空集：`await*` 必须恰好找到这三条，多一条就得先把它纳管。 */
-    @Test
-    fun scanSeesExactlyTheThreeAwaitLoops() {
-        val found = viewModelSource
-            .mapNotNull { line -> Regex("^\\s*(?:private )?suspend fun (await\\w*)\\(").find(line)?.groupValues?.get(1) }
-            .toSet()
-        assertTrue("预期三条轮询循环，实际 $found", found == setOf("awaitTerminal", "awaitAwaitingSelection", "awaitDownloadTerminal"))
-    }
-
-    /** 回写在循环体里、取到任务之后——写在 `client.task` 之前等于回写上一轮的旧值。 */
-    @Test
-    fun writebackHappensAfterThePollNotBefore() {
-        listOf("awaitTerminal", "awaitAwaitingSelection", "awaitDownloadTerminal").forEach { functionName ->
-            val body = requireNotNull(functionBody(functionName)) { "$functionName 没找到" }
-            val poll = body.indexOf("client.task(")
-            val writeback = body.indexOf("_state.update")
-            assertTrue("$functionName 的回写不在取任务之后", poll in 0 until writeback)
-        }
-    }
-
-    /** 取 `fun {name}` 到首个与 `fun` 同级缩进闭合括号为止的源码文本。 */
-    private fun functionBody(name: String): String? {
-        val header = Regex("^\\s*(?:private )?suspend fun $name\\(")
-        val start = viewModelSource.indexOfFirst { header.containsMatchIn(it) }
+        val start = lines.indexOfFirst { loop.function in it }
         if (start < 0) return null
-        val indent = viewModelSource[start].takeWhile { it == ' ' }
-        val end = ((start + 1) until viewModelSource.size).firstOrNull { index ->
-            viewModelSource[index] == "$indent}"
+        val indent = lines[start].takeWhile { it == ' ' }
+        val end = ((start + 1) until lines.size).firstOrNull { index ->
+            lines[index] == "$indent}"
         } ?: return null
-        return viewModelSource.subList(start, end + 1).joinToString("\n")
+        return lines.subList(start, end + 1).joinToString("\n")
+    }
+
+    private companion object {
+        const val SRC_ROOT = "src/main/java/com/hpu/browseguard"
     }
 }

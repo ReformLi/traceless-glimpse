@@ -8,6 +8,13 @@ import com.hpu.browseguard.data.EngineConfig
 import com.hpu.browseguard.data.EngineFailure
 import com.hpu.browseguard.data.EngineException
 import com.hpu.browseguard.data.FormatSelection
+import com.hpu.browseguard.data.backend.BackendFailure
+import com.hpu.browseguard.data.backend.HttpSniffer
+import com.hpu.browseguard.data.backend.LocalFailures
+import com.hpu.browseguard.data.backend.SniffEvent
+import com.hpu.browseguard.data.backend.SniffRequest
+import com.hpu.browseguard.data.backend.TERMINAL_STATUSES
+import com.hpu.browseguard.data.backend.toBackendFailure
 import com.hpu.browseguard.shared.model.DownloadRequest
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
@@ -152,39 +159,35 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         sniffJob?.cancel()
         downloadJob?.cancel()
         _state.update { it.copy(sniff = SniffPhase.Running(TaskStatus.QUEUED), download = DownloadPhase.Idle, selectedFormatId = null) }
+        val request = SniffRequest(
+            sourceUrl = sourceUrl,
+            cookiePolicy = connected.selfcheck.cookiePolicyDefault,
+            outputDir = outputDir,
+        )
         sniffJob = viewModelScope.launch {
-            val baseUrl = config.baseUrl
-            val phase = try {
-                val created = client.createTask(
-                    baseUrl,
-                    TaskCreateRequest(
-                        sourceUrl = sourceUrl,
-                        mode = TaskMode.SNIFF,
-                        cookiePolicy = connected.selfcheck.cookiePolicyDefault,
-                        outputDir = outputDir,
-                    ),
-                )
-                val settled = awaitTerminal(baseUrl, created)
-                if (settled.status == TaskStatus.DONE) {
-                    val results = client.sniffResults(baseUrl, settled.id)
-                    if (results.isEmpty()) {
-                        LocalRefusals.sniffResults()
-                    } else {
-                        SniffPhase.Success(results)
-                    }
-                } else {
-                    SniffPhase.Failed(
-                        message = settled.error?.message ?: "任务结束于 ${settled.status.displayWithWire()}",
-                        code = settled.error?.code?.name,
-                        retryable = settled.error?.retryable ?: false,
-                    )
-                }
-            } catch (e: EngineException) {
-                e.failure.toPhaseFailure()
-            } catch (e: TimeoutCancellationException) {
-                LocalTimeouts.sniff()
+            HttpSniffer(config.baseUrl, client).sniff(request).collect { event -> applySniffEvent(event) }
+        }
+    }
+
+    /**
+     * 事件 → 界面镜像。写入条件与改造前一致：
+     * 只有中间态（`Running`）带「别覆盖更新的阶段」的守卫，终态一律落盘——
+     * 原来 `_state.update { it.copy(sniff = phase) }` 就是无条件写的。
+     */
+    private fun applySniffEvent(event: SniffEvent) {
+        when (event) {
+            is SniffEvent.Status -> _state.update { state ->
+                if (state.sniff !is SniffPhase.Running) return@update state
+                state.copy(sniff = SniffPhase.Running(event.status))
             }
-            _state.update { it.copy(sniff = phase) }
+
+            is SniffEvent.Terminal -> _state.update { state ->
+                if (event.task.status == TaskStatus.DONE) return@update state
+                state.copy(sniff = event.task.toSniffFailure())
+            }
+
+            is SniffEvent.Results -> _state.update { it.copy(sniff = SniffPhase.Success(event.results)) }
+            is SniffEvent.Failed -> _state.update { it.copy(sniff = event.failure.toSniffPhase()) }
         }
     }
 
@@ -215,7 +218,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 if (ready.status == TaskStatus.AWAITING_SELECTION) {
                     val formats = client.formats(baseUrl, ready.id)
                     if (formats.isEmpty()) {
-                        LocalRefusals.formats()
+                        LocalFailures.noFormats().toDownloadPhase()
                     } else {
                         DownloadPhase.Selecting(ready.id, formats)
                     }
@@ -223,9 +226,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                     ready.toFinalPhase()
                 }
             } catch (e: EngineException) {
-                e.failure.toDownloadFailure()
+                e.failure.toBackendFailure().toDownloadPhase()
             } catch (e: TimeoutCancellationException) {
-                LocalTimeouts.prepare()
+                LocalFailures.prepareTimeout().toDownloadPhase()
             }
             _state.update { it.copy(download = phase) }
         }
@@ -266,9 +269,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 val settled = awaitDownloadTerminal(baseUrl, started)
                 _state.update { it.copy(download = settled.toFinalPhase()) }
             } catch (e: EngineException) {
-                _state.update { it.copy(download = e.failure.toDownloadFailure()) }
+                _state.update { it.copy(download = e.failure.toBackendFailure().toDownloadPhase()) }
             } catch (e: TimeoutCancellationException) {
-                _state.update { it.copy(download = LocalTimeouts.download()) }
+                _state.update { it.copy(download = LocalFailures.downloadTimeout().toDownloadPhase()) }
             }
         }
     }
@@ -284,7 +287,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: EngineException) {
                 _state.update { state ->
                     if (state.download is DownloadPhase.Running) {
-                        state.copy(download = e.failure.toDownloadFailure())
+                        state.copy(download = e.failure.toBackendFailure().toDownloadPhase())
                     } else {
                         state
                     }
@@ -298,27 +301,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(download = DownloadPhase.Idle, selectedFormatId = null) }
     }
 
-    private suspend fun awaitTerminal(baseUrl: String, initial: Task): Task {
-        var current = initial
-        withTimeout(LocalTimeouts.SNIFF_MS) {
-            while (current.status !in TERMINAL_STATUSES) {
-                delay(POLL_INTERVAL_MS)
-                current = client.task(baseUrl, current.id)
-                // 轮询结果必须回写，否则 SniffPhase.Running 永远停在初始 QUEUED，界面拿不到 sniffing
-                _state.update { state ->
-                    if (state.sniff !is SniffPhase.Running) return@update state
-                    state.copy(sniff = SniffPhase.Running(current.status))
-                }
-            }
-        }
-        return current
-    }
-
     private suspend fun awaitAwaitingSelection(baseUrl: String, initial: Task): Task {
         var current = initial
-        withTimeout(LocalTimeouts.PREPARE_MS) {
+        withTimeout(LocalFailures.PREPARE_MS) {
             while (current.status != TaskStatus.AWAITING_SELECTION && current.status !in TERMINAL_STATUSES) {
-                delay(POLL_INTERVAL_MS)
+                delay(LocalFailures.POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
                 // 与 awaitTerminal 同型：不回写则 Preparing.status 永远停在初始 QUEUED，
                 // 界面读到的「画质解析中（queued）」是过时报数
@@ -333,9 +320,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun awaitDownloadTerminal(baseUrl: String, initial: Task): Task {
         var current = initial
-        withTimeout(LocalTimeouts.DOWNLOAD_MS) {
+        withTimeout(LocalFailures.DOWNLOAD_MS) {
             while (current.status !in TERMINAL_STATUSES) {
-                delay(DOWNLOAD_POLL_INTERVAL_MS)
+                delay(LocalFailures.DOWNLOAD_POLL_INTERVAL_MS)
                 current = client.task(baseUrl, current.id)
                 _state.update { state ->
                     val previous = state.download as? DownloadPhase.Running ?: return@update state
@@ -359,64 +346,32 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
-
-    private companion object {
-        const val POLL_INTERVAL_MS = 400L
-        const val DOWNLOAD_POLL_INTERVAL_MS = 800L
-
-        val TERMINAL_STATUSES = setOf(TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.FAILED)
-    }
 }
 
 /**
- * 客户端本地计时到点的三条失败（嗅探 / 画质解析 / 下载）。
+ * 后端失败 → 界面阶段。
  *
- * `code` 一律 `null`：PROTOCOL §5 的码只允许来自引擎响应。本地伪造一个协议码
- * （下载侧曾写死 `NETWORK_TIMEOUT`）有三个后果——用户把「客户端等不及」误读成网络故障、
- * 屏上码与引擎审计行对不上、将来按码做重试策略时误判。超时窗口写进文案，
- * 界面就能自证「这是本地计时，不是引擎报的错」。
+ * 码只有一条来源：[BackendFailure.Protocol] 里的字段来自引擎响应的 `ErrorPayload`。
+ * [BackendFailure.Local] 一律 `code = null`——超时、连不上、引擎回空数组都是
+ * 「客户端自己判的」，借 §5 的码就是替引擎发言（屏上码与引擎审计行对不上、
+ * 将来按码做重试策略时误判）。
  */
-internal object LocalTimeouts {
-    const val SNIFF_MS = 90_000L
-    const val PREPARE_MS = 120_000L
-    const val DOWNLOAD_MS = 30 * 60_000L
-
-    fun sniff(): SniffPhase.Failed =
-        SniffPhase.Failed("嗅探超时 · 客户端本地计时 ${seconds(SNIFF_MS)} 到点", null, true)
-
-    fun prepare(): DownloadPhase.Failed =
-        DownloadPhase.Failed("画质解析超时 · 客户端本地计时 ${seconds(PREPARE_MS)} 到点", null, true)
-
-    fun download(): DownloadPhase.Failed =
-        DownloadPhase.Failed(
-            "下载超时 · 客户端本地计时 ${seconds(DOWNLOAD_MS)} 到点，任务仍在引擎侧运行",
-            null,
-            true,
-        )
-
-    private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
+internal fun BackendFailure.toSniffPhase(): SniffPhase.Failed = when (this) {
+    is BackendFailure.Protocol -> SniffPhase.Failed(message, code.name, retryable)
+    is BackendFailure.Local -> SniffPhase.Failed(message, null, retryable)
 }
 
-/**
- * 引擎回了 200 却给不出东西（空嗅探结果 / 空格式表）时的本地判定。
- *
- * 这两种情况协议里没有「引擎这么说」：任务态还是 `done` / `awaiting_selection`，
- * `GET /sniff-results`、`GET /formats` 都是成功响应带空数组。曾经这里直接借
- * `NO_MEDIA_FOUND` / `FORMAT_UNAVAILABLE` 的文案、码与 `retryable` 三件套——
- * 那是把引擎没说过的话替它说了：屏上的码在引擎审计行里查无此行，
- * `retryable` 也跟着借来的码一起失真。
- *
- * 现在 `code = null`，文案自证「客户端本地判定」；`retryable = true` 不是继承来的，
- * 是本地决定：客户端不知道引擎为什么给空表（换 Cookie / 换引擎后同一 URL 就可能不为空），
- * 而重试的代价只有一次请求。
- */
-internal object LocalRefusals {
-    fun sniffResults(): SniffPhase.Failed =
-        SniffPhase.Failed("未发现可用媒体 · 引擎回空结果表，客户端本地判定", null, true)
-
-    fun formats(): DownloadPhase.Failed =
-        DownloadPhase.Failed("未发现可用画质 · 引擎回空格式表，客户端本地判定", null, true)
+internal fun BackendFailure.toDownloadPhase(): DownloadPhase.Failed = when (this) {
+    is BackendFailure.Protocol -> DownloadPhase.Failed(message, code.name, retryable)
+    is BackendFailure.Local -> DownloadPhase.Failed(message, null, retryable)
 }
+
+/** 引擎把失败写在任务的 `error` 里；没有 error 的终态只能说「结束于哪个状态」，不猜原因。 */
+private fun Task.toSniffFailure(): SniffPhase.Failed = SniffPhase.Failed(
+    message = error?.message ?: "任务结束于 ${status.displayWithWire()}",
+    code = error?.code?.name,
+    retryable = error?.retryable ?: false,
+)
 
 private fun Task.toFinalPhase(): DownloadPhase = when (status) {
     TaskStatus.DONE -> DownloadPhase.Success(this)
@@ -431,14 +386,4 @@ private fun Task.toFinalPhase(): DownloadPhase = when (status) {
 private fun EngineFailure.reason(): String = when (this) {
     is EngineFailure.Protocol -> "HTTP $httpStatus ${error.code}：${error.message}"
     is EngineFailure.Transport -> reason
-}
-
-private fun EngineFailure.toPhaseFailure(): SniffPhase.Failed = when (this) {
-    is EngineFailure.Protocol -> SniffPhase.Failed(error.message, error.code.name, error.retryable)
-    is EngineFailure.Transport -> SniffPhase.Failed(reason, null, true)
-}
-
-private fun EngineFailure.toDownloadFailure(): DownloadPhase.Failed = when (this) {
-    is EngineFailure.Protocol -> DownloadPhase.Failed(error.message, error.code.name, error.retryable)
-    is EngineFailure.Transport -> DownloadPhase.Failed(reason, null, true)
 }
