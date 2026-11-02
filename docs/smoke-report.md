@@ -1249,6 +1249,8 @@ schema 一致性校验通过：6/6 个模型                 # 仍是 6；提案
 | `HomeViewModel.kt:183/382` 无 error 的终态 | 写死「任务结束」 | `"任务结束于 ${status.displayWithWire()}"` |
 | `HomeScreen.kt:528/538` 格式行 | （4b-1 已接 `FormatRowCopy`，本轮只补整表口径） | `FormatRowCopy.primary/secondary(format, formats)` |
 
+> **脚注（§19.9，2026-11-02）**：表里 `HomeViewModel.kt:174-176` / `:226-228` 两行的「改后」只对了**文案**那一半——`message` 取枚举原文是同源，把 `name`（协议码）与 `retryable` 一起搬过去则成了客户端替引擎发言。本轮改回本地判定（`code = null`），枚举 `.message` 的用法保留。
+
 **`strings.xml` 副本清除**：删 `sniff_drm`、`format_audio_only`、`format_kind_unknown`、
 `format_kind_video_only`、`format_no_metadata`、`format_needs_merge` 六条，原位置留一行注释指向
 `ui/FormatRowCopy.kt`。删除后 `grep -rn` 六个名字在 `android/` 的 `.kt`/`.xml` 里命中 **0 行**，
@@ -1861,7 +1863,7 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
    八个码在引擎侧没有任何生产者，全被 :362 的 `except Exception` 吞掉。用户看到的是一句「未知错误」，
    重试按钮的 `retryable` 也跟着失真（`UNKNOWN` 不可重试，而这几个里有一半是 `retryable=true`）。
    缺的是一张「downloader 异常类型 → §5 码」映射表；这直接决定 M4 第 2 步 `DownloadBackend` 事件流能不能表达失败。
-3. **空格式表落在客户端补契约**：real 模式下 `record.formats` 为 `[]` 时任务照样进 `awaiting_selection`，
+3. **空格式表落在客户端补契约**（**已按裁决修客户端侧＝§19.9**；协议仍不可分的那半句留在 §19.9 遗留 1）：real 模式下 `record.formats` 为 `[]` 时任务照样进 `awaiting_selection`，
    `GET /formats` 返回 200 空列表，由客户端 [HomeViewModel.kt:225](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L225)
    自己造 `FORMAT_UNAVAILABLE` 文案。引擎侧「有格式表可给」与「给不出」两种情况在协议上不可分。
 
@@ -2168,3 +2170,67 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
 - `ENGINE_BUSY` 仍零生产者（理由同 §19.7：worker 队列无界，拒不了活），**不造码**。
 - 变异 C 暴露的 real 侧缺口：没有「下层异常被 yt-dlp 包一层再抛」的端到端用例，链条遍历在 real 只靠桩守。
   登记为已知缺口，按 §19.4 的口径归 M4 第 2 步 `DownloadBackend` 事件流的用例批次一起补，本轮不扩范围。
+
+### 19.9 P1③ 修复：空数组改走本地判定，客户端不再替引擎发言（2026-11-02）
+
+裁决口径：「引擎回空数组时，客户端应走本地 `Refused` 提示（如"未发现可用格式"），绝不伪造
+`FORMAT_UNAVAILABLE` 协议码」。审计时点到的只有格式表那一处，落码时发现**同一形状的还有一处**
+（嗅探空结果借 `NO_MEDIA_FOUND`），两处都在同一条 200 响应后面，一起按同一口径改——
+不是扩范围，是同一处缺陷的两个实例。
+
+引擎侧真相（复核过，不是猜）：`_sniff_real` 无媒体时发 `NO_MEDIA_FOUND`、`_download_real` 解析不出
+表达式时发 `FORMAT_UNAVAILABLE`（[main.py:407](file:///E:/code/android/BrowseGuardVid/engine/main.py#L407) /
+[:414](file:///E:/code/android/BrowseGuardVid/engine/main.py#L414)），也就是说**引擎真的这么说的时候
+走的是 `error.code` 那条正常链路**；而客户端这两处分支是「引擎 200 + 空数组 + 任务态还是
+`done` / `awaiting_selection`」——引擎在这个组合里一个字都没说，屏上却出现了一个只有引擎
+配得上发的码。三个后果与 §19.4 那条同源：用户误读、审计行查无此码、`retryable` 借来自证不了自己。
+
+改动（[android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt)）：
+
+- 新增 [`internal object LocalRefusals`](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L413)，
+  与 `LocalTimeouts` 同形：`code = null`、文案自带「客户端本地判定」。两条分支各指过去
+  （`HomeViewModel.kt:171` 嗅探空结果、`:218` 空格式表）。
+- `retryable = true` 是**本地决定**，不是从 `FORMAT_UNAVAILABLE` 继承：客户端不知道引擎为什么给空表
+  （换 Cookie / 换引擎后同一 URL 就可能不为空），重试代价只有一次请求。原来的 `false` 才是真造假——
+  它把「所选画质不可用」的语义套到了「压根没有画质表」上。
+- `ErrorCode` import 随之从 ViewModel 移除（该文件不再需要协议码）。
+
+**与 §14.3 的关系（不修饰）**：§14.3 那轮「UI 文案与协议同源」把这两处的文案、码、`retryable`
+三件套一起换成了枚举原文（表在 [docs/smoke-report.md:1247](file:///E:/code/android/BrowseGuardVid/docs/smoke-report.md#L1247)）。
+文案同源是对的，**码与 `retryable` 跟着搬错了**：那是枚举的身份字段，只配描述引擎响应。
+本轮只拆身份字段，同源原则保留——`HomeScreen.kt:422` 的 `ErrorCode.DRM_PROTECTED.message`
+（引擎在数据里给了 `drmDetected` 这个事实，界面转述它的措辞）不动。§14.3 的表已加指向本节的脚注。
+
+守卫（新增 [android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt)）：
+
+| 用例 | 断言 | 结果 |
+| --- | --- | --- |
+| `emptyArrayRefusalsCarryNoProtocolCode` | 两条本地判定 `code == null`、文案含「客户端本地判定」、`retryable` 为真 | 绿 |
+| `refusalTextsNameWhatTheEngineReturned` | 两条文案逐字钉住 | 绿 |
+| `noEnumIdentityFieldIsUsedAsAClientSideCode` | 静态守卫：`src/main/java/**.kt` 里 `ErrorCode.X.name` / `.retryable` 命中数必须为 0 | 绿 |
+| `guardActuallyBites` | 扫描集含 `HomeViewModel.kt`；正则必须抓得住 `ErrorCode.FORMAT_UNAVAILABLE.name,` 这一行 | 绿 |
+
+为什么要新开一条守卫：已有的裸字面量守卫 `LocalTimeoutTest.noProtocolCodeNameAppearsAsBareLiteral`
+只扫 `"FORMAT_UNAVAILABLE"` 这种**字符串字面量**，而这两处伪造走的是**枚举引用**，它天生看不见。
+
+变异复跑（两个变异体各跑完立即还原，`HomeViewModel.kt` 与变异前逐字节相等）：
+
+| 变异体 | 红名单 | 关键观察 |
+| --- | --- | --- |
+| A：把空格式表分支退回 `ErrorCode.FORMAT_UNAVAILABLE` 三件套（含 import，语法合法） | 仅 `LocalRefusalTest > noEnumIdentityFieldIsUsedAsAClientSideCode` | **老守卫 `LocalTimeoutTest` 全绿**——正好证明它抓不住这类伪造，新守卫不是装饰 |
+| B：`LocalRefusals.formats()` 的 `code` 从 `null` 改回 `"FORMAT_UNAVAILABLE"` | `LocalRefusalTest > emptyArrayRefusalsCarryNoProtocolCode` + `LocalTimeoutTest > noProtocolCodeNameAppearsAsBareLiteral` | 裸字面量路径两条守卫同时咬住 |
+
+取证（现场复跑）：`:android:app:testDebugUnitTest --rerun` **68 passed / 0 failed**
+（原 64，+4 条 §19.9 用例）。引擎侧本轮未改代码，桩 222 / real 175 的基线是 §19.8 那一次的结果。
+
+遗留（登记，不掩饰）：
+
+1. **协议仍不可分**：§19.3 缺口 3 的后半句——「引擎侧『有格式表可给』与『给不出』在协议上不可分」——
+   本轮没动，因为裁决给的是客户端本地提示这条路线。要真分得开需要协议级改动（`GET /formats`
+   的空数组带语义，或 `awaiting_selection` 入口自检），归 PROTOCOL 变更提案，等裁决再动。
+2. **分支没有行为级覆盖**：`LocalRefusals` 的两条产出有单测，但「ViewModel 收到空数组 → 落到这条产出」
+   仍是静态守卫 + 单例断言，没有跑真的 ViewModel。§18.2 第 3 步（[smoke-report.md:1728](file:///E:/code/android/BrowseGuardVid/docs/smoke-report.md#L1728)）
+   的 `FakeBackend` 到位后，这类「200 + 空数组」响应才可能在 JVM 里被演出来——本轮把它挂进那条待办，
+   不另开一套假件。
+3. 设备截图未复拍：这两条分支在 MuMu 上取不到值（引擎不发空数组），本来就属于「需要假引擎才能演」
+   的画面，同归第 3 步 FakeBackend。

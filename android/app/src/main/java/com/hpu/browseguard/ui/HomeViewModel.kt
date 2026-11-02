@@ -9,7 +9,6 @@ import com.hpu.browseguard.data.EngineFailure
 import com.hpu.browseguard.data.EngineException
 import com.hpu.browseguard.data.FormatSelection
 import com.hpu.browseguard.shared.model.DownloadRequest
-import com.hpu.browseguard.shared.model.ErrorCode
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.PostAction
@@ -169,12 +168,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 if (settled.status == TaskStatus.DONE) {
                     val results = client.sniffResults(baseUrl, settled.id)
                     if (results.isEmpty()) {
-                        // 嗅探成功但列表为空：语义就是协议的 NO_MEDIA_FOUND，文案与可重试性都取自码表
-                        SniffPhase.Failed(
-                            ErrorCode.NO_MEDIA_FOUND.message,
-                            ErrorCode.NO_MEDIA_FOUND.name,
-                            ErrorCode.NO_MEDIA_FOUND.retryable,
-                        )
+                        LocalRefusals.sniffResults()
                     } else {
                         SniffPhase.Success(results)
                     }
@@ -221,12 +215,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 if (ready.status == TaskStatus.AWAITING_SELECTION) {
                     val formats = client.formats(baseUrl, ready.id)
                     if (formats.isEmpty()) {
-                        // 原硬编码「引擎未给出可选画质」与协议 §5 措辞不一致，改为直接取码表原文
-                        DownloadPhase.Failed(
-                            ErrorCode.FORMAT_UNAVAILABLE.message,
-                            ErrorCode.FORMAT_UNAVAILABLE.name,
-                            ErrorCode.FORMAT_UNAVAILABLE.retryable,
-                        )
+                        LocalRefusals.formats()
                     } else {
                         DownloadPhase.Selecting(ready.id, formats)
                     }
@@ -406,6 +395,27 @@ internal object LocalTimeouts {
         )
 
     private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
+}
+
+/**
+ * 引擎回了 200 却给不出东西（空嗅探结果 / 空格式表）时的本地判定。
+ *
+ * 这两种情况协议里没有「引擎这么说」：任务态还是 `done` / `awaiting_selection`，
+ * `GET /sniff-results`、`GET /formats` 都是成功响应带空数组。曾经这里直接借
+ * `NO_MEDIA_FOUND` / `FORMAT_UNAVAILABLE` 的文案、码与 `retryable` 三件套——
+ * 那是把引擎没说过的话替它说了：屏上的码在引擎审计行里查无此行，
+ * `retryable` 也跟着借来的码一起失真。
+ *
+ * 现在 `code = null`，文案自证「客户端本地判定」；`retryable = true` 不是继承来的，
+ * 是本地决定：客户端不知道引擎为什么给空表（换 Cookie / 换引擎后同一 URL 就可能不为空），
+ * 而重试的代价只有一次请求。
+ */
+internal object LocalRefusals {
+    fun sniffResults(): SniffPhase.Failed =
+        SniffPhase.Failed("未发现可用媒体 · 引擎回空结果表，客户端本地判定", null, true)
+
+    fun formats(): DownloadPhase.Failed =
+        DownloadPhase.Failed("未发现可用画质 · 引擎回空格式表，客户端本地判定", null, true)
 }
 
 private fun Task.toFinalPhase(): DownloadPhase = when (status) {
