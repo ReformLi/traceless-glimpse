@@ -1752,6 +1752,12 @@ queued→sniffing 屏显修复后取到两帧、地址保存触发重连有行�
    `VALIDATION_ERROR` / `TASK_STATE_CONFLICT` / `PARTIAL_DOWNLOAD` / `NOT_FOUND` / `EXTRACTOR_FAILED` / `DRM_PROTECTED` 各 1）；
    `services/` 下 **零** 处引用 `ErrorCode`（该层用哨兵返回值/异常，码只在 API 层组装）。
    §5 共 29 码 → **20 码在引擎侧没有任何生产者**，这是矩阵的第二列来源，也是「本地/远端能力差异」的证据面。
+   > **§19 校正（2026-11-02）**：上面这组数字有两处算错，按实测重写——码表总数是 **30**（§5 的 28 + 裁决新增
+   > `VALIDATION_ERROR` + `NOT_FOUND`；`engine/models.py:108` 的注释是对的，Kotlin 侧 `ErrorPayload.kt:19`
+   > 写「共 29 个」是漏算 `NOT_FOUND`，已顺手改）；零生产者的码是 **16** 个而不是 20 个，
+   > 因为 `INVALID_URL` / `UNSUPPORTED_SCHEME` / `SSRF_BLOCKED` / `INVALID_OUTPUT_DIR` / `OUTPUT_DIR_REJECTED`
+   > 这 5 个是通过 `SecurityError` 子类的**字符串码**产出的，静态扫 `ErrorCode.X` 看不见它们。
+   > 教训写进 §19.6：**按一种写法统计码的生产者，等于统计错**。
 3. **缺口清单**：矩阵里每一条 `应补` 落成一条待办，带 P 级。
    P0 判定口径沿用本轮：**能导致任务停在非终态既不失败也不完成**的，一律 P0，不排队直接修。
 4. **静态守卫升级**（延续 [engine/test_error_codes.py](file:///E:/code/android/BrowseGuardVid/engine/test_error_codes.py) 的形状扫描）：
@@ -1777,3 +1783,235 @@ queued→sniffing 屏显修复后取到两帧、地址保存触发重连有行�
   HLS `percent` 在客户端显示层单调化、yt-dlp `noprogress` 清理 stdout、`fetch_manifest_text` 正文体积上限、探测修复无回归复核。
 - 设备侧待办：物理设备 adb 连接在本轮环境回收时随 `adb kill-server` 断开，下次取证前需重连
   `adb connect 192.168.31.57:5555` 并重设 `adb reverse tcp:8730 tcp:8730`（设备事实见 §17.5 表头）。
+
+---
+
+### 18.5 M4 第 4 步结案：放弃本地 yt-dlp 内嵌（2026-11-02 裁决）
+
+研究结论采纳，M4 架构目标按用户裁决调整三条：
+
+1. **本地能力只做 WebView 嗅探（拦截直链）**，这是 M4 的核心，覆盖多数日常场景；
+2. **不再尝试把 yt-dlp / FFmpeg 打包进 APK**。未来若必须在纯手机端解析复杂站点，
+   优先评估**独立编译的静态 yt-dlp 二进制**（`ProcessBuilder` 调用），而不是依赖这个陈旧 AAR；
+3. **PC 引擎侧的 Playwright + yt-dlp 继续作为增强模式的强力兜底**。
+
+依据（研究轮实测，非推测）：四个 ABI 齐备、x86_64 原生载荷完整（MuMu 不需要 ARM 转译，
+`abilist` 里的 `arm64-v8a` 与 `libnb.so` 桥在这条链路上用不上）；体积 x86_64 原生 ≈64 MB、
+split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷缺 `libc++_shared.so`，
+`librubberband.so` 列为 `NEED` → `CANNOT LINK EXECUTABLE`，open 未修）；**2026 年零提交**、
+内置 yt-dlp 停在 2025.11.12。W^X 与 16 KB page 是两条虚惊（前者 exec 在 `nativeLibraryDir`，
+后者只影响 Play 上架、不影响本地 4 KB 镜像运行）。
+
+这条裁决直接改写 §18.2 第 2 步的接口形状，最终形态见 §19.5。
+
+---
+
+## 19. M4 第 1 步：非终态错误出口全枚举审计（2026-11-02）
+
+### 19.1 方法与可判定性结论
+
+范围＝六个非终态；失败出口唯一定义为「`Task.error` 被写入且状态转到 `failed`」，
+入口是 [`_fail_task`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L379)，合法后继表在
+[main.py:111](file:///E:/code/android/BrowseGuardVid/engine/main.py#L111)。
+
+**§18.3 产出物 4 的判定结论：per-state 的「该状态有没有可达失败出口」用 AST 判不出来**，理由是三条具体的：
+① 同一个 `_fail_task` 调用点服务的状态由运行时分支决定（`_download_real` 里的 6 个出口全在 `downloading`，
+但函数本身被 `_advance` 间接调用）；② `ENGINE_MODE` 的 stub/real 分岔让同一行代码只在一种模式下可达；
+③ 部分失败根本不落 `Task.error`（API 层 4xx）。硬凑一个「按状态扫调用点」的守卫只会给出假绿。
+
+所以按裁决降级为**矩阵 + 每条出口一条断言终态的用例**，并把静态守卫收缩到**两条真能判定的不变式**
+（[engine/test_nonterminal_exit_guards.py](file:///E:/code/android/BrowseGuardVid/engine/test_nonterminal_exit_guards.py)）：
+转移表里每个非终态必须把 `FAILED` 列为合法后继；`_advance` / `_download_real` 两个驱动函数不得存在
+绕过兜底包装的裸调用。第三条守卫检查兜底包装本身是否真的调用 `_fail_task`（只 log 不置状态＝假兜底）。
+
+### 19.2 矩阵：状态 × 失败出口
+
+| 状态 | 已有出口（§5 码 ← 调用点） | 判定 |
+| --- | --- | --- |
+| `queued` | 无任务态出口 | **不适用（有理由）**：该状态的全部拒绝都在创建期以 4xx 返回（`INVALID_URL` / `UNSUPPORTED_SCHEME` / `SSRF_BLOCKED` / `INVALID_OUTPUT_DIR` / `OUTPUT_DIR_REJECTED` / `VALIDATION_ERROR`，见 [create_task](file:///E:/code/android/BrowseGuardVid/engine/main.py#L874)），任务对象根本不存在；创建成功后 `queued` 的唯一出路是被领取。停滞风险由 GET 侧兜底 [`_submit_if_queued`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L920) 覆盖 |
+| `sniffing` | `EXTRACTOR_FAILED`、`NO_MEDIA_FOUND` ← [main.py:566](file:///E:/code/android/BrowseGuardVid/engine/main.py#L566)（`detail.reason=sniff_failed`，码由 [`_sniff_real`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L601) 返回）；`UNKNOWN` ← [main.py:401](file:///E:/code/android/BrowseGuardVid/engine/main.py#L401)（`advance_crashed`，本轮新增） | **本轮修复前不完整**：`_sniff_real` 只捕 `SniffError`，嗅探器抛其它异常、或 `MediaStreamType(kind)` 构造失败，都会逃逸到 worker 的 `except` 里**只记日志不置状态** → 永久 `sniffing`。已复现（§19.4） |
+| `awaiting_selection` | `UNKNOWN` ← [main.py:729](file:///E:/code/android/BrowseGuardVid/engine/main.py#L729)（24h 超时扫描，`detail.reason=awaiting_selection_timeout`） | **有出口，但语义错位**：超时借 `UNKNOWN` 表达是保守做法（不新增码，符合裁决）；真正的缺口是空格式表（见 §19.3 缺口 3） |
+| `downloading` | `NO_MEDIA_FOUND` ← :301；`FORMAT_UNAVAILABLE` ← :306 / :313；`SecurityError` 动态码 ← :354（`SSRF_BLOCKED` / `OUTPUT_DIR_REJECTED` 等）；`PARTIAL_DOWNLOAD` ← :358；`UNKNOWN` ← :362(`download_failed`) / :685(`missing_sniff`) / :416(`download_crashed`，本轮新增) | **出口最全，但归因丢失**：八个网络/磁盘类码全部被 :362 的 catch-all 收成 `UNKNOWN`（见 §19.3 缺口 2） |
+| `merging` | **无** | **应补，且更早的问题是「进不来」**：全仓没有任何一处转移到 `merging`（见 §19.3 缺口 1） |
+| `post_processing` | **无** | 同上 |
+
+第三类（不进 `Task.error`，只出现在 HTTP 响应）：`VALIDATION_ERROR`(422)、`NOT_FOUND`(404)、
+`TASK_STATE_CONFLICT`(409)、`DRM_PROTECTED`(422)。这一类不属于「状态机出口」，列出来是为了让
+「29/30 个码里有多少真有生产者」这个问题有分母。
+
+### 19.3 缺口清单（按 P 级）
+
+**P0（本轮已修，§19.4）**：逃逸异常没有出口 → 任务永久停在 `sniffing` / `downloading`。
+判定依据正是用户给的口径「凡导致任务永久停滞的立刻 P0 直接修」，且修复前四条用例全部实测卡死。
+
+**P1（等裁决，未动代码）**：
+
+1. **`postActions` 被静默丢弃**。`merging` / `post_processing` 无入口，
+   [services/merger.py](file:///E:/code/android/BrowseGuardVid/engine/services/merger.py) 有实现、有自己的单测，
+   但 `main.py` 与 `services/downloader.py` **都不调用它**（grep 全仓：`merge_streams` 只出现在 `tests_real/test_merger_*`）。
+   后果链：客户端「合并音视频」开关 → [HomeViewModel.kt:273](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L273)
+   发出 `postActions=[merge]` → 引擎收下、持久化、回显 → 从不执行 → 任务报 `done`，产物其实没合并。
+   **按 §5 标准这是「静默降级且无审计行」**，与 4b-2 那条 `selector_degraded` 的裁决同源；
+   `MERGE_FAILED` / `TRANSCODE_FAILED` 因此永远零生产者，而客户端 `ProtocolCopy.kt:14-15`
+   给这两个状态写了「合并音视频中」「后处理中」两条**取不到值的屏显文案**——和本轮修掉的死分支同一形状。
+   建议分两档：本轮先补 `post_actions_ignored` 审计行（一行，不动行为）；接线 `merge_streams` +
+   引入 `merging` 状态与 `MERGE_FAILED` 出口归 M4 下载链路批次。**两档都没做，等点头。**
+2. **`downloading` 的失败归因塌成 `UNKNOWN`**：`NETWORK_TIMEOUT` / `DNS_FAILURE` / `TLS_ERROR` /
+   `NETWORK_HTTP_ERROR` / `RATE_LIMITED` / `DISK_FULL` / `WRITE_PERMISSION_DENIED` / `ENGINE_BUSY`
+   八个码在引擎侧没有任何生产者，全被 :362 的 `except Exception` 吞掉。用户看到的是一句「未知错误」，
+   重试按钮的 `retryable` 也跟着失真（`UNKNOWN` 不可重试，而这几个里有一半是 `retryable=true`）。
+   缺的是一张「downloader 异常类型 → §5 码」映射表；这直接决定 M4 第 2 步 `DownloadBackend` 事件流能不能表达失败。
+3. **空格式表落在客户端补契约**：real 模式下 `record.formats` 为 `[]` 时任务照样进 `awaiting_selection`，
+   `GET /formats` 返回 200 空列表，由客户端 [HomeViewModel.kt:225](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L225)
+   自己造 `FORMAT_UNAVAILABLE` 文案。引擎侧「有格式表可给」与「给不出」两种情况在协议上不可分。
+
+**P2（记录，不排队）**：
+
+4. `_sniff_real` 把 yt-dlp 解析失败静默收成 `record.formats = []`（只 warn），失败被推迟到下载阶段才显形。
+5. `start_download` 的 API 预检（[main.py:986](file:///E:/code/android/BrowseGuardVid/engine/main.py#L986)）
+   只捕两种契约异常，其它异常 → 500，任务停在 `awaiting_selection` 等 24h 扫描（有出口，但请求面难看）。
+6. 码表注释与实际条数不符（Kotlin 写 29、实为 30）——**本轮已顺手改**，见 §19.6。
+
+### 19.4 本轮 P0 修复与取证
+
+改动（[engine/main.py](file:///E:/code/android/BrowseGuardVid/engine/main.py)）：
+
+- 新增 [`_advance_safely`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L388) /
+  [`_download_safely`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L404)：捕获逃逸异常 →
+  `logger.exception` 留可 grep 的审计行（`advance_crashed` / `download_crashed` + task_id + 异常类型）→
+  `_fail_task(UNKNOWN)`。兜底放在**驱动入口**这一层，不在每个调用点补 try。
+- 四个调用点全部改走包装：`_process_task` 的两条、`get_task` 的同步兜底、`start_download` 的 worker 未启动分支、
+  `_do_download` 的 real 分支。
+- 顺带堵一个**伪造终态**：`_advance` 里 `downloading → done` 那段是桩语义，却在 real 模式 worker 停摆时
+  也会执行，连字节数一起写死成 fixture 的 524288000。现按 `ENGINE_MODE == "stub"` 收窄，
+  real 侧改为 `advance_skipped_downloading` 审计行——下载状态归 `_download_real` 所有。
+
+取证（现场复跑，[engine/tests_real/test_nonterminal_exits.py](file:///E:/code/android/BrowseGuardVid/engine/tests_real/test_nonterminal_exits.py) 五条，全部打真实崩溃点）：
+
+| 用例 | 崩溃点 | 修复前实测 | 修复后 |
+| --- | --- | --- | --- |
+| 嗅探器抛非 `SniffError` | `RuntimeError` 逃逸 `_sniff_real` | 卡 `sniffing`，5s 超时红 | `failed` + `UNKNOWN` + `advance_crashed` |
+| 嗅探结果带未知 `kind` | `MediaStreamType("blob")` ValueError（在两个 try 之外） | 卡 `sniffing` | 同上 |
+| 自动领取时解析器炸 | `resolve_format_expression` 抛非契约异常 | 卡 `downloading` | `failed` + `download_crashed` |
+| worker 侧下载入口炸 | 同上，走 `POST /download` 链路 | 卡 `downloading` | 同上 |
+| 兜底不是静默降级 | `caplog` 断言审计行含 `advance_crashed` 与 task_id | — | 通过 |
+
+修复前的四条红是**实测红**（输出里逐条能看到 `'status': 'sniffing'` / `'downloading'` 直到超时），
+不是推理红。守卫也做了变异复跑：把 `_do_download` 改回裸调用 `_download_real` →
+`test_drivers_are_only_called_from_their_safe_wrappers` 红并报出 `main.py:265`，恢复后全绿。
+
+套件基线（本轮复跑）：引擎桩 **173 passed / 152 deselected**（原 170，+3 条守卫）、
+引擎 real **151 passed + 1 xfailed**（原 146，+5 条用例）、Android 单测 **64 passed / 0 failed** 不变。
+
+### 19.5 M4 第 2 步接口最终形态（按 §18.5 裁决改写）
+
+三条由本次审计直接决定的约束：
+
+1. `DownloadBackend` **只有远端 HTTP 一个实现**，不再有 `LocalDownloader` 位置；
+2. `SniffBackend` 两个实现：`RemoteSniffer`（Playwright，走 HTTP）与 `LocalWebViewSniffer`（拦截直链），
+   接口必须允许本地实现**声明「这条 URL 我嗅不了」并交回一个本地原因**，而不是伪造 §5 码
+   （沿用 `code=null` 原则与 `LocalTimeoutTest` 的裸字面量守卫）；
+3. 事件流的失败事件必须携带 §5 码 + `retryable`——这依赖 §19.3 缺口 2 先补齐映射表，
+   否则接口只能传 `UNKNOWN`，等于把归因丢失固化进抽象层。
+
+**接口正文（A 案：事件流 + 任务句柄；UI 侧不再出现 `baseUrl`、`withTimeout` 和三个 await 轮询环）**：
+
+```kotlin
+/** 失败的二元归属：协议码只在「引擎真的这么答」时出现，本地判断一律 code = null。 */
+sealed interface BackendFailure {
+    /** 来自引擎 §5 码表，字段直接取自 ErrorPayload，客户端不再自行拼码。 */
+    data class Protocol(
+        val code: ErrorCode,
+        val retryable: Boolean,
+        val message: String,
+        val detail: Map<String, JsonElement>,
+    ) : BackendFailure
+
+    /** 客户端本地判定：超时、WebView 嗅不到、WebView 不可用——没有协议码可言。 */
+    data class Local(val reason: LocalReason, val message: String) : BackendFailure
+}
+
+enum class LocalReason { TIMEOUT, NO_DIRECT_LINK, WEBVIEW_UNAVAILABLE, URL_UNLOADABLE }
+
+/** 远端：一次任务的生命周期由引擎状态机驱动，句柄即 taskId。 */
+data class TaskHandle(val taskId: String, val sourceUrl: String)
+
+interface SniffBackend {
+    /** 后端级静态能力位：只用于 UI 决定「本地/远端」入口是否可点，不表达单条 URL 的成败。 */
+    val capabilities: SniffCapabilities
+
+    /** 单条 URL 的成败走事件流：本地实现嗅不到就发 Refused，而不是让 capability 替它说话。 */
+    fun sniff(url: String, mode: TaskMode): Flow<SniffEvent>
+
+    suspend fun cancel(handle: TaskHandle?)
+}
+
+data class SniffCapabilities(
+    val progressiveDirect: Boolean,   // mp4/mkv 直链
+    val hls: Boolean,
+    val dash: Boolean,
+    val drmDetection: Boolean,        // 本地 WebView 不解析 license → false
+    val runsOnDevice: Boolean,
+)
+
+sealed interface SniffEvent {
+    /** 远端专属：queued/sniffing 中间态，正是 §17.5 那两条屏显死分支的数据源。 */
+    data class Status(val taskId: String, val status: TaskStatus) : SniffEvent
+    data class Found(val items: List<SniffResult>, val formats: List<FormatInfo>) : SniffEvent
+    /** 本地实现的「这条我做不了」：code = null，文案由 LocalReason 侧给，不借 §5。 */
+    data class Refused(val reason: LocalReason, val message: String) : SniffEvent
+    data class Failed(val failure: BackendFailure) : SniffEvent
+}
+
+interface DownloadBackend {
+    /** 唯一实现是 HttpDownloadBackend：内部持 baseUrl，POST /download + 轮询 GET /tasks/{id}。 */
+    fun download(handle: TaskHandle, selection: DownloadSelection): Flow<DownloadEvent>
+    suspend fun cancel(handle: TaskHandle)
+}
+
+data class DownloadSelection(
+    val formatSelector: FormatSelector,
+    val namingTemplate: String?,
+    val postActions: List<PostAction>?,
+)
+
+sealed interface DownloadEvent {
+    data class Status(val status: TaskStatus) : DownloadEvent
+    data class Progress(val progress: TaskProgress) : DownloadEvent
+    data class Succeeded(val productPath: String?) : DownloadEvent
+    data class Cancelled(val status: TaskStatus) : DownloadEvent
+    data class Failed(val failure: BackendFailure) : DownloadEvent
+}
+```
+
+两个实现各归各的位置：`RemoteSniffer` 与 `HttpDownloadBackend` 复用现
+[EngineClient](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineClient.kt)
+的九个端点；`LocalWebViewSniffer` 只实现 `SniffBackend`，`capabilities.drmDetection = false`、
+`hls = false`（blob/MSE 抓不到切片清单时发 `Refused(NO_DIRECT_LINK)`），并且**不实现 `DownloadBackend`**——
+这正是 §18.5 放弃本地内嵌后接口应有的形状。
+
+三条本次要一起认领的迁移影响（不是新需求，是接口挪动的连带账）：
+
+1. 三个轮询环（`awaitTerminal` / `awaitAwaitingSelection` / `awaitDownloadTerminal`）搬进
+   `HttpDownloadBackend` / `RemoteSniffer` 内部后，[PollLoopStateWritebackTest](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt)
+   的「恰好扫到三个 await 环」会失去锚点——守卫必须跟着搬到新东家，且搬完要用同一个变异体
+   （删掉回写块）复跑一次，不能只改文件名当作搬完了。
+2. `LocalTimeouts` 的三个 `withTimeout` 归后端所有（超时发 `Failed(Local(TIMEOUT))`），
+   `LocalTimeoutTest` 的裸字面量与 `code = null` 断言随之改指向后端产出，而不是 ViewModel。
+3. `BackendFailure.Protocol` 只允许由 `ErrorPayload` 反序列化产生，**禁止客户端用 `ErrorCode.X` 手工构造**；
+   这条要配一条与 `LocalTimeoutTest` 同形的静态守卫（源码里 `BackendFailure.Protocol(` 只出现在
+   EngineClient 的映射处），否则 §19.3 缺口 2 修完也会再被客户端自己拼码绕过。
+
+留白（等裁决，本轮不动）：本地 WebView 拦到 mp4 直链后，若此刻没有 PC 引擎，「把这条直链落到手机存储」
+这件事按上面的接口**无人负责**——`DownloadBackend` 只剩远端实现。补它需要的是第三个实现
+（单条 HTTP GET + `.part` 续传，不需要 yt-dlp/FFmpeg，与 §18.5 的裁决不冲突），
+但会重新打开「本地下载」这条链路，属于范围扩张，按分段交付的口径先记在这里。
+
+### 19.6 两条方法论记录
+
+- **按一种写法统计码的生产者＝统计错**：`SecurityError` 的子类用字符串码（`"SSRF_BLOCKED"`），
+  API 层再 `ErrorCode(exc.code)` 组装，静态扫 `ErrorCode.X` 会漏掉 5 个码。本轮 §18.3 的
+  「29 码 / 20 无生产者」就是这么算错的，校正在该节内留痕。
+- **注释里的条数也是代码**：Kotlin `ErrorPayload.kt` 写「共 29 个」而枚举有 30 条，
+  和 4b 那两次「注释/文案与实际行为相反」是同一类问题；已改为 30 并把 `NOT_FOUND` 记进新增说明。
+
