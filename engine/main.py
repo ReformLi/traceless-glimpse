@@ -76,7 +76,7 @@ from services.task_worker import TaskWorker
 
 logger = logging.getLogger("bgv.engine")
 
-PROTOCOL_VERSION = "0.1"
+PROTOCOL_VERSION = "0.2"
 ENGINE_VERSION = "0.1.0"
 
 # 引擎模式开关（M1）：stub = M0 桩（fixture + GET 惰性推进）；real = 真实嗅探链路。
@@ -505,6 +505,8 @@ def _download_real(record: TaskRecord) -> None:
         path = _merge_stage(record, tracks[0], tracks[1])
         if path is None:
             return  # 合并失败已落 failed；合并期间被取消则终态归 cancelled
+    # 产物路径只在此处落任务：done 之前一律 null，失败/取消不会带出半成品路径。
+    task.outputPath = str(path)
     task.progress = Progress(
         phase="done",
         bytesDownloaded=path.stat().st_size,

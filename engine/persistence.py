@@ -23,7 +23,7 @@ from models import (
     error_payload,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # 重启后无法续跑的活动态：置 failed；queued / awaiting_selection 原样保留
 RECOVER_FAILED_STATES = {
     TaskStatus.SNIFFING,
@@ -34,7 +34,7 @@ RECOVER_FAILED_STATES = {
 
 _SELECT_COLUMNS = (
     "id, status, sourceUrl, mode, cookiePolicy, outputDir, format_selector, "
-    "createdAt, updatedAt, error"
+    "createdAt, updatedAt, error, output_path"
 )
 
 # 每条迁移按 user_version 递增执行；之后只追加、不修改已有条目
@@ -52,6 +52,8 @@ _MIGRATIONS: list[tuple[str, ...]] = [
         "updatedAt TEXT NOT NULL, "
         "error TEXT)",
     ),
+    # v2：M5 起 done 任务记录真实产物路径；旧库补空列，历史任务保持 null。
+    ("ALTER TABLE tasks ADD COLUMN output_path TEXT",),
 ]
 
 
@@ -116,13 +118,14 @@ class TaskStore:
             self._conn.execute(
                 "INSERT INTO tasks ("
                 "id, status, sourceUrl, mode, cookiePolicy, outputDir, format_selector, "
-                "createdAt, updatedAt, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "createdAt, updatedAt, error, output_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
                 "sourceUrl=excluded.sourceUrl, mode=excluded.mode, "
                 "cookiePolicy=excluded.cookiePolicy, outputDir=excluded.outputDir, "
                 "format_selector=excluded.format_selector, createdAt=excluded.createdAt, "
-                "updatedAt=excluded.updatedAt, error=excluded.error",
+                "updatedAt=excluded.updatedAt, error=excluded.error, "
+                "output_path=excluded.output_path",
                 (
                     task.id,
                     task.status.value,
@@ -134,6 +137,7 @@ class TaskStore:
                     task.createdAt,
                     task.updatedAt,
                     error_json,
+                    task.outputPath,
                 ),
             )
             self._conn.commit()
@@ -147,7 +151,7 @@ class TaskStore:
 
     @staticmethod
     def _row_to_task(
-        row: tuple[str, str, str, str, str, str, str | None, str, str, str | None]
+        row: tuple[str, str, str, str, str, str, str | None, str, str, str | None, str | None]
     ) -> Task:
         (
             task_id,
@@ -160,6 +164,7 @@ class TaskStore:
             created_at,
             updated_at,
             error_json,
+            output_path,
         ) = row
         try:
             selector = (
@@ -180,6 +185,7 @@ class TaskStore:
             updatedAt=updated_at,
             formatSelector=selector,
             error=ErrorPayload.model_validate(json.loads(error_json)) if error_json else None,
+            outputPath=output_path,
         )
 
     def recover_restart(self) -> list[Task]:
@@ -209,7 +215,7 @@ class TaskStore:
         return tasks
 
     def _repair_invalid_selector(
-        self, row: tuple[str, str, str, str, str, str, str | None, str, str, str | None]
+        self, row: tuple[str, str, str, str, str, str, str | None, str, str, str | None, str | None]
     ) -> Task:
         task = Task(
             id=row[0],

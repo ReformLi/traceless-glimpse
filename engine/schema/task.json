@@ -77,6 +77,10 @@
     "error": {
       "type": "object",
       "x-nullable": true
+    },
+    "outputPath": {
+      "type": "string",
+      "x-nullable": true
     }
   }
 }

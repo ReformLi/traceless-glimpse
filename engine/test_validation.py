@@ -73,7 +73,7 @@ def test_validation_error_carries_protocol_header(client):
     """422 校验错误响应也带 X-Protocol-Version 头。"""
     rsp = client.post("/v1/tasks", json={"mode": "sniff"})
     assert rsp.status_code == 422
-    assert rsp.headers["x-protocol-version"] == "0.1"
+    assert rsp.headers["x-protocol-version"] == "0.2"
 
 
 def test_list_limit_out_of_range(client):

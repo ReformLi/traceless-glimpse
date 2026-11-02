@@ -24,7 +24,7 @@ REQUIRED_KEYS = {
 def test_selfcheck_payload_shape(client):
     response = client.get("/v1/privacy/selfcheck")
     assert response.status_code == 200
-    assert response.headers["X-Protocol-Version"] == "0.1"
+    assert response.headers["X-Protocol-Version"] == "0.2"
 
     payload = response.json()
     assert set(payload) == REQUIRED_KEYS

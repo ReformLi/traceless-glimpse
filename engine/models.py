@@ -279,6 +279,8 @@ class Task(StrictModel):
     proxyId: Optional[str] = None
     progress: Optional[Progress] = None
     error: Optional[ErrorPayload] = None
+    # 仅 done 且 real 模式有真实产物时非空；stub / 未完成 / 失败一律 null。
+    outputPath: Optional[str] = None
 
 
 def error_payload(code: ErrorCode, detail: dict[str, Any] | None = None) -> ErrorPayload:

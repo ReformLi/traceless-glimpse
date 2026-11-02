@@ -286,9 +286,9 @@ class TestMiscEndpoints:
         body = rsp.json()
         assert body["status"] == "ok"
         assert body["version"] == "0.1.0"
-        assert body["protocolVersion"] == "0.1"
+        assert body["protocolVersion"] == "0.2"
         assert isinstance(body["uptimeSeconds"], int)
-        assert rsp.headers["x-protocol-version"] == "0.1"
+        assert rsp.headers["x-protocol-version"] == "0.2"
 
     def test_unknown_task_404(self, client):
         rsp = client.get("/v1/tasks/0192f3a4-0000-7000-8000-000000000000")
@@ -298,7 +298,7 @@ class TestMiscEndpoints:
         assert err["category"] == "input"
         assert err["retryable"] is False
         assert err["message"] == "请求的资源不存在"
-        assert rsp.headers["x-protocol-version"] == "0.1"
+        assert rsp.headers["x-protocol-version"] == "0.2"
 
     def test_list_tasks(self, client):
         _create_task(client, "https://example.com/watch?v=abc")

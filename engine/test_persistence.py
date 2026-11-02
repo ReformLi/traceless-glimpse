@@ -28,6 +28,7 @@ COLUMNS = [
     "createdAt",
     "updatedAt",
     "error",
+    "output_path",
 ]
 
 
@@ -61,9 +62,60 @@ def test_migration_sets_user_version_and_schema(tmp_path):
     with sqlite3.connect(db_path) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
-    assert version == 1
+    assert version == 2
     assert columns == COLUMNS
     assert "progress" not in columns
+
+
+def test_v1_database_migrates_to_v2_with_null_output_path(tmp_path):
+    db_path = tmp_path / "tasks.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE tasks ("
+            "id TEXT PRIMARY KEY, status TEXT NOT NULL, sourceUrl TEXT NOT NULL, "
+            "mode TEXT NOT NULL, cookiePolicy TEXT NOT NULL, outputDir TEXT NOT NULL, "
+            "format_selector TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, error TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy",
+                "done",
+                "https://example.com/watch?v=1",
+                "download",
+                "lazy",
+                "/home/user/Videos/BGV",
+                None,
+                "2026-10-31T00:00:00Z",
+                "2026-10-31T00:00:00Z",
+                None,
+            ),
+        )
+        conn.execute("PRAGMA user_version=1")
+
+    store = persistence.TaskStore(db_path)
+    try:
+        assert store.version == 2
+        (loaded,) = store.load()
+        assert loaded.id == "legacy"
+        assert loaded.outputPath is None
+    finally:
+        store.close()
+
+
+def test_output_path_roundtrip(tmp_path):
+    store = persistence.TaskStore(tmp_path / "tasks.db")
+    try:
+        store.upsert(
+            _task(
+                status=TaskStatus.DONE,
+                outputPath="/home/user/Videos/BGV/example.mp4",
+            )
+        )
+        (loaded,) = store.load()
+        assert loaded.outputPath == "/home/user/Videos/BGV/example.mp4"
+    finally:
+        store.close()
 
 
 def test_upsert_and_load_roundtrip_including_intent_and_error(tmp_path):
@@ -236,6 +288,7 @@ def test_invalid_persisted_selector_fails_explicitly(tmp_path):
         assert recovered.error.code is ErrorCode.UNKNOWN
         assert recovered.error.detail == {"reason": "invalid_persisted_selector"}
         assert recovered.formatSelector is None
+        assert recovered.outputPath is None
 
         (persisted,) = store.load()
         assert persisted.status is TaskStatus.FAILED

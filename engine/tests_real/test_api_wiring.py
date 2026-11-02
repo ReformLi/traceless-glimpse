@@ -206,6 +206,7 @@ def test_real_do_download_calls_download_media(monkeypatch, tmp_path):
     assert record.task.status == TaskStatus.DONE
     assert record.task.progress is not None
     assert record.task.progress.percent == 100.0
+    assert record.task.outputPath == str(tmp_path / "out.mp4")
 
 
 def test_real_do_download_maps_security_error(monkeypatch):
