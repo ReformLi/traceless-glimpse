@@ -2234,3 +2234,97 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
    不另开一套假件。
 3. 设备截图未复拍：这两条分支在 MuMu 上取不到值（引擎不发空数组），本来就属于「需要假引擎才能演」
    的画面，同归第 3 步 FakeBackend。
+
+---
+
+## 20. M4 第 2 步 ①②④：三条轮询环搬进后端 + 协议失败唯一构造点守卫（2026-11-02）
+
+裁决口径（§18.5 第 2 步四小步）：①「抽接口 + 原样搬迁」、②「ViewModel 瘦身」、
+④「守卫复跑 + 禁止客户端手工构造 `BackendFailure.Protocol`」。③（`LocalDirectDownloader`
+与 `LocalWebViewSniffer`）另节，本轮未动。
+
+两个 commit：`57ef70b`（嗅探链路）、`88da240`（下载链路 + 新守卫）。验收线是用户定的
+**界面行为零变化**，因此本节全部证据都是「等价性」证据，没有新功能。
+
+### 20.1 落地形态
+
+| 文件 | 职责 | 关键点 |
+| --- | --- | --- |
+| [BackendFailure.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt) | 失败的二元归属 | `Protocol`(:16) 带 `code`；`Local`(:24) **类型里没有码字段**；`LocalReason`(:32) |
+| [LocalFailures.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt) | 本地判定的措辞与窗口 | 5 个常量 + 6 个产出，文案与原 `LocalTimeouts`/`LocalRefusals` 逐字一致 |
+| [EngineFailures.kt:13](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/EngineFailures.kt#L13) | `EngineFailure → BackendFailure` | 全仓**唯一** `BackendFailure.Protocol(` 构造点 |
+| [SniffBackend.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/SniffBackend.kt) | 接口 + `SniffRequest` + `SniffEvent` | `TERMINAL_STATUSES` 也归后端 |
+| [HttpSniffer.kt:30](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpSniffer.kt#L30) | 原 `awaitTerminal` | 轮询发 `Status`(:47)，超时发 `Failed(Local)`(:51) |
+| [DownloadBackend.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt) | 接口 + `PrepareRequest`/`StartRequest` + `DownloadEvent` | `prepare` / `start` / `cancel` 三方法 |
+| [HttpDownloader.kt:29](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L29) | 原 `awaitAwaitingSelection` / `awaitDownloadTerminal` | `Preparing`(:46)、`Started`(:82)、`Progress`(:89) |
+| [HomeViewModel.kt:173](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L173) / [:218](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L218) | `applySniffEvent` / `applyDownloadEvent` | ViewModel 只剩「事件 → sealed 镜像」这一段映射 |
+
+`baseUrl` 计数（现场复跑，口径＝含该词的行数）：改造前 `git show 3242ac6:...HomeViewModel.kt`
+**22 行**，现在 **8 行**。剩下 8 行里没有一行是「每次引擎调用手工带地址」——
+6 行是后端构造时注入（`HttpSniffer(config.baseUrl, client)` 这种），
+2 行是 `connect()`：`health`/`selfcheck` 还没后端化，这是本轮唯一的实质残留，登记在 §20.5。
+
+### 20.2 三条设计决定
+
+1. **`DownloadEvent.Started` 与 `Progress` 必须分成两支**。`POST /download` 的 `202` 响应
+   要**无条件**把界面从 `Selecting` 切到 `Running`；轮询结果只能在已经是 `Running` 时采纳，
+   且要把界面上的 `cancelRequested` 带过去（原实现就是 `previous.cancelRequested`）。
+   合成一个事件类型就得在 UI 侧再判「这是第一个还是第 N 个」，那是把改造前的隐式顺序
+   换成显式补丁，更容易走样。
+2. **本地失败靠类型不带码，不靠约定写 `null`**。草图里 `Local` 只有 `reason + message`，
+   落地方多加了 `retryable: Boolean = true`：界面阶段 `SniffPhase.Failed(message, code, retryable)`
+   需要它，而草图那版会让本地失败在映射时丢掉可重试性——`retryable` 是客户端自己的决定
+   （§19.9 已裁决「不是继承来的」），不该被类型挤掉。
+3. **`cancel` 返回 `BackendFailure?` 而不是发事件**。取消的成功路径没有任何新事实
+   （终态仍由 `start` 那条流写入，两处同时改状态就会打架），失败也只是「要不要覆盖当前
+   Running」的一句话。给它开一条 `Flow` 反而逼 UI 维护两个 collector 的先后。
+
+### 20.3 对 §19.5 草图的偏离（逐条认领，不是「差不多」）
+
+| # | 草图 | 落地 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `sniff(url, mode)` | `sniff(SniffRequest)` | `cookiePolicy`/`outputDir` 是协议必填，单传 url 组不出请求；`mode` 由后端定死，本地实现没有 `TaskMode` 语义 |
+| 2 | `SniffEvent.Found(items, formats)` | `Results` + `Terminal(task)` | 画质表属于**另一个** `mode=download` 任务（§6.3），不跟嗅探同批到达；非 `done` 终态必须把引擎写的 `task.error` 原样带到界面，客户端不重述 |
+| 3 | `capabilities` / `Refused` / `cancel(handle)` 未实现 | 同上 | 这三条今天**没有生产者**。提前写＝写死代码。`Refused` 的语义已由 `Failed(Local(reason))` 承载，③ 补 `LocalWebViewSniffer` 时若真需要「可点性」再开 `capabilities` |
+| 4 | `LocalReason { TIMEOUT, NO_DIRECT_LINK, WEBVIEW_UNAVAILABLE, URL_UNLOADABLE }` | `{ TIMEOUT, TRANSPORT, NO_SNIFF_RESULTS, NO_FORMATS }` | 草图三条属于还没写的本地实现；今天真实存在的判定是传输层观察与两张空表。③ 时按实际新增，不改名 |
+| 5 | `Protocol.detail: Map<String, JsonElement>` | `JsonObject?` | 与 shared `ErrorPayload.detail` 同源，少一次转换、少一个「转换中丢字段」的机会 |
+| 6 | `TaskHandle(taskId, sourceUrl)` | 未引入 | taskId 直接出现在事件里（`Status(taskId, …)`、`Selecting(taskId, …)`），句柄暂时只是别名。等 ③ 本地实现需要「无 taskId 的任务句柄」时再抽 |
+| 7 | `DownloadEvent { Status, Progress(TaskProgress), Succeeded, Cancelled, Failed }` | `{ Preparing, Selecting, Started, Progress(Task), Terminal, Failed }` | 引擎的终态是一个完整 `Task`（产物路径、`error`、进度都在里面），按语义拆成三个事件必丢字段；`Terminal(task)` + 界面 `toFinalPhase()` 保持了原实现的同源判定 |
+| 8 | `DownloadBackend.download(handle, selection)` 单方法 | `prepare` + `start` 两方法 | 画质表要先等 `awaiting_selection`，草图那一个方法覆盖不了两步，`PREPARE_MS` 超时也没有落点 |
+
+### 20.4 §19.5 三条迁移账的认领状态
+
+| 账 | 内容 | 状态 |
+| --- | --- | --- |
+| 1 | `PollLoopStateWritebackTest` 失去 `await*` 锚点 | **已搬**：锚点表改成「文件 + 函数 + 发状态那行的字面量」，[全仓 `client.task(` 恰好 3 处](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt#L93)且都被纳管 |
+| 2 | 三个 `withTimeout` 归后端，`LocalTimeoutTest` 改指后端产出 | **已搬**：断言指向 [LocalFailures](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt)，扫描集加进 `HttpSniffer.kt`/`HttpDownloader.kt` |
+| 3 | 禁止客户端手工构造 `BackendFailure.Protocol` | **已加**：[protocolFailuresAreConstructedAtASingleSite](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt#L69) |
+
+### 20.5 取证（现场复跑）
+
+套件：`:android:app:testDebugUnitTest --rerun` → ① 后 **69 passed / 0 failed**，
+②④ 后 **70 passed / 0 failed**（改造前基线 68）。
+
+变异体复跑（每个都用「语法合法、语义退化」的写法，跑完立即从备份还原，
+`grep -rn 变异 android/app/src/main/` 命中 **0 行**）：
+
+| 变异体 | 红名单 | 观察 |
+| --- | --- | --- |
+| A：删掉 `HttpSniffer.kt:47` 的 `emit(SniffEvent.Status(…))`（改成裸表达式） | `everyPollLoopEmitsItsStatusAfterThePoll` + `writebackHappensAfterThePollNotBefore` | 界面停在点击时的 `QUEUED`，`sniffing` 文案成死分支 |
+| B：删掉 `HttpDownloader.kt:89` 的 `emit(DownloadEvent.Progress(…))` | 同上两条 | 进度条不刷新；A、B **各自单独**复跑都转红，不是靠对方凑数 |
+| A+B 同时 | 同上两条 | 一条用例能同时抓两条环，说明表是逐环校验而非计数 |
+| C：在 `resetDownload()` 手搓 `BackendFailure.Protocol(ErrorCode.NO_MEDIA_FOUND, true, …)`（含 import） | **仅** `protocolFailuresAreConstructedAtASingleSite`（10 条里红 1） | 旧的裸字面量守卫与枚举身份字段守卫**全绿**——它们看不见构造函数调用，新守卫不是冗余 |
+
+### 20.6 遗留（登记，不掩饰）
+
+1. **本轮没有设备取证**。「界面行为零变化」的证据等级是「代码逐点等价 + 70 条 JVM 单测 +
+   4 组变异体」，不是 MuMu 上的观察。真正能证明中间态（`sniffing` / `format_preparing`）
+   的还是 §18.2 第 3 步的 FakeBackend 行为单测 + 重拍截图。
+2. **`connect()` 未后端化**：`health`/`selfcheck` 仍直用 `EngineClient`，是 `baseUrl` 残留
+   的唯一实质来源（[:299](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L299)）。
+   草图里没有 `InfoBackend` 这个位置，且今天没有第二个实现需要它，故不提前抽。
+3. **后端每次点击 `new`**：`HttpSniffer(config.baseUrl, client)` 在动作里现场构造。
+   好处是改引擎地址立即生效（与原实现一致），代价是「后端实例」不是一个可持有的对象，
+   FakeBackend 接线时（第 3 步）需要把它改成注入。
+4. **③ 未开工**：`LocalDirectDownloader`（OkHttp + `.part`）与 `LocalWebViewSniffer`
+   及 `capabilities`/`LocalReason` 新增成员，按裁决「设置里全局切换」接线。
