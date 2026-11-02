@@ -735,6 +735,7 @@ private fun DownloadCard(phase: DownloadPhase, onCancel: () -> Unit, onRetry: ()
             is DownloadPhase.Success -> {
                 CardTitle(stringResource(R.string.download_done_title))
                 InfoRow(stringResource(R.string.download_output_dir), phase.task.outputDir)
+                phase.task.outputPath?.let { InfoRow(stringResource(R.string.download_output_path), it) }
                 phase.task.namingTemplate?.let { InfoRow(stringResource(R.string.download_naming), it) }
                 InfoRow(
                     stringResource(R.string.download_size),
@@ -834,7 +835,7 @@ private fun previewState(download: DownloadPhase = DownloadPhase.Idle) = HomeUiS
     engineUrl = "http://127.0.0.1:8730",
     engineUrlDraft = "http://127.0.0.1:8730",
     connection = Connection.Connected(
-        health = HealthResponse("ok", "0.1.0", "0.1", 128),
+        health = HealthResponse("ok", "0.1.0", "0.2", 128),
         selfcheck = SelfcheckResponse(
             listenAddress = "127.0.0.1:8730",
             tlsEnabled = false,

@@ -1,7 +1,7 @@
 package com.hpu.browseguard
 
-import com.hpu.browseguard.data.EnginePayloadGuard
 import com.hpu.browseguard.shared.BgvJson
+import com.hpu.browseguard.shared.EnginePayloadGuard
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DownloadRequest
 import com.hpu.browseguard.shared.model.FormatSelector

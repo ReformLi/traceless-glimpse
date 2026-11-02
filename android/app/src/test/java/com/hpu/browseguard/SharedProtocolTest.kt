@@ -92,9 +92,10 @@ class SharedProtocolTest {
     fun decodesHealthAndSelfcheck() {
         val health = BgvJson.decodeFromString(
             HealthResponse.serializer(),
-            """{ "status": "ok", "version": "0.1.0", "protocolVersion": "0.1", "uptimeSeconds": 3600 }""",
+            """{ "status": "ok", "version": "0.1.0", "protocolVersion": "0.2", "uptimeSeconds": 3600 }""",
         )
         assertEquals("0.1.0", health.version)
+        assertEquals("0.2", health.protocolVersion)
         assertEquals(3600L, health.uptimeSeconds)
 
         val selfcheck = BgvJson.decodeFromString(

@@ -72,6 +72,7 @@
     <string name="download_no_progress">引擎尚未上报进度</string>
     <string name="download_eta">剩余 %1$s</string>
     <string name="download_output_dir">输出目录</string>
+    <string name="download_output_path">文件位置</string>
     <string name="download_naming">命名模板</string>
     <string name="download_size">已下载</string>
 </resources>

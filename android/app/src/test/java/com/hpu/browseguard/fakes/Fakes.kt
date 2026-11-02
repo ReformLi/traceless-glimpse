@@ -148,7 +148,7 @@ class FakeEngineInfo(
     var healthResult: HealthResponse? = HealthResponse(
         status = "ok",
         version = "0.1.0",
-        protocolVersion = "0.1",
+        protocolVersion = "0.2",
         uptimeSeconds = 12,
     ),
     var selfcheckResult: SelfcheckResponse? = SelfcheckResponse(

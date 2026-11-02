@@ -3,6 +3,8 @@ package com.hpu.browseguard.data
 import com.hpu.browseguard.data.EngineFailure.Protocol
 import com.hpu.browseguard.data.EngineFailure.Transport
 import com.hpu.browseguard.shared.BgvJson
+import com.hpu.browseguard.shared.EnginePayloadGuard
+import com.hpu.browseguard.shared.Protocol as BgvProtocol
 import com.hpu.browseguard.shared.model.DownloadRequest
 import com.hpu.browseguard.shared.model.ErrorEnvelope
 import com.hpu.browseguard.shared.model.ErrorPayload
@@ -56,7 +58,7 @@ enum class TransportKind {
 class EngineException(val failure: EngineFailure) : Exception(failure.toString())
 
 /**
- * 本地引擎 HTTP 客户端（PROTOCOL v0.1）。
+ * 本地引擎 HTTP 客户端（协议版本见 [:shared] 的 `Protocol`）。
  *
  * 所有序列化走 [:shared] 的 `BgvJson`（未知字段严格拒绝），因此客户端不可能
  * 悄悄带上协议外的字段；请求头只有 `Accept` 与 `X-Protocol-Version`。
@@ -98,7 +100,7 @@ class EngineClient(private val http: OkHttpClient = DEFAULT_HTTP) {
         try {
             BgvJson.decodeFromString(serializer, body)
         } catch (e: SerializationException) {
-            throw EngineException(Transport("引擎响应不符合协议 v0.1：${e.message}"))
+            throw EngineException(Transport("引擎响应不符合协议 v${BgvProtocol.PROTOCOL_VERSION}：${e.message}"))
         }
 
     private suspend fun execute(
@@ -153,8 +155,8 @@ class EngineClient(private val http: OkHttpClient = DEFAULT_HTTP) {
         }.build()
 
     companion object {
-        const val PROTOCOL_VERSION = "0.1"
-        const val PROTOCOL_HEADER = "X-Protocol-Version"
+        const val PROTOCOL_VERSION = BgvProtocol.PROTOCOL_VERSION
+        const val PROTOCOL_HEADER = BgvProtocol.PROTOCOL_HEADER
 
         private val JSON = "application/json; charset=utf-8".toMediaType()
 

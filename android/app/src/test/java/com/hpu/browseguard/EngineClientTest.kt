@@ -63,13 +63,14 @@ class EngineClientTest {
 
     @Test
     fun healthSendsProtocolHeaderAndDecodesPayload() = runTest {
-        server.enqueue(ok("""{"status":"ok","version":"0.1.0","protocolVersion":"0.1","uptimeSeconds":12}"""))
+        server.enqueue(ok("""{"status":"ok","version":"0.1.0","protocolVersion":"0.2","uptimeSeconds":12}"""))
 
         val health = client.health(baseUrl)
 
         assertEquals("0.1.0", health.version)
+        assertEquals("0.2", health.protocolVersion)
         val recorded = server.takeRequest()
-        assertEquals("0.1", recorded.headers[EngineClient.PROTOCOL_HEADER])
+        assertEquals("0.2", recorded.headers[EngineClient.PROTOCOL_HEADER])
         assertEquals("/v1/health", recorded.url.encodedPath)
     }
 
