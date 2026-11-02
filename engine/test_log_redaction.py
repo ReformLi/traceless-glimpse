@@ -39,6 +39,24 @@ def test_bare_cookie_header_redacted():
     assert "theme=dark" not in result
 
 
+def test_cookie_pair_list_redacts_every_pair_after_the_sensitive_one():
+    """参数化日志的现场：头名在 msg，值整串单独进 args。
+
+    ``logger.info("Cookie: %s", value)`` 时 `_HEADER_LINE` 只看得到 msg 里那句
+    「Cookie:」，args 拿到的是 `sid=…; theme=…` 一整串。只按敏感键名抹第一对，
+    剩下的登录状态仍然会整串写进导出日志——Cookie 值是一个整体，要抹全抹。
+    """
+    value = "sid=secret-value; theme=also-secret; csrf=token-9"
+    result = redact_text(value)
+    assert "also-secret" not in result
+    assert "token-9" not in result
+    assert result == "sid=" + REDACTED
+    # 键值串断了就不再牵连：句号后的普通字段照常留下
+    assert redact_text(f"{value} quality=720 kept").endswith("quality=720 kept")
+    # 幂等：已脱敏的一串不会被再吃一遍
+    assert redact_text(result) == result
+
+
 def test_authorization_bearer_redacted():
     assert "stub-token" not in redact_text("Authorization: Bearer stub-token")
     assert "abc.def" not in redact_text("proxy auth Bearer abc.def")

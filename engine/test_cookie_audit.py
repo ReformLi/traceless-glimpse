@@ -192,3 +192,54 @@ def test_asgi_traceback_that_dumps_headers_is_redacted():
     assert "[REDACTED]" in exported, exported
     for token in SECRET_TOKENS:
         assert token not in exported, exported
+
+
+def test_info_audit_lines_reach_the_console_under_the_uvicorn_entry_point():
+    """正面证据要真的出现在控制台，不能只在 caplog 里存在。
+
+    ``-m uvicorn main:app``（README 与验收指南的入口）不执行 ``__main__``
+    里的 ``basicConfig``，而 uvicorn 只配置自己那三个 logger：根上没有 handler
+    时 ``bgv.engine`` 的 INFO 记录会被 ``logging.lastResort``（WARNING 级）
+    静默丢掉，验收 grep 到的永远是空文件。这里复刻该现场——清空根 handler、
+    级别回到 NOTSET，只走 startup 装的那条路径。
+    """
+    import io
+
+    stream = io.StringIO()
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    for handler in saved_handlers:
+        root.removeHandler(handler)
+    root.setLevel(logging.NOTSET)
+    try:
+        handler = main.install_console_logging(stream=stream)
+        main.install_log_redaction()  # 过滤器要挂到刚装好的这条 handler 上
+        logging.getLogger("bgv.engine").info(
+            "http_request method=%s path=%s cookie=%s set_cookie=%s",
+            "POST",
+            "/v1/tasks",
+            "absent",
+            "absent",
+        )
+        assert main.install_console_logging(stream=stream) is handler, "重复安装会打出双份日志"
+        exported = stream.getvalue()
+
+        # 同一条控制台路径也要吃得住脱敏：审计行之外不能有第二个漏值的口子。
+        # 形状取参数化的真实头行（``logger.info("Cookie: %s", value)``）：头名在
+        # msg、值在 args，`_HEADER_LINE` 够不着，靠 `_PAIR` 连吃 `; k=v` 段兜住。
+        stream.truncate(0)
+        stream.seek(0)
+        logging.getLogger("bgv.engine").info("Cookie: %s", COOKIE_VALUE)
+        redacted = stream.getvalue()
+    finally:
+        root.setLevel(saved_level)
+        for extra in list(root.handlers):
+            root.removeHandler(extra)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+
+    assert exported.count("http_request method=POST path=/v1/tasks cookie=absent") == 1, exported
+    assert "[REDACTED]" in redacted, redacted
+    for token in SECRET_TOKENS:
+        assert token not in redacted
+

@@ -24,6 +24,7 @@ import asyncio
 import logging
 import os
 import random
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -900,11 +901,37 @@ def _restore_state() -> None:
 # 应用与端点
 # ---------------------------------------------------------------------------
 
+def install_console_logging(stream=None) -> logging.Handler:
+    """让 INFO 级审计行与启动方式无关，返回新挂（或复用）的 handler。
+
+    ``-m uvicorn main:app`` 是 README 与验收指南里的入口，而 uvicorn 只配置
+    自己的三个 logger，根上没有 handler 时 ``bgv.engine`` 的 INFO 记录会被
+    ``logging.lastResort``（WARNING 级）静默丢掉——验收要的正面证据
+    （``http_request`` / ``download_attempt``）一行都落不下来。
+
+    级别只提 ``bgv.engine``，不动根：根提到 INFO 会放出 httpx 的
+    ``HTTP Request: GET <源站 URL>``，把「引擎日志不带源 URL」的既有硬承诺
+    （tests_real 三条钉着）当场打穿。
+    """
+    logging.getLogger("bgv.engine").setLevel(logging.INFO)
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if type(handler) is logging.StreamHandler:
+            return handler
+    handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+    )
+    root.addHandler(handler)
+    return handler
+
+
 app = FastAPI(title="BrowseGuard Vid Engine (stub)", version=ENGINE_VERSION)
 
 
 @app.on_event("startup")
 async def _startup() -> None:
+    install_console_logging()
     install_log_redaction()
     _restore_state()
     await WORKER.start()
@@ -1196,10 +1223,6 @@ if __name__ == "__main__":
     import uvicorn
 
     # 控制台可见 INFO 级审计日志（download_attempt 等，§10 验收"引擎日志可证"）
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-    install_log_redaction()
+    # 由 startup 事件里的 install_console_logging 负责，两种启动入口同一条路径。
     # 协议默认监听 127.0.0.1:8730（§1 表头；本地回环免令牌 §2.3）
     uvicorn.run(app, host="127.0.0.1", port=8730)
