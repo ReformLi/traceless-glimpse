@@ -5,7 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.hpu.browseguard.data.AppContainer
-import com.hpu.browseguard.ui.HomeRoute
+import com.hpu.browseguard.ui.BgvApp
 import com.hpu.browseguard.ui.theme.BgvTheme
 
 class MainActivity : ComponentActivity() {
@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             BgvTheme {
-                HomeRoute(container)
+                BgvApp(container)
             }
         }
     }

@@ -1,5 +1,19 @@
 <resources>
     <string name="app_name">览盾视频</string>
+    <string name="nav_home">首页</string>
+    <string name="nav_history">历史</string>
+    <string name="nav_settings">设置</string>
+
+    <string name="history_title">下载历史</string>
+    <string name="history_subtitle">完成、取消与中断的任务都会留在这里</string>
+    <string name="history_empty_title">还没有下载记录</string>
+    <string name="history_empty_body">历史记录即将上线：完成的任务会按时间排在这里，可直接重试或打开文件。</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_subtitle">引擎、隐私与存储</string>
+    <string name="settings_placeholder_title">设置正在准备中</string>
+    <string name="settings_placeholder_body">引擎地址与连通性测试、Cookie 授权和输出目录选择将陆续在这里提供。</string>
+
     <string name="home_title">览盾视频</string>
     <string name="home_subtitle">本地执行 · 浏览器隔离嗅探</string>
     <string name="home_stage">M3 · 客户端接入引擎</string>

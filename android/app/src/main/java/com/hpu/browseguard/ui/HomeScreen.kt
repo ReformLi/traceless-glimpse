@@ -28,7 +28,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -114,78 +113,75 @@ fun HomeScreen(
     onCancelDownload: () -> Unit,
     onResetDownload: () -> Unit,
 ) {
-    Scaffold(containerColor = MaterialTheme.colorScheme.background) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 28.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 28.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.home_title),
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = stringResource(R.string.home_subtitle),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                SniffModeSwitch(
-                    selected = state.sniffExecutor,
-                    enabled = state.sniff !is SniffPhase.Running && !state.downloadInFlight,
-                    onSelect = onSelectSniffExecutor,
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.home_title),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = stringResource(R.string.home_subtitle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-
-            state.sniffNotice?.let { notice ->
-                Spacer(Modifier.height(16.dp))
-                NoticeBanner(notice, onDismissSniffNotice)
-            }
-
-            Spacer(Modifier.height(24.dp))
-            EngineStatusCard(state.connection, onRefresh)
-
-            Spacer(Modifier.height(16.dp))
-            EngineUrlCard(state, onEditEngineUrl, onSaveEngineUrl, onSelectDownloadExecutor)
-
-            val connected = state.connection as? Connection.Connected
-            if (connected != null) {
-                Spacer(Modifier.height(16.dp))
-                SelfcheckCard(connected.selfcheck)
-            }
-
-            Spacer(Modifier.height(16.dp))
-            SniffCard(state, onEditSourceUrl, onSniff, onPickFormats)
-
-            if (state.download is DownloadPhase.Selecting) {
-                Spacer(Modifier.height(16.dp))
-                FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
-            }
-
-            if (state.download !is DownloadPhase.Idle && state.download !is DownloadPhase.Preparing &&
-                state.download !is DownloadPhase.Selecting
-            ) {
-                Spacer(Modifier.height(16.dp))
-                DownloadCard(state.download, onCancelDownload, onPickFormats)
-            }
-
-            Spacer(Modifier.height(24.dp))
-            Text(
-                text = stringResource(R.string.home_stage),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SniffModeSwitch(
+                selected = state.sniffExecutor,
+                enabled = state.sniff !is SniffPhase.Running && !state.downloadInFlight,
+                onSelect = onSelectSniffExecutor,
             )
         }
+
+        state.sniffNotice?.let { notice ->
+            Spacer(Modifier.height(16.dp))
+            NoticeBanner(notice, onDismissSniffNotice)
+        }
+
+        Spacer(Modifier.height(24.dp))
+        EngineStatusCard(state.connection, onRefresh)
+
+        Spacer(Modifier.height(16.dp))
+        EngineUrlCard(state, onEditEngineUrl, onSaveEngineUrl, onSelectDownloadExecutor)
+
+        val connected = state.connection as? Connection.Connected
+        if (connected != null) {
+            Spacer(Modifier.height(16.dp))
+            SelfcheckCard(connected.selfcheck)
+        }
+
+        Spacer(Modifier.height(16.dp))
+        SniffCard(state, onEditSourceUrl, onSniff, onPickFormats)
+
+        if (state.download is DownloadPhase.Selecting) {
+            Spacer(Modifier.height(16.dp))
+            FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
+        }
+
+        if (state.download !is DownloadPhase.Idle && state.download !is DownloadPhase.Preparing &&
+            state.download !is DownloadPhase.Selecting
+        ) {
+            Spacer(Modifier.height(16.dp))
+            DownloadCard(state.download, onCancelDownload, onPickFormats)
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Text(
+            text = stringResource(R.string.home_stage),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
