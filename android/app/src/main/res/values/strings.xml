@@ -17,6 +17,11 @@
     <string name="engine_url_invalid">需为 http(s)://主机[:端口]，不带路径与参数</string>
     <string name="engine_url_hint">手机连电脑：在电脑执行 adb reverse tcp:8730 tcp:8730；模拟器把 127.0.0.1 换成 10.0.2.2</string>
 
+    <string name="download_executor_label">下载执行者</string>
+    <string name="download_executor_engine">引擎</string>
+    <string name="download_executor_local">本地直链</string>
+    <string name="download_executor_hint">本地直链：手机自己下嗅探到的那条 HTTP 直链，断点存 .part，不经过引擎，也不做音视频合并。嗅探始终走引擎。切换会丢弃当前下载阶段。</string>
+
     <string name="selfcheck_title">隐私自检</string>
     <string name="selfcheck_cookie">Cookie 策略</string>
     <string name="selfcheck_listen">监听地址</string>

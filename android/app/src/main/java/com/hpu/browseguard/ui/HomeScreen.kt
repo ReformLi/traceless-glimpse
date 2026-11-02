@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
+import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DrmSystem
@@ -72,6 +73,7 @@ fun HomeRoute(viewModel: HomeViewModel = viewModel()) {
         onRefresh = viewModel::refreshConnection,
         onEditEngineUrl = viewModel::editEngineUrl,
         onSaveEngineUrl = viewModel::saveEngineUrl,
+        onSelectDownloadExecutor = viewModel::selectDownloadExecutor,
         onEditSourceUrl = viewModel::editSourceUrl,
         onSniff = viewModel::sniff,
         onPickFormats = viewModel::pickFormats,
@@ -90,6 +92,7 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onEditEngineUrl: (String) -> Unit,
     onSaveEngineUrl: () -> Unit,
+    onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onEditSourceUrl: (String) -> Unit,
     onSniff: () -> Unit,
     onPickFormats: () -> Unit,
@@ -124,7 +127,7 @@ fun HomeScreen(
             EngineStatusCard(state.connection, onRefresh)
 
             Spacer(Modifier.height(16.dp))
-            EngineUrlCard(state, onEditEngineUrl, onSaveEngineUrl)
+            EngineUrlCard(state, onEditEngineUrl, onSaveEngineUrl, onSelectDownloadExecutor)
 
             val connected = state.connection as? Connection.Connected
             if (connected != null) {
@@ -234,7 +237,12 @@ private fun EngineStatusCard(connection: Connection, onRefresh: () -> Unit) {
 }
 
 @Composable
-private fun EngineUrlCard(state: HomeUiState, onEdit: (String) -> Unit, onSave: () -> Unit) {
+private fun EngineUrlCard(
+    state: HomeUiState,
+    onEdit: (String) -> Unit,
+    onSave: () -> Unit,
+    onSelectExecutor: (DownloadExecutor) -> Unit,
+) {
     BgvCard {
         CardTitle(stringResource(R.string.engine_url_label))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -261,6 +269,40 @@ private fun EngineUrlCard(state: HomeUiState, onEdit: (String) -> Unit, onSave: 
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = stringResource(R.string.download_executor_label),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            ExecutorChoice(
+                text = stringResource(R.string.download_executor_engine),
+                selected = state.downloadExecutor == DownloadExecutor.ENGINE,
+                onClick = { onSelectExecutor(DownloadExecutor.ENGINE) },
+            )
+            ExecutorChoice(
+                text = stringResource(R.string.download_executor_local),
+                selected = state.downloadExecutor == DownloadExecutor.LOCAL_DIRECT,
+                onClick = { onSelectExecutor(DownloadExecutor.LOCAL_DIRECT) },
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.download_executor_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 选中的那颗有底色——两颗并排时要一眼看出当前是哪条链路。 */
+@Composable
+private fun ExecutorChoice(text: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        FilledTonalButton(onClick = onClick) { Text(text) }
+    } else {
+        OutlinedButton(onClick = onClick) { Text(text) }
     }
 }
 
@@ -742,6 +784,7 @@ private fun HomeScreenSelectingPreview() {
             onRefresh = {},
             onEditEngineUrl = {},
             onSaveEngineUrl = {},
+            onSelectDownloadExecutor = {},
             onEditSourceUrl = {},
             onSniff = {},
             onPickFormats = {},
@@ -771,6 +814,7 @@ private fun HomeScreenRunningPreview() {
             onRefresh = {},
             onEditEngineUrl = {},
             onSaveEngineUrl = {},
+            onSelectDownloadExecutor = {},
             onEditSourceUrl = {},
             onSniff = {},
             onPickFormats = {},

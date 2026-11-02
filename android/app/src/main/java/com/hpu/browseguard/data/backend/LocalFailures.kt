@@ -37,5 +37,18 @@ internal object LocalFailures {
     fun noFormats(): BackendFailure.Local =
         BackendFailure.Local(LocalReason.NO_FORMATS, "未发现可用画质 · 引擎回空格式表，客户端本地判定")
 
+    /** 本地直链下载器自有判定的三条：措辞一律自证「客户端本地判定」，与 §19.9 同口径。 */
+    fun unsupportedLink(what: String): BackendFailure.Local =
+        BackendFailure.Local(LocalReason.UNSUPPORTED_LINK, "本地直链下载不了 · $what，客户端本地判定")
+
+    fun linkUnloadable(status: Int): BackendFailure.Local =
+        BackendFailure.Local(
+            LocalReason.LINK_UNLOADABLE,
+            "本地直链取不到内容 · 服务端回 HTTP $status，客户端本地判定",
+        )
+
+    fun disk(what: String): BackendFailure.Local =
+        BackendFailure.Local(LocalReason.DISK, "本地写入失败 · $what，客户端本地判定")
+
     private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
 }

@@ -69,14 +69,19 @@ class HttpDownloader(
     }
 
     override fun start(request: StartRequest): Flow<DownloadEvent> = flow {
+        val engine = when (request) {
+            is StartRequest.ViaEngine -> request
+            is StartRequest.ViaLocal ->
+                error("HttpDownloader 收到本地直链请求：调用方组错了 StartRequest")
+        }
         try {
             val started = client.startDownload(
                 baseUrl,
-                request.taskId,
+                engine.taskId,
                 DownloadRequest(
-                    formatSelector = request.formatSelector,
-                    namingTemplate = request.namingTemplate,
-                    postActions = request.postActions,
+                    formatSelector = engine.formatSelector,
+                    namingTemplate = engine.namingTemplate,
+                    postActions = engine.postActions,
                 ),
             )
             emit(DownloadEvent.Started(started))

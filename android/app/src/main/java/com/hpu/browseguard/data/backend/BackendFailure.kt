@@ -36,4 +36,13 @@ enum class LocalReason {
     TRANSPORT,
     NO_SNIFF_RESULTS,
     NO_FORMATS,
+
+    /** 本地直链下载器拿到的东西它下不了：非 HTTP(S)、或全是 DRM。 */
+    UNSUPPORTED_LINK,
+
+    /** 直链服务端回了 4xx/5xx：这是**站点**说的，不是引擎说的，所以仍不带 §5 码。 */
+    LINK_UNLOADABLE,
+
+    /** 手机本地写文件失败：目录不可写、空间不足、存储权限被拒。 */
+    DISK,
 }

@@ -9,13 +9,18 @@ import com.hpu.browseguard.data.EngineFailure
 import com.hpu.browseguard.data.EngineException
 import com.hpu.browseguard.data.FormatSelection
 import com.hpu.browseguard.data.backend.BackendFailure
+import com.hpu.browseguard.data.backend.DownloadBackend
 import com.hpu.browseguard.data.backend.DownloadEvent
+import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.HttpDownloader
 import com.hpu.browseguard.data.backend.HttpSniffer
+import com.hpu.browseguard.data.backend.LocalDirectDownloader
+import com.hpu.browseguard.data.backend.LocalFailures
 import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
+import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.data.backend.toBackendFailure
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
@@ -75,7 +80,12 @@ data class HomeUiState(
     val selectedFormatId: String? = null,
     val namingTemplate: String = "",
     val mergeSelected: Boolean = true,
+    /** 下载交给引擎还是本机直链——全局开关，只切下载这一段。 */
+    val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
 ) {
+    /** 输出目录只能来自引擎自检白名单；本地下載也用它，授权口径不因执行者而变。 */
+    val outputDir: String?
+        get() = (connection as? Connection.Connected)?.selfcheck?.outputDirAllowlist?.firstOrNull()
     /** 输出目录只能来自引擎自检白名单；拿不到就不允许发起任务。 */
     val canSniff: Boolean
         get() = engineReady && sniff !is SniffPhase.Running
@@ -110,7 +120,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
 
-    private val _state = MutableStateFlow(HomeUiState(engineUrl = config.baseUrl, engineUrlDraft = config.baseUrl))
+    private val _state = MutableStateFlow(
+        HomeUiState(
+            engineUrl = config.baseUrl,
+            engineUrlDraft = config.baseUrl,
+            downloadExecutor = config.downloadExecutor,
+        ),
+    )
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
 
     init {
@@ -132,6 +148,19 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
         _state.update { it.copy(engineUrl = config.baseUrl, engineUrlInvalid = false) }
         refreshConnection()
+    }
+
+    /**
+     * 切换下载执行者。切完把下载流程清零：换了执行者还接着跑，
+     * 「本机 `.part`」和「引擎任务」就会各说一半。
+     */
+    fun selectDownloadExecutor(executor: DownloadExecutor) {
+        if (_state.value.downloadExecutor == executor) return
+        config.downloadExecutor = executor
+        downloadJob?.cancel()
+        _state.update {
+            it.copy(downloadExecutor = executor, download = DownloadPhase.Idle, selectedFormatId = null)
+        }
     }
 
     fun editSourceUrl(value: String) {
@@ -199,16 +228,23 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         downloadJob?.cancel()
         _state.update { it.copy(download = DownloadPhase.Preparing(TaskStatus.QUEUED), selectedFormatId = null) }
         downloadJob = viewModelScope.launch {
-            HttpDownloader(config.baseUrl, client)
+            downloadBackend()
                 .prepare(
                     PrepareRequest(
                         sourceUrl = sourceUrl,
                         cookiePolicy = connected.selfcheck.cookiePolicyDefault,
                         outputDir = outputDir,
+                        sniffResults = (snapshot.sniff as? SniffPhase.Success)?.results.orEmpty(),
                     ),
                 )
                 .collect { event -> applyDownloadEvent(event) }
         }
+    }
+
+    /** 界面按全局开关选后端，两条流程对界面是同一条——画质表那一屏的形状不因执行者而变。 */
+    private fun downloadBackend(): DownloadBackend = when (_state.value.downloadExecutor) {
+        DownloadExecutor.ENGINE -> HttpDownloader(config.baseUrl, client)
+        DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader()
     }
 
     /**
@@ -257,17 +293,33 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         if (snapshot.namingTemplateError != null) return
 
         downloadJob?.cancel()
+        val request = when (snapshot.downloadExecutor) {
+            DownloadExecutor.ENGINE -> StartRequest.ViaEngine(
+                taskId = selecting.taskId,
+                formatSelector = FormatSelection.selectorFor(format),
+                namingTemplate = snapshot.namingTemplate.trim().takeIf { it.isNotEmpty() },
+                postActions = if (snapshot.mergeSelected) listOf(PostAction(PostActionType.MERGE)) else null,
+            )
+
+            DownloadExecutor.LOCAL_DIRECT -> {
+                val link = (snapshot.sniff as? SniffPhase.Success)?.results
+                    ?.firstOrNull { localTaskId(it.mediaUrl) == format.formatId }
+                val outputDir = snapshot.outputDir
+                if (link == null || outputDir == null) {
+                    // 找不到对应直链 = 状态与画质表已脱节（中途重新嗅探过）。说清楚，不让按钮变哑。
+                    _state.update {
+                        it.copy(
+                            download = LocalFailures.unsupportedLink("嗅探结果已过期，请重新嗅探")
+                                .toDownloadPhase(),
+                        )
+                    }
+                    return
+                }
+                StartRequest.ViaLocal(link = link, outputDir = outputDir)
+            }
+        }
         downloadJob = viewModelScope.launch {
-            HttpDownloader(config.baseUrl, client)
-                .start(
-                    StartRequest(
-                        taskId = selecting.taskId,
-                        formatSelector = FormatSelection.selectorFor(format),
-                        namingTemplate = snapshot.namingTemplate.trim().takeIf { it.isNotEmpty() },
-                        postActions = if (snapshot.mergeSelected) listOf(PostAction(PostActionType.MERGE)) else null,
-                    ),
-                )
-                .collect { event -> applyDownloadEvent(event) }
+            downloadBackend().start(request).collect { event -> applyDownloadEvent(event) }
         }
     }
 
@@ -277,7 +329,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         if (running.cancelRequested) return
         _state.update { it.copy(download = running.copy(cancelRequested = true)) }
         viewModelScope.launch {
-            HttpDownloader(config.baseUrl, client).cancel(running.task.id)?.let { failure ->
+            downloadBackend().cancel(running.task.id)?.let { failure ->
                 _state.update { state ->
                     if (state.download is DownloadPhase.Running) {
                         state.copy(download = failure.toDownloadPhase())
