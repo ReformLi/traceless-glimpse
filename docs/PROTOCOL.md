@@ -1,13 +1,13 @@
-# BrowseGuard Vid 接口协议初稿（PROTOCOL v0.1）
+# BrowseGuard Vid 接口协议（PROTOCOL v0.2）
 
 | 项    | 内容                                    |
 | ---- | ------------------------------------- |
 | 文档   | `docs/PROTOCOL.md`                    |
-| 版本   | 0.1（草案）                               |
+| 版本   | 0.2（M5：`Task.outputPath`）              |
 | 适用范围 | 本地引擎 ↔ Android 客户端 ↔ CLI ↔ MCP Server |
 | 传输   | HTTP/1.1 + JSON（UTF-8）                |
 | 默认监听 | `127.0.0.1:8730`                      |
-| 协议头  | 响应携带 `X-Protocol-Version: 0.1`        |
+| 协议头  | 响应携带 `X-Protocol-Version: 0.2`        |
 | 版本策略 | 路径带 `/v1`；不兼容变更升 `/v2`                |
 
 > 本协议是“三端怎么说话”的合同。任何一端新增字段需三端确认；删除或改语义必须升版本。协议层强制约束安全边界——**某些字段不存在，比存在但被校验更可靠**。
@@ -92,7 +92,8 @@
   },
   "error": null,
   "createdAt": "2026-10-30T08:00:00Z",
-  "updatedAt": "2026-10-30T08:01:20Z"
+  "updatedAt": "2026-10-30T08:01:20Z",
+  "outputPath": null                  // 仅 done 且有真实产物时非空
 }
 ```
 
@@ -108,6 +109,7 @@
 | `outputDir` | string | 是 | 绝对路径；引擎侧校验 |
 | `status` | enum | 是 | 见第 4 节状态机 |
 | `error` | object \| null | 否 | 仅 `failed` / `cancelled` 可非空 |
+| `outputPath` | string \| null | 否 | 仅 `done` 且引擎产出真实文件时非空；stub / 未完成 / 失败 / 取消一律 `null` |
 
 > 注意：**没有** `cookieFile`、`browser`、`userAgent`、`headers` 字段。请求头由引擎按站点策略生成，客户端不可注入任意头。
 
@@ -351,7 +353,7 @@
 }
 ```
 
-任务不在 `awaiting_selection` 或 `sniffing` 完成态 → `409 TASK_STATE_CONFLICT`。
+任务状态不是 `awaiting_selection` → `409 TASK_STATE_CONFLICT`。嗅探尚未完成时应先轮询任务状态，不视为可查询格式。
 
 ### 6.4 `POST /v1/tasks/{id}/download`
 
@@ -396,29 +398,30 @@
 ### 6.6 `GET /v1/health`
 
 ```jsonc
-{ "status": "ok", "version": "0.1.0", "protocolVersion": "0.1", "uptimeSeconds": 3600 }
+{ "status": "ok", "version": "0.1.0", "protocolVersion": "0.2", "uptimeSeconds": 3600 }
 ```
 
 ---
 
 ## 7. CLI 映射（`bgv`）
 
-| 命令                                                                                              | 对应 API                          | 说明                |
-| ----------------------------------------------------------------------------------------------- | ------------------------------- | ----------------- |
-| `bgv sniff <url> [--cookie none\|lazy\|explicit] [--proxy <id>] [--json]`                       | `POST /tasks` (mode=sniff) + 轮询 | 仅嗅探               |
-| `bgv download <url> [--format <selector>] [--output <dir>] [--name <tpl>] [--post <action>...]` | `POST /tasks` (mode=download)   | 一步下载              |
-| `bgv probe <taskId> [--json]`                                                                   | `GET /tasks/{id}/formats`       | 查看格式              |
-| `bgv pick <taskId> --format <selector>`                                                         | `POST /tasks/{id}/download`     | 选择后下载             |
-| `bgv status <taskId> [--watch]`                                                                 | `GET /tasks/{id}`               | 查看状态；`--watch` 轮询 |
-| `bgv cancel <taskId>`                                                                           | `POST /tasks/{id}/cancel`       | 取消                |
-| `bgv tasks [--status <s>] [--limit N]`                                                          | `GET /tasks`                    | 列表                |
-| `bgv selfcheck`                                                                                 | `GET /privacy/selfcheck`        | 隐私自检              |
+| 命令                                                                 | 对应 API                          | 说明                |
+| ------------------------------------------------------------------ | ------------------------------- | ----------------- |
+| `bgv sniff <url> [--output <dir>] [--json]`                        | `POST /tasks` (mode=download，无 selector) + 轮询至 `awaiting_selection` | 仅嗅探，任务保持可继续下载 |
+| `bgv formats <taskId> [--json]`                                    | `GET /tasks/{id}/formats`       | 查看格式              |
+| `bgv download <taskId> --format <selector> [--watch] [--json]`     | `POST /tasks/{id}/download` + 轮询至终态 | 选择后下载             |
+| `bgv download-url <url> [--format <selector>] [--output <dir>] [--watch]` | `POST /tasks` (mode=download) + 轮询至终态 | 嗅探 + 下载一步到位 |
+| `bgv status <taskId> [--json]`                                     | `GET /tasks/{id}`               | 查看状态              |
+| `bgv tasks [--limit 1..200] [--json]`                              | `GET /tasks`                    | 列表                |
+| `bgv cancel <taskId> [--json]`                                     | `POST /tasks/{id}/cancel`       | 取消非终态任务           |
 
 **CLI 约束**
 
-- `--format` 接受结构化语法（如 `max_height=1080`、`exact=137+140`、`audio_only`），不接受原始 `-f` 字符串。
-- `--output` 由引擎校验；CLI 不做本地路径预判。
-- 退出码：`0` 成功；`2` 输入错误；`3` 安全拒绝；`4` 内容不可用；`5` 网络；`6` 存储；`7` 内部错误。与 `ErrorPayload.category` 对应。
+- `sniff` 与 `download-url` 都创建 `mode=download` 任务，差别只在是否携带 `formatSelector`：不带则停在 `awaiting_selection`，可继续 `formats` / `download`。`mode=sniff` 以 `done` 为终态，会导致后续格式查询与下载返回 `409`，CLI 不使用该模式。
+- `--format` 接受结构化语法（如 `max_height=1080`、`exact=137`、`audio_only`），不接受原始 `-f` 字符串。
+- `--output` 由引擎校验；缺省取 `GET /privacy/selfcheck` 的输出目录白名单首项，CLI 不做本地路径预判。
+- `--json` 模式下 stdout 只有协议 JSON，提示与进度全部走 stderr。
+- 退出码：`0` 成功；`2` 输入错误；`3` 安全拒绝；`4` 内容不可用；`5` 引擎不可达；`6` 存储错误；`7` 内部错误；`8` 用户主动取消（本地语义，不占用协议码）。`2`–`6` 与 `ErrorPayload.category` 对应，`7` / `8` 为 CLI 本地退出语义。
 
 ---
 
@@ -426,15 +429,20 @@
 
 | 工具名        | 入参                                                          | 返回                                 | 对应 API             |
 | ---------- | ----------------------------------------------------------- | ---------------------------------- | ------------------ |
-| `sniff`    | `{ url, cookiePolicy?, proxyId? }`                          | `{ taskId, items: SniffResult[] }` | `POST /tasks` + 轮询 |
-| `probe`    | `{ taskId }`                                                | `{ items: FormatInfo[] }`          | `GET /formats`     |
-| `download` | `{ taskId, formatSelector, namingTemplate?, postActions? }` | `{ taskId, status }`               | `POST /download`   |
-| `status`   | `{ taskId }`                                                | `{ status, progress, error? }`     | `GET /tasks/{id}`  |
+| `sniff`    | `{ url, outputDir?, engineUrl? }`                           | `{ taskId, task, sniffResults, formats }` | `POST /tasks` (mode=download，无 selector) + 轮询至 `awaiting_selection` |
+| `probe`    | `{ taskId, engineUrl? }`                                    | `{ taskId, items: FormatInfo[] }`  | `GET /formats`     |
+| `download` | `{ taskId, format?, timeoutSeconds?, engineUrl? }`          | 终态 `Task`                         | `POST /download` + 轮询至终态 |
+| `status`   | `{ taskId, engineUrl? }`                                    | `Task`                             | `GET /tasks/{id}`  |
+| `cancel`   | `{ taskId, engineUrl? }`                                    | `Task`                             | `POST /cancel`     |
 
 **MCP 约束**
 
-- 工具入参 schema 与 HTTP 请求体一致；不额外暴露 `outputDir` 之外的路径字段。
+- `sniff` 不创建 `mode=sniff` 任务：任务停在 `awaiting_selection`，后续 `probe` / `download` 才不会撞上 `409`。工具固定使用 `CookiePolicy.NONE`。
+- `download` 的 `format` 缺省为 `best`，可选 `best` / `audio_only` / `max_height=N` / `exact=<formatId>`；`timeoutSeconds` 取值 1..86400，缺省 21600，超时返回本地错误 `download_timeout`（任务本身不因此停止）。
+- 工具入参 schema 与 HTTP 请求体一致；不额外暴露 `outputDir` 之外的路径字段，不提供 Cookie 文件或浏览器类型。
 - `download` 工具在 `DRM_PROTECTED` 时必须返回结构化错误，不得静默尝试其他格式。
+- 成功结果 `isError=false`，`content[0].text` 为协议 JSON；引擎协议错误 `isError=true` 且原样返回 `ErrorPayload`；客户端本地事件使用独立 `localError` 命名空间（如 `engine_unreachable` / `sniff_timeout` / `task_cancelled`），不借用 §5 协议码。
+- stdio 传输：stdout 只承载 JSON-RPC，日志一律走 stderr。
 - 工具描述中明确“不处理 DRM、不上传媒体内容”。
 
 ---
@@ -517,17 +525,18 @@ curl -s -X POST http://127.0.0.1:8730/v1/tasks \
 - [ ] 同一 `Idempotency-Key` 重复创建返回同一 `taskId`。
 - [ ] 终态任务再次 `POST /download` → `409 TASK_STATE_CONFLICT`。
 - [ ] CLI 退出码与 `category` 映射正确。
-- [ ] MCP 四个工具入参 schema 与 HTTP 一致。
+- [ ] `done` 任务的 `outputPath` 指向真实产物；stub / 失败 / 取消任务为 `null`。
+- [ ] MCP 五个工具（含 `cancel`）入参 schema 与 HTTP 一致。
 
 ---
 
-## 11. 待定项（v0.1 不锁定）
+## 11. 待定项（v0.2 不锁定）
 
-1. **进度推送**：v0.1 仅轮询；SSE `/events` 作为 P1，需定义事件类型（`status_changed`、`progress`、`error`）。
-2. **未知字段策略**：严格拒绝（`400`）还是忽略并警告？建议 v0.1 严格拒绝，避免客户端误传敏感字段。
-3. **代理列表管理接口**：`GET/POST /v1/proxies` 是否对外暴露，还是仅配置文件管理？建议 v0.1 仅配置文件，减少攻击面。
+1. **进度推送**：v0.2 仅轮询；SSE `/events` 作为 P1，需定义事件类型（`status_changed`、`progress`、`error`）。
+2. **未知字段策略**：严格拒绝（`400`）还是忽略并警告？建议 v0.2 严格拒绝，避免客户端误传敏感字段。
+3. **代理列表管理接口**：`GET/POST /v1/proxies` 是否对外暴露，还是仅配置文件管理？建议 v0.2 仅配置文件，减少攻击面。
 4. **多用户/多租户**：明确不支持；引擎为单用户本地服务。
-5. **OpenAPI 导出**：v0.1 手写文档；M1 结束前补 `openapi.yaml` 并用 CI 校验与示例一致。
+5. **OpenAPI 导出**：v0.2 手写文档；补 `openapi.yaml` 并用 CI 校验与示例一致。
 
 ---
 

@@ -20,8 +20,8 @@
 | `android/` | Android 客户端骨架（M3 接入构建，见 `android/README.md`） |
 | `engine/` | 本地引擎（Python 3.11+ / FastAPI / Pydantic v2） |
 | `shared/` | KMP 协议模型（kotlinx.serialization），Android / CLI / MCP 共用 |
-| `cli/` | `bgv` 命令行工具（Kotlin/JVM，复用 `:shared`，M2+ 实现） |
-| `mcp/` | MCP Server（Kotlin/JVM，复用 `:shared`，M2+ 实现） |
+| `cli/` | `bgv` 命令行工具（Kotlin/JVM，复用 `:shared` 与 `:engine-client`） |
+| `mcp/` | MCP Server（Kotlin/JVM，仅 stdio transport，复用 `:shared` 与 `:engine-client`） |
 | `docs/` | PRD 与接口协议，协议是三端的合同 |
 | `scripts/` | Schema 一致性校验、冒烟测试脚本 |
 | `.github/workflows/` | CI：Kotlin 编译 + Python 测试 + Schema 校验 |
@@ -43,6 +43,47 @@ python -m venv .venv
 # Schema 一致性校验（阶段 4 起可用）
 python scripts/check_schema.py
 ```
+
+### 命令行（bgv）
+
+```powershell
+.\gradlew.bat :cli:installDist
+.\cli\build\install\bgv\bin\bgv.bat sniff https://example.com/watch
+.\cli\build\install\bgv\bin\bgv.bat formats <taskId>
+.\cli\build\install\bgv\bin\bgv.bat download <taskId> --format=best --watch
+.\cli\build\install\bgv\bin\bgv.bat download-url https://example.com/watch --format=max_height=720
+```
+
+`--json` 模式下 stdout 只有协议 JSON，提示与进度全部走 stderr，可直接接入管道（如 `bgv sniff ... --json | jq '.formats'`）。退出码：`0` 成功、`2` 输入错误、`3` 安全拒绝、`4` 内容不可用、`5` 引擎不可达、`6` 存储错误、`7` 内部错误、`8` 用户主动取消。
+
+Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文仍显示为乱码，先执行 `chcp 65001` 切到 UTF-8 代码页。
+
+### MCP Server（Claude Desktop / Cursor）
+
+```powershell
+.\gradlew.bat :mcp:installDist
+.\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat
+```
+
+只支持 stdio：stdout 仅承载 JSON-RPC，所有日志走 stderr。配置示例（`BGV_ENGINE_URL` 可按需覆盖）：
+
+```json
+{
+  "mcpServers": {
+    "browseguard-vid": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "E:\\code\\android\\BrowseGuardVid\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
+      ],
+      "env": { "BGV_ENGINE_URL": "http://127.0.0.1:8730" }
+    }
+  }
+}
+```
+
+工具：`sniff`（嗅探并返回格式）、`probe`（查格式表）、`download`（下发并轮询到终态，支持 `timeoutSeconds`）、`status`、`cancel`。从零验收步骤见 `docs/MCP_USER_GUIDE.md`，工具细节见 `mcp/README.md`。
+
 
 ## 如何贡献
 

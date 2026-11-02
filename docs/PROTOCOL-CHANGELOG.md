@@ -1,7 +1,34 @@
 # BrowseGuard Vid 协议变更记录（PROTOCOL-CHANGELOG）
 
-记录 `docs/PROTOCOL.md` 正文之外的**增量裁决**。协议正文仍以 `docs/PROTOCOL.md` v0.1 为准，
+记录 `docs/PROTOCOL.md` 正文之外的**增量裁决**。协议正文仍以 `docs/PROTOCOL.md` v0.2 为准，
 本文件不改动正文；条目最终是否并入正式协议版本，由下一版协议评审时确认。
+
+## M5 阶段裁决（2026-11-02）
+
+### `Task.outputPath`（协议 0.1 → 0.2）
+
+来源：**M5 阶段裁决，非协议 v0.1 原文**。
+
+- `Task` 新增可空字段 `outputPath`：仅 `status=done` 且引擎产出真实文件时非空；stub、未完成、失败、取消一律 `null`。
+- 写入时机：真实下载在合并成功后、置 `done` 之前写入；失败/取消不会带出半成品路径。
+- 持久化：`tasks` 表新增 `output_path` 列（`PRAGMA user_version` 1 → 2），旧库自动迁移，历史任务保持 `null`。
+- 三端同步：`engine/models.py`、`shared/.../model/Task.kt`、`engine/schema/task.json` ↔ `shared/schema/task.json`；Android 完成卡片仅在非空时展示「文件位置」。
+- 协议版本升 `0.2`：响应头 `X-Protocol-Version: 0.2`；客户端对缺失/不符的版本头按传输失败处理。
+
+### sniff 语义：创建 `mode=download` + 空选择器
+
+来源：**M5 阶段裁决**（修正 §7/§8 的链路断点）。
+
+- CLI `bgv sniff` 与 MCP `sniff` 不创建 `mode=sniff` 任务：统一创建 `mode=download` 且不带 `formatSelector` 的任务，任务停在 `awaiting_selection`，`sniff-results` / `formats` 可继续查询。
+- 原因：`mode=sniff` 以 `done` 为终态，后续 `probe` / `download` 会返回 `409 TASK_STATE_CONFLICT`，形成不可下载的死链。
+- 文档同步：§7 / §8 的 sniff 行已改为上述语义。
+
+### MCP 新增第 5 个工具 `cancel`
+
+来源：**M5 阶段裁决**。
+
+- `cancel { taskId }` → `POST /v1/tasks/{id}/cancel`，返回 `{ taskId, status }`；终态任务仍按协议返回 `409 TASK_STATE_CONFLICT`。
+- 用于 AI 处理大文件时响应用户「停止」指令。
 
 ## M0 阶段裁决（2026-10-31）
 
