@@ -95,7 +95,14 @@ class LocalTimeoutTest {
         assertTrue(
             "扫描集缺文件：$seen",
             seen.containsAll(
-                setOf("HomeViewModel.kt", "HomeScreen.kt", "EngineClient.kt", "HttpSniffer.kt", "LocalFailures.kt"),
+                setOf(
+                    "HomeViewModel.kt",
+                    "HomeScreen.kt",
+                    "EngineClient.kt",
+                    "HttpSniffer.kt",
+                    "HttpDownloader.kt",
+                    "LocalFailures.kt",
+                ),
             ),
         )
     }

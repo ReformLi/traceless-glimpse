@@ -58,6 +58,27 @@ class LocalRefusalTest {
         assertTrue("客户端用协议枚举的身份字段构造本地失败：$offenders", offenders.isEmpty())
     }
 
+    /**
+     * 结构守卫②（第 2 步④）：`BackendFailure.Protocol` 只许在 `EngineFailures.kt` 构造一次。
+     *
+     * 接口本身拦不住手搓——谁都能 `BackendFailure.Protocol(ErrorCode.NO_MEDIA_FOUND, …)`
+     * 造一个引擎没发过的码，屏上与引擎审计行对不上。把「唯一构造点」钉成字面量，
+     * 将来真要开第二处（比如假引擎）必须先来改这条断言。
+     */
+    @Test
+    fun protocolFailuresAreConstructedAtASingleSite() {
+        val sites = mutableListOf<String>()
+        scannedFiles().forEach { file ->
+            file.readLines().forEachIndexed { index, line ->
+                if (PROTOCOL_CTOR in line) sites += "${file.name}:${index + 1}"
+            }
+        }
+        assertTrue(
+            "`BackendFailure.Protocol` 只允许在 EngineFailures.kt 出现一次，实际 $sites",
+            sites.size == 1 && sites[0].startsWith("EngineFailures.kt"),
+        )
+    }
+
     /** 守卫别扫成空集，也别弱到抓不住被点名的那次伪造。 */
     @Test
     fun guardActuallyBites() {
@@ -65,6 +86,8 @@ class LocalRefusalTest {
         assertTrue("扫描路径没找对（工作目录应为 android/app）：$seen", seen.contains("HomeViewModel.kt"))
         val bites = OFFENDER_REGEX.containsMatchIn("ErrorCode.FORMAT_UNAVAILABLE.name,")
         assertTrue("正则抓不住 `ErrorCode.FORMAT_UNAVAILABLE.name` 这种写法，守卫是假的", bites)
+        val ctorBites = "BackendFailure.Protocol(ErrorCode.NO_MEDIA_FOUND, true, \"x\", null)".contains(PROTOCOL_CTOR)
+        assertTrue("锚点抓不住手搓的协议失败，守卫是假的", ctorBites)
     }
 
     private fun scannedFiles(): List<File> =
@@ -85,5 +108,6 @@ class LocalRefusalTest {
     private companion object {
         const val SRC_ROOT = "src/main/java/com/hpu/browseguard"
         val OFFENDER_REGEX = Regex("""ErrorCode\.[A-Z][A-Z0-9_]*\.(name|retryable)\b""")
+        const val PROTOCOL_CTOR = "BackendFailure.Protocol("
     }
 }

@@ -9,13 +9,14 @@ import com.hpu.browseguard.data.EngineFailure
 import com.hpu.browseguard.data.EngineException
 import com.hpu.browseguard.data.FormatSelection
 import com.hpu.browseguard.data.backend.BackendFailure
+import com.hpu.browseguard.data.backend.DownloadEvent
+import com.hpu.browseguard.data.backend.HttpDownloader
 import com.hpu.browseguard.data.backend.HttpSniffer
-import com.hpu.browseguard.data.backend.LocalFailures
+import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffRequest
-import com.hpu.browseguard.data.backend.TERMINAL_STATUSES
+import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.toBackendFailure
-import com.hpu.browseguard.shared.model.DownloadRequest
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.PostAction
@@ -23,18 +24,13 @@ import com.hpu.browseguard.shared.model.PostActionType
 import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.Task
-import com.hpu.browseguard.shared.model.TaskCreateRequest
-import com.hpu.browseguard.shared.model.TaskMode
 import com.hpu.browseguard.shared.model.TaskStatus
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 
 /** 引擎连接状态。 */
 sealed interface Connection {
@@ -203,34 +199,42 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         downloadJob?.cancel()
         _state.update { it.copy(download = DownloadPhase.Preparing(TaskStatus.QUEUED), selectedFormatId = null) }
         downloadJob = viewModelScope.launch {
-            val baseUrl = config.baseUrl
-            val phase = try {
-                val created = client.createTask(
-                    baseUrl,
-                    TaskCreateRequest(
+            HttpDownloader(config.baseUrl, client)
+                .prepare(
+                    PrepareRequest(
                         sourceUrl = sourceUrl,
-                        mode = TaskMode.DOWNLOAD,
                         cookiePolicy = connected.selfcheck.cookiePolicyDefault,
                         outputDir = outputDir,
                     ),
                 )
-                val ready = awaitAwaitingSelection(baseUrl, created)
-                if (ready.status == TaskStatus.AWAITING_SELECTION) {
-                    val formats = client.formats(baseUrl, ready.id)
-                    if (formats.isEmpty()) {
-                        LocalFailures.noFormats().toDownloadPhase()
-                    } else {
-                        DownloadPhase.Selecting(ready.id, formats)
-                    }
-                } else {
-                    ready.toFinalPhase()
-                }
-            } catch (e: EngineException) {
-                e.failure.toBackendFailure().toDownloadPhase()
-            } catch (e: TimeoutCancellationException) {
-                LocalFailures.prepareTimeout().toDownloadPhase()
+                .collect { event -> applyDownloadEvent(event) }
+        }
+    }
+
+    /**
+     * 事件 → 界面镜像。写入条件与改造前一致：中间态各有一句「别覆盖更新的阶段」，
+     * 终态与失败一律落盘。
+     */
+    private fun applyDownloadEvent(event: DownloadEvent) {
+        when (event) {
+            is DownloadEvent.Preparing -> _state.update { state ->
+                if (state.download !is DownloadPhase.Preparing) return@update state
+                state.copy(download = DownloadPhase.Preparing(event.status))
             }
-            _state.update { it.copy(download = phase) }
+
+            is DownloadEvent.Selecting ->
+                _state.update { it.copy(download = DownloadPhase.Selecting(event.taskId, event.formats)) }
+
+            is DownloadEvent.Started -> _state.update { it.copy(download = DownloadPhase.Running(event.task)) }
+
+            // 只有已经是 Running 才采纳轮询结果，并把界面上的「取消已请求」标记带过去
+            is DownloadEvent.Progress -> _state.update { state ->
+                val previous = state.download as? DownloadPhase.Running ?: return@update state
+                state.copy(download = DownloadPhase.Running(event.task, previous.cancelRequested))
+            }
+
+            is DownloadEvent.Terminal -> _state.update { it.copy(download = event.task.toFinalPhase()) }
+            is DownloadEvent.Failed -> _state.update { it.copy(download = event.failure.toDownloadPhase()) }
         }
     }
 
@@ -254,40 +258,29 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
         downloadJob?.cancel()
         downloadJob = viewModelScope.launch {
-            val baseUrl = config.baseUrl
-            try {
-                val started = client.startDownload(
-                    baseUrl,
-                    selecting.taskId,
-                    DownloadRequest(
+            HttpDownloader(config.baseUrl, client)
+                .start(
+                    StartRequest(
+                        taskId = selecting.taskId,
                         formatSelector = FormatSelection.selectorFor(format),
                         namingTemplate = snapshot.namingTemplate.trim().takeIf { it.isNotEmpty() },
                         postActions = if (snapshot.mergeSelected) listOf(PostAction(PostActionType.MERGE)) else null,
                     ),
                 )
-                _state.update { it.copy(download = DownloadPhase.Running(started)) }
-                val settled = awaitDownloadTerminal(baseUrl, started)
-                _state.update { it.copy(download = settled.toFinalPhase()) }
-            } catch (e: EngineException) {
-                _state.update { it.copy(download = e.failure.toBackendFailure().toDownloadPhase()) }
-            } catch (e: TimeoutCancellationException) {
-                _state.update { it.copy(download = LocalFailures.downloadTimeout().toDownloadPhase()) }
-            }
+                .collect { event -> applyDownloadEvent(event) }
         }
     }
 
-    /** 取消只发协议请求，终态仍由轮询循环写入——避免两处同时改状态。 */
+    /** 取消只发协议请求，终态仍由 [startDownload] 那条流写入——避免两处同时改状态。 */
     fun cancelDownload() {
         val running = _state.value.download as? DownloadPhase.Running ?: return
         if (running.cancelRequested) return
         _state.update { it.copy(download = running.copy(cancelRequested = true)) }
         viewModelScope.launch {
-            try {
-                client.cancelTask(config.baseUrl, running.task.id)
-            } catch (e: EngineException) {
+            HttpDownloader(config.baseUrl, client).cancel(running.task.id)?.let { failure ->
                 _state.update { state ->
                     if (state.download is DownloadPhase.Running) {
-                        state.copy(download = e.failure.toBackendFailure().toDownloadPhase())
+                        state.copy(download = failure.toDownloadPhase())
                     } else {
                         state
                     }
@@ -299,38 +292,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     fun resetDownload() {
         downloadJob?.cancel()
         _state.update { it.copy(download = DownloadPhase.Idle, selectedFormatId = null) }
-    }
-
-    private suspend fun awaitAwaitingSelection(baseUrl: String, initial: Task): Task {
-        var current = initial
-        withTimeout(LocalFailures.PREPARE_MS) {
-            while (current.status != TaskStatus.AWAITING_SELECTION && current.status !in TERMINAL_STATUSES) {
-                delay(LocalFailures.POLL_INTERVAL_MS)
-                current = client.task(baseUrl, current.id)
-                // 与 awaitTerminal 同型：不回写则 Preparing.status 永远停在初始 QUEUED，
-                // 界面读到的「画质解析中（queued）」是过时报数
-                _state.update { state ->
-                    if (state.download !is DownloadPhase.Preparing) return@update state
-                    state.copy(download = DownloadPhase.Preparing(current.status))
-                }
-            }
-        }
-        return current
-    }
-
-    private suspend fun awaitDownloadTerminal(baseUrl: String, initial: Task): Task {
-        var current = initial
-        withTimeout(LocalFailures.DOWNLOAD_MS) {
-            while (current.status !in TERMINAL_STATUSES) {
-                delay(LocalFailures.DOWNLOAD_POLL_INTERVAL_MS)
-                current = client.task(baseUrl, current.id)
-                _state.update { state ->
-                    val previous = state.download as? DownloadPhase.Running ?: return@update state
-                    state.copy(download = DownloadPhase.Running(current, previous.cancelRequested))
-                }
-            }
-        }
-        return current
     }
 
     private suspend fun connect() {

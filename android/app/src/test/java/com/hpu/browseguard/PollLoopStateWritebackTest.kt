@@ -10,11 +10,11 @@ import java.io.File
  * 界面看的是 `_state` 里的 sealed 镜像。轮询只 return 不回写，镜像就永远停在点击那一刻的
  * 初始 `QUEUED`，于是 `sniffing` / `format_preparing` 两条屏显文案变成永远不会命中的死分支。
  *
- * 搬迁记录（§19.5 迁移影响 1）：嗅探那条环原来叫 `HomeViewModel.awaitTerminal()`，
- * 现在住在 `data/backend/HttpSniffer.kt` 里，「回写」的形式从 `_state.update` 换成发 `SniffEvent.Status`，
- * 语义不变——守卫跟着换了锚点，并用「删掉发 Status 那行」的变异体复跑过（见 §20 取证）。
- * 另外两条环（`awaitAwaitingSelection` / `awaitDownloadTerminal`）第 2 步② 才搬，
- * 锚点仍指向 ViewModel。
+ * 搬迁记录（§19.5 迁移影响 1）：三条环原来都叫 `HomeViewModel.await*()`，
+ * 现在分别住在 `data/backend/HttpSniffer.kt` 和 `data/backend/HttpDownloader.kt` 里，
+ * 「回写」的形式从 `_state.update` 换成发 `*Event.Status` / `*Event.Preparing` /
+ * `*Event.Progress`，语义不变——守卫跟着换了锚点，并各用「删掉发状态那行」的变异体复跑过
+ * （见 §20 取证）。
  *
  * 为什么还是静态守卫而不是行为单测：`HomeViewModel` 现在仍然自己 `new` 后端，
  * 假引擎进不来。M4 第 3 步落 FakeBackend 后整族换成行为断言。
@@ -42,15 +42,15 @@ class PollLoopStateWritebackTest {
             "SniffPhase.Running 停在初始 QUEUED，界面拿不到 sniffing",
         ),
         Loop(
-            "$SRC_ROOT/ui/HomeViewModel.kt",
-            "fun awaitAwaitingSelection(",
-            "DownloadPhase.Preparing(",
+            "$SRC_ROOT/data/backend/HttpDownloader.kt",
+            "fun prepare(",
+            "emit(DownloadEvent.Preparing(",
             "Preparing.status 停在初始 QUEUED，「画质解析中」是过时报数",
         ),
         Loop(
-            "$SRC_ROOT/ui/HomeViewModel.kt",
-            "fun awaitDownloadTerminal(",
-            "DownloadPhase.Running(",
+            "$SRC_ROOT/data/backend/HttpDownloader.kt",
+            "fun start(",
+            "emit(DownloadEvent.Progress(",
             "进度条不刷新，取消后的冻结进度也无从写回",
         ),
     )
