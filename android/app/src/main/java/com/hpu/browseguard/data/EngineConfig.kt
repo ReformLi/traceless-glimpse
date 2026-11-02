@@ -2,6 +2,7 @@ package com.hpu.browseguard.data
 
 import android.content.Context
 import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.SniffExecutor
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /** 引擎地址校验与持久化。 */
@@ -32,6 +33,9 @@ interface EngineSettings {
     fun save(raw: String): Boolean
 
     var downloadExecutor: DownloadExecutor
+
+    /** 嗅探交给电脑引擎还是手机 WebView；默认电脑，界面可显式切换。 */
+    var sniffExecutor: SniffExecutor
 }
 
 /**
@@ -56,8 +60,8 @@ class EngineConfig(context: Context) : EngineSettings {
     /**
      * 下载交给谁：引擎任务还是本机直链。全局开关，默认引擎。
      *
-     * 只切下载执行者——嗅探固定走引擎，所以「引擎离线时本机上有没有媒体可下」
-     * 仍然取决于引擎，这是 M4 第 3 步（`LocalWebViewSniffer`）才补的那一段。
+     * 与 [sniffExecutor] 分开：嗅探可以在手机 WebView 跑、下载仍交给电脑引擎
+     * （电脑可达时）；自动降级到「电脑不可达」时两者会一起切到本机。
      */
     override var downloadExecutor: DownloadExecutor
         get() = DownloadExecutor.values().firstOrNull { it.name == prefs.getString(KEY_DOWNLOAD_EXECUTOR, null) }
@@ -66,8 +70,16 @@ class EngineConfig(context: Context) : EngineSettings {
             prefs.edit().putString(KEY_DOWNLOAD_EXECUTOR, value.name).apply()
         }
 
+    override var sniffExecutor: SniffExecutor
+        get() = SniffExecutor.values().firstOrNull { it.name == prefs.getString(KEY_SNIFF_EXECUTOR, null) }
+            ?: SniffExecutor.ENGINE
+        set(value) {
+            prefs.edit().putString(KEY_SNIFF_EXECUTOR, value.name).apply()
+        }
+
     private companion object {
         const val KEY_BASE_URL = "base_url"
         const val KEY_DOWNLOAD_EXECUTOR = "download_executor"
+        const val KEY_SNIFF_EXECUTOR = "sniff_executor"
     }
 }

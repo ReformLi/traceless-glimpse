@@ -70,7 +70,7 @@ class HomeViewModelBehaviorTest {
         vm.sniff()
 
         assertEquals(SniffPhase.Running(TaskStatus.QUEUED), vm.state.value.sniff)
-        assertEquals("裁决 2：嗅探仍固定走引擎", SniffExecutor.ENGINE, fakes.provider.lastSniffExecutor)
+        assertEquals("默认嗅探方式仍是电脑引擎", SniffExecutor.ENGINE, fakes.provider.lastSniffExecutor)
         val request = fakes.provider.sniffBackend.requests.single()
         assertEquals("https://example.com/watch", request.sourceUrl)
         assertEquals(CookiePolicy.LAZY, request.cookiePolicy)
@@ -173,6 +173,141 @@ class HomeViewModelBehaviorTest {
         assertFalse("本地模式下编程调用也勾不上", vm.state.value.mergeSelected)
         val audit = fakes.audit.of("merge_ignored").single()
         assertEquals("local_direct_locked", audit.fields["reason"])
+    }
+
+    /**
+     * 电脑不可达：自动降级到手机 WebView，**并且**一起切到本地下载——
+     * 电脑都连不上，引擎下载这条腿不可能走通。提示与审计都必须留下。
+     */
+    @Test
+    fun engineConnectFailureFallsBackToLocalSniffAndDownload() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        assertEquals(listOf(SniffExecutor.ENGINE), fakes.provider.sniffExecutors)
+
+        fakes.provider.sniffBackend.emit(
+            SniffEvent.Failed(LocalFailures.engineUnreachable("无法连接引擎：Connection refused")),
+        )
+        fakes.provider.sniffBackend.close()
+
+        assertEquals(
+            "降级必须真的换腿并重试",
+            listOf(SniffExecutor.ENGINE, SniffExecutor.LOCAL_WEBVIEW),
+            fakes.provider.sniffExecutors,
+        )
+        assertEquals(SniffExecutor.LOCAL_WEBVIEW, vm.state.value.sniffExecutor)
+        assertEquals(DownloadExecutor.LOCAL_DIRECT, vm.state.value.downloadExecutor)
+        assertTrue("用户必须看得见降级：${vm.state.value.sniffNotice}", vm.state.value.sniffNotice!!.contains("电脑不可达"))
+        assertEquals("设置也要落盘，下一次启动不再先撞南墙", SniffExecutor.LOCAL_WEBVIEW, fakes.settings.sniffExecutor)
+        assertEquals(DownloadExecutor.LOCAL_DIRECT, fakes.settings.downloadExecutor)
+        val row = fakes.audit.of("audit_sniff_fallback").single()
+        assertEquals("pc_unreachable", row.fields["reason"])
+        assertEquals("local_webview", row.fields["to"])
+        assertEquals("local_direct", row.fields["download"])
+
+        val results = listOf(sniffResult())
+        fakes.provider.localSniffBackend.emit(SniffEvent.Results(results))
+        assertEquals(SniffPhase.Success(results), vm.state.value.sniff)
+    }
+
+    /** 引擎嗅探超时只说明这一轮慢：降级嗅探，但下载仍可留给引擎。 */
+    @Test
+    fun engineTimeoutFallsBackButKeepsEngineForDownload() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        fakes.provider.sniffBackend.emit(SniffEvent.Failed(LocalFailures.sniffTimeout()))
+        fakes.provider.sniffBackend.close()
+
+        assertEquals(SniffExecutor.LOCAL_WEBVIEW, vm.state.value.sniffExecutor)
+        assertEquals("超时不等于引擎不可用，下载先不换", DownloadExecutor.ENGINE, vm.state.value.downloadExecutor)
+        assertTrue(vm.state.value.sniffNotice!!.contains("超时"))
+        assertEquals("engine_timeout", fakes.audit.of("audit_sniff_fallback").single().fields["reason"])
+    }
+
+    /** 协议不符/传输层非连接问题不降级：换了腿也不会让协议对上。 */
+    @Test
+    fun nonConnectivityFailuresDoNotTriggerFallback() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        fakes.provider.sniffBackend.emit(SniffEvent.Failed(LocalFailures.transport("协议版本不符：响应头为 9.9")))
+        fakes.provider.sniffBackend.close()
+
+        assertEquals(listOf(SniffExecutor.ENGINE), fakes.provider.sniffExecutors)
+        assertTrue(vm.state.value.sniff is SniffPhase.Failed)
+        assertNull("这不是本地判定，也没有协议码", (vm.state.value.sniff as SniffPhase.Failed).code)
+        assertNull(vm.state.value.sniffNotice)
+        assertTrue(fakes.audit.of("audit_sniff_fallback").isEmpty())
+    }
+
+    /** 显式选「本机」且引擎离线：嗅探仍可发起，画质表也能本地合成。 */
+    @Test
+    fun localSniffWorksWithoutAnyEngineConnection() = runTest(dispatcher) {
+        val settings = FakeEngineSettings(
+            sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+            downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+        )
+        val provider = FakeBackendProvider()
+        val vm = HomeViewModel(settings, provider, FakeEngineInfo(healthResult = null), FakeAuditLogger())
+
+        assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
+        assertTrue("本机嗅探不需要引擎自检", vm.state.value.canSniff)
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+
+        assertEquals(listOf(SniffExecutor.LOCAL_WEBVIEW), provider.sniffExecutors)
+        provider.localSniffBackend.emit(SniffEvent.Results(listOf(sniffResult())))
+        assertTrue(vm.state.value.sniff is SniffPhase.Success)
+        assertTrue("本地直链的画质表不依赖引擎", vm.state.value.canPickFormats)
+    }
+
+    /** 开局引擎就不可达：默认「电脑」也得能点下去，否则自动降级没有入口。 */
+    @Test
+    fun offlineEngineStillLetsTheDefaultEngineModeStartAndFallBack() = runTest(dispatcher) {
+        val provider = FakeBackendProvider()
+        val audit = FakeAuditLogger()
+        val vm = HomeViewModel(FakeEngineSettings(), provider, FakeEngineInfo(healthResult = null), audit)
+
+        assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
+        assertTrue("引擎不可达时嗅探按钮不能灰着：降级要靠这次点击触发", vm.state.value.canSniff)
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+
+        assertEquals(listOf(SniffExecutor.LOCAL_WEBVIEW), provider.sniffExecutors)
+        assertTrue("降级提示必须可见", vm.state.value.sniffNotice != null)
+        assertEquals("pc_unreachable", audit.of("audit_sniff_fallback").single().fields["reason"])
+    }
+
+    /** 降级后本地也失败：提示必须升级为「检查网络或引擎」，不能只留一句本地超时。 */
+    @Test
+    fun aLocalFailureAfterFallbackSaysToCheckNetworkOrEngine() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        fakes.provider.sniffBackend.emit(
+            SniffEvent.Failed(LocalFailures.engineUnreachable("无法连接引擎：Connection refused")),
+        )
+        fakes.provider.sniffBackend.close()
+        fakes.provider.localSniffBackend.emit(SniffEvent.Failed(LocalFailures.webViewNoMedia()))
+
+        val failed = vm.state.value.sniff as SniffPhase.Failed
+        assertNull("本地判定不得借 §5 码", failed.code)
+        assertTrue(
+            "提示要引导排查而不是停在半句话：${vm.state.value.sniffNotice}",
+            vm.state.value.sniffNotice!!.contains(HomeViewModel.LOCAL_ALSO_FAILED),
+        )
     }
 
     private class Fakes(

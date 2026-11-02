@@ -47,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DrmSystem
@@ -79,6 +80,8 @@ fun HomeRoute(
         onRefresh = viewModel::refreshConnection,
         onEditEngineUrl = viewModel::editEngineUrl,
         onSaveEngineUrl = viewModel::saveEngineUrl,
+        onSelectSniffExecutor = viewModel::selectSniffExecutor,
+        onDismissSniffNotice = viewModel::dismissSniffNotice,
         onSelectDownloadExecutor = viewModel::selectDownloadExecutor,
         onEditSourceUrl = viewModel::editSourceUrl,
         onSniff = viewModel::sniff,
@@ -98,6 +101,8 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onEditEngineUrl: (String) -> Unit,
     onSaveEngineUrl: () -> Unit,
+    onSelectSniffExecutor: (SniffExecutor) -> Unit,
+    onDismissSniffNotice: () -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onEditSourceUrl: (String) -> Unit,
     onSniff: () -> Unit,
@@ -117,17 +122,35 @@ fun HomeScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp, vertical = 28.dp),
         ) {
-            Text(
-                text = stringResource(R.string.home_title),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = stringResource(R.string.home_subtitle),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.home_title),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.home_subtitle),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                SniffModeSwitch(
+                    selected = state.sniffExecutor,
+                    enabled = state.sniff !is SniffPhase.Running && !state.downloadInFlight,
+                    onSelect = onSelectSniffExecutor,
+                )
+            }
+
+            state.sniffNotice?.let { notice ->
+                Spacer(Modifier.height(16.dp))
+                NoticeBanner(notice, onDismissSniffNotice)
+            }
 
             Spacer(Modifier.height(24.dp))
             EngineStatusCard(state.connection, onRefresh)
@@ -320,6 +343,64 @@ private fun ExecutorChoice(text: String, selected: Boolean, enabled: Boolean, on
     }
 }
 
+/** 顶栏的嗅探方式开关：默认电脑，可显式切到本机；任务进行中禁用。 */
+@Composable
+private fun SniffModeSwitch(
+    selected: SniffExecutor,
+    enabled: Boolean,
+    onSelect: (SniffExecutor) -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = stringResource(R.string.sniff_mode_label),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ExecutorChoice(
+                text = stringResource(R.string.sniff_mode_engine),
+                selected = selected == SniffExecutor.ENGINE,
+                enabled = enabled,
+                onClick = { onSelect(SniffExecutor.ENGINE) },
+            )
+            ExecutorChoice(
+                text = stringResource(R.string.sniff_mode_local),
+                selected = selected == SniffExecutor.LOCAL_WEBVIEW,
+                enabled = enabled,
+                onClick = { onSelect(SniffExecutor.LOCAL_WEBVIEW) },
+            )
+        }
+    }
+}
+
+/** 降级/失败提示：必须看得见，也要能关掉，不能变成永久占位。 */
+@Composable
+private fun NoticeBanner(text: String, onDismiss: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+            )
+            FilledTonalButton(onClick = onDismiss) {
+                Text(stringResource(R.string.sniff_notice_dismiss))
+            }
+        }
+    }
+}
+
 @Composable
 private fun SelfcheckCard(selfcheck: SelfcheckResponse) {
     BgvCard {
@@ -413,7 +494,9 @@ private fun SniffCard(
         }
 
         val connected = state.connection as? Connection.Connected
-        if (connected != null && connected.selfcheck.outputDirAllowlist.isEmpty()) {
+        if (state.sniffExecutor == SniffExecutor.ENGINE &&
+            connected != null && connected.selfcheck.outputDirAllowlist.isEmpty()
+        ) {
             Spacer(Modifier.height(8.dp))
             Text(
                 text = stringResource(R.string.sniff_no_allowlist),
@@ -818,6 +901,8 @@ private fun HomeScreenSelectingPreview() {
             onRefresh = {},
             onEditEngineUrl = {},
             onSaveEngineUrl = {},
+            onSelectSniffExecutor = {},
+            onDismissSniffNotice = {},
             onSelectDownloadExecutor = {},
             onEditSourceUrl = {},
             onSniff = {},
@@ -848,6 +933,8 @@ private fun HomeScreenRunningPreview() {
             onRefresh = {},
             onEditEngineUrl = {},
             onSaveEngineUrl = {},
+            onSelectSniffExecutor = {},
+            onDismissSniffNotice = {},
             onSelectDownloadExecutor = {},
             onEditSourceUrl = {},
             onSniff = {},

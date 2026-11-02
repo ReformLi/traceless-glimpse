@@ -11,6 +11,7 @@ import com.hpu.browseguard.data.backend.LocalDirectDownloader
 import com.hpu.browseguard.data.backend.LocalWebViewSniffer
 import com.hpu.browseguard.data.backend.SniffBackend
 import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.backend.WebViewCookieProvider
 
 /**
  * 组装根：全仓唯一允许 new 具体后端的地方。
@@ -41,6 +42,9 @@ class AppContainer(context: Context) : BackendProvider {
 
     override fun download(executor: DownloadExecutor): DownloadBackend = when (executor) {
         DownloadExecutor.ENGINE -> HttpDownloader(settings.baseUrl, client)
-        DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader(audit = audit)
+        DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader(
+            audit = audit,
+            cookies = WebViewCookieProvider(),
+        )
     }
 }

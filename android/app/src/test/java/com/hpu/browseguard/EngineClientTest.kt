@@ -3,6 +3,7 @@ package com.hpu.browseguard
 import com.hpu.browseguard.data.EngineClient
 import com.hpu.browseguard.data.EngineFailure
 import com.hpu.browseguard.data.EngineException
+import com.hpu.browseguard.data.TransportKind
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DownloadRequest
 import com.hpu.browseguard.shared.model.ErrorCode
@@ -292,7 +293,13 @@ class EngineClientTest {
             client.health(dead)
             fail("应抛 EngineException")
         } catch (e: EngineException) {
-            assertTrue((e.failure as EngineFailure.Transport).reason.startsWith("无法连接引擎"))
+            val failure = e.failure as EngineFailure.Transport
+            assertTrue(failure.reason.startsWith("无法连接引擎"))
+            assertEquals(
+                "连接拒绝要能和协议不符分开，界面才敢自动降级",
+                TransportKind.UNREACHABLE,
+                failure.kind,
+            )
         }
     }
 }

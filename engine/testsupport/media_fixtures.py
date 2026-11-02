@@ -134,6 +134,29 @@ _PAGE_HTML_NOCOOKIE = """<!doctype html>
 """
 
 
+# Cookie 闭环取证用：页面响应带 `Set-Cookie: sid=good-cookie`（等同登录后的会话），
+# 再请求受保护的直链。服务端与 WebView 的 CookieStore 各拿一份：
+# 下载器只能从 CookieProvider（CookieManager）取，`headersHint` 里不许出现 Cookie。
+_PAGE_COOKIE_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>BGV Cookie 闭环取证页</title></head>
+<body>
+<script>
+  // 页面自身也写一次，和服务端 Set-Cookie 双保险（值相同，幂等）
+  document.cookie = "sid=good-cookie; path=/";
+  var src = "/media/protected.mp4";
+  var v = document.createElement("video");
+  v.src = src;
+  v.preload = "auto";
+  v.muted = true;
+  document.body.appendChild(v);
+  fetch(src, { headers: { Range: "bytes=0-0" } }).catch(function () {});
+</script>
+</body>
+</html>
+"""
+
+
 def ffmpeg_available() -> bool:
     """本机是否可用 ffmpeg（测试素材生成的前置条件）。"""
     return shutil.which("ffmpeg") is not None
@@ -250,6 +273,7 @@ def generate_all(
     (dest / "page-bulk.html").write_text(_PAGE_BULK_HTML, encoding="utf-8")
     (dest / "page-audio.html").write_text(_PAGE_AUDIO_HTML, encoding="utf-8")
     (dest / "page-nocookie.html").write_text(_PAGE_HTML_NOCOOKIE, encoding="utf-8")
+    (dest / "page-cookie.html").write_text(_PAGE_COOKIE_HTML, encoding="utf-8")
 
     return {
         "sample_mp4": sample,
@@ -263,5 +287,6 @@ def generate_all(
         "page_bulk_html": dest / "page-bulk.html",
         "page_audio_html": dest / "page-audio.html",
         "page_nocookie_html": dest / "page-nocookie.html",
+        "page_cookie_html": dest / "page-cookie.html",
         **bulk_files,
     }

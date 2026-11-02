@@ -34,6 +34,14 @@ enum class LocalReason {
 
     /** 连不上 / 协议版本不符 / 响应体不是协议 JSON：传输层观察，不是引擎的诊断。 */
     TRANSPORT,
+
+    /**
+     * 电脑这一侧根本不可达（TCP 拒绝、连接/读超时）。
+     *
+     * 与 [TRANSPORT] 分开是因为它有一个明确出路：界面可以降级到手机 WebView；
+     * 协议版本不符或响应体不是协议 JSON 则不行——本地嗅探不会让协议对上。
+     */
+    ENGINE_UNREACHABLE,
     NO_SNIFF_RESULTS,
     NO_FORMATS,
 

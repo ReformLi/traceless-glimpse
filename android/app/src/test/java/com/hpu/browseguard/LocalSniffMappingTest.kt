@@ -48,9 +48,14 @@ class LocalSniffMappingTest {
         }
     }
 
-    /** 进入 `headersHint` 之前就过滤：下载侧再过滤一次，但这里不能先漏出去。 */
+    /**
+     * 进入 `headersHint` 之前就过滤：下载侧再过滤一次，但这里不能先漏出去。
+     *
+     * 白名单裁决（§25.6）：只放 `referer` / `user-agent`；浏览器的
+     * `accept` / `accept-encoding` 也不再跟随，避免站点分流与压缩流。
+     */
     @Test
-    fun rangeCookieAndAuthorizationNeverReachHeadersHint() {
+    fun onlyRefererAndUserAgentReachHeadersHint() {
         val result = LocalSniffMapping.toResult(
             rawUrl = "https://cdn.example.com/v/clip.mp4",
             pageUrl = "https://example.com/watch",
@@ -59,15 +64,19 @@ class LocalSniffMappingTest {
                 "Range" to "bytes=0-0",
                 "Cookie" to "sid=secret",
                 "Authorization" to "Bearer leaked",
+                "Accept" to "application/json",
+                "Accept-Encoding" to "gzip, br",
                 "Referer" to "https://ref.example/page",
                 "User-Agent" to "Browser-UA",
             ),
             discoveredAt = NOW,
         )!!
 
-        assertNull(result.headersHint["range"])
-        assertNull(result.headersHint["cookie"])
-        assertNull(result.headersHint["authorization"])
+        assertEquals(
+            "headersHint 只允许白名单两项",
+            setOf("referer", "user-agent"),
+            result.headersHint.keys,
+        )
         assertEquals("https://ref.example/page", result.headersHint["referer"])
         assertEquals("Browser-UA", result.headersHint["user-agent"])
     }

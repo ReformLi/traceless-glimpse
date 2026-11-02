@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -39,6 +40,7 @@ import okhttp3.Request
 class LocalDirectDownloader(
     private val http: OkHttpClient = LOCAL_HTTP,
     private val audit: AuditLogger = NoopAuditLogger,
+    private val cookies: CookieProvider = NoCookieProvider,
 ) : DownloadBackend {
 
     override fun prepare(request: PrepareRequest): Flow<DownloadEvent> = flow {
@@ -112,6 +114,14 @@ class LocalDirectDownloader(
             }
             response.use { resp ->
                 if (!resp.isSuccessful) {
+                    // 406 是最典型的「少了 accept」信号（§25.6 裁决）：先留痕，
+                    // 真机确认后再决定是否把 accept 放进白名单。
+                    if (resp.code == 406) {
+                        audit.log(
+                            "accept_missing_suspected",
+                            mapOf("status" to "406", "host" to hostOf(link.mediaUrl)),
+                        )
+                    }
                     emit(DownloadEvent.Failed(LocalFailures.linkUnloadable(resp.code)))
                     return@flow
                 }
@@ -211,11 +221,16 @@ class LocalDirectDownloader(
 
     /** 发一次带 Range 的 GET；返回 `null` 表示服务端回了 416，调用方需要清断点重来。 */
     private fun exchange(link: SniffResult, from: Long): okhttp3.Response? {
-        val builder = Request.Builder().url(link.mediaUrl).header("Accept", "*/*")
+        val builder = Request.Builder().url(link.mediaUrl)
         if (from > 0L) builder.header("Range", "bytes=$from-")
         SniffHeaderPolicy.auditStripped(audit, link.headersHint)
         SniffHeaderPolicy.sanitize(link.headersHint).forEach { (name, value) ->
             builder.header(name, value)
+        }
+        // Cookie 只从这里来：页面侧 CookieStore → 本次本地 GET。绝不进 headersHint。
+        cookies.cookieFor(link.mediaUrl)?.let { cookie ->
+            builder.header("Cookie", cookie)
+            audit.log("cookie_injected", mapOf("host" to hostOf(link.mediaUrl), "cookie" to "present"))
         }
         val response = http.newCall(builder.build()).execute()
         if (response.code == 416) {
@@ -272,6 +287,8 @@ class LocalDirectDownloader(
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .build()
+
+        fun hostOf(rawUrl: String): String = rawUrl.toHttpUrlOrNull()?.host ?: "invalid"
     }
 }
 

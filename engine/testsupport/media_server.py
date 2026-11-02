@@ -28,6 +28,8 @@
 - ``GET /whoami``                  回显 Cookie / Referer / UA / Range（隔离性验收）
 - ``GET /page.html``               嗅探页（请求 m3u8 并写入 sid Cookie）
 - ``GET /page-nocookie.html``      嗅探页（请求同一个 m3u8，但**不写任何 Cookie**，隔离性取证）
+- ``GET /page-cookie.html``        登录态嗅探页：响应对端写 ``sid=good-cookie``，再请求受保护直链
+  （WebView 嗅探 → CookieProvider 注入 → 本地下载的闭环取证）
 - ``GET /protected.html``          无 ``sid=good-cookie`` 时 403，有则返回嗅探页（惰性 Cookie）
 - ``GET /media/protected.mp4``     无 ``sid=good-cookie`` 时 403，有则返回 sample.mp4
 
@@ -191,6 +193,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "/media/drm/widevine.m3u8", "/media/drm/aes128.m3u8",
                 "/media/evil.exe", "/media/bulk.mp4", "/media/hls/slow.m3u8",
                 "/page.html", "/page-bulk.html", "/page-audio.html", "/page-nocookie.html",
+                "/page-cookie.html",
                 "/whoami",
                 "/protected.html", "/media/protected.mp4",
                 "/r302-local", "/r302-private", "/r302-private10", "/r302-metadata",
@@ -222,6 +225,14 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/page-nocookie.html":
             self._serve_file(
                 self.assets / "page-nocookie.html", allow_range=False, head_only=head_only
+            )
+        elif path == "/page-cookie.html":
+            # 登录态模拟：页面响应直接种 Cookie，WebView 的 CookieStore 与 JS 都能看到。
+            self._serve_file(
+                self.assets / "page-cookie.html",
+                allow_range=False,
+                head_only=head_only,
+                extra_headers={"Set-Cookie": "sid=good-cookie; Path=/; SameSite=Lax"},
             )
         elif path == "/protected.html":
             if not self._has_access_cookie():
@@ -305,6 +316,7 @@ class _Handler(BaseHTTPRequestHandler):
         allow_range: bool,
         head_only: bool,
         content_type: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         if not file_path.is_file():
             self._send_text(404, "not found", head_only)
@@ -342,6 +354,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         for name, value in extra.items():
             self.send_header(name, value)
         self.end_headers()

@@ -14,6 +14,7 @@ import com.hpu.browseguard.data.backend.BackendProvider
 import com.hpu.browseguard.data.backend.DownloadEvent
 import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.LocalFailures
+import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffExecutor
@@ -21,6 +22,7 @@ import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.data.backend.toBackendFailure
+import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.PostAction
@@ -81,6 +83,10 @@ data class HomeUiState(
     val mergeSelected: Boolean = true,
     /** 下载交给引擎还是本机直链——全局开关，只切下载这一段。 */
     val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
+    /** 嗅探交给电脑引擎还是手机 WebView；默认电脑，界面可显式切换。 */
+    val sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
+    /** 自动降级/失败后的可见提示；`null` 表示没有要说的。 */
+    val sniffNotice: String? = null,
     /**
      * 手机侧唯一允许的写盘根（应用专属外部存储的 Download 目录）。
      *
@@ -100,17 +106,27 @@ data class HomeUiState(
     /** 合并需要 FFmpeg，本地直链这一支没有——不是「暂不支持」，是压根没有执行者。 */
     val mergeAvailable: Boolean
         get() = downloadExecutor == DownloadExecutor.ENGINE
-    /** 输出目录只能来自引擎自检白名单；拿不到就不允许发起任务。 */
+    /**
+     * 引擎嗅探要自检白名单；手机 WebView 嗅探不写引擎目录，离线也能发起。
+     *
+     * `Connection.Failed` 也放行「电脑」：这条不可达路径必须能点下去，
+     * 否则自动降级没有入口——用户会看到一个永远灰着的嗅探按钮。
+     */
     val canSniff: Boolean
-        get() = engineReady && sniff !is SniffPhase.Running
+        get() = sniff !is SniffPhase.Running &&
+            (sniffExecutor == SniffExecutor.LOCAL_WEBVIEW || engineReady || connection is Connection.Failed)
 
-    /** 嗅探成功后才谈得上选画质；下载流程自己也在跑时不允许重复发起。 */
+    /**
+     * 嗅探成功后才谈得上选画质；下载流程自己也在跑时不允许重复发起。
+     *
+     * 本地直链的「画质表」由嗅探结果合成，不需要引擎在线；引擎下载才要等自检。
+     */
     val canPickFormats: Boolean
-        get() = engineReady &&
-            sniff is SniffPhase.Success &&
+        get() = sniff is SniffPhase.Success &&
             download !is DownloadPhase.Preparing &&
             download !is DownloadPhase.Selecting &&
-            download !is DownloadPhase.Running
+            download !is DownloadPhase.Running &&
+            (downloadExecutor == DownloadExecutor.LOCAL_DIRECT || engineReady)
 
     val selectedFormat: FormatInfo?
         get() = (download as? DownloadPhase.Selecting)?.formats?.firstOrNull { it.formatId == selectedFormatId }
@@ -147,6 +163,7 @@ class HomeViewModel(
             engineUrl = settings.baseUrl,
             engineUrlDraft = settings.baseUrl,
             downloadExecutor = settings.downloadExecutor,
+            sniffExecutor = settings.sniffExecutor,
             // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
             mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
             localSandboxRoot = backends.localSandboxRoot,
@@ -203,6 +220,30 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * 显式切换嗅探执行者。任务进行中不切：两条腿的结果不能拼成一张表；
+     * 切换会作废上一条嗅探结果与画质表。
+     */
+    fun selectSniffExecutor(executor: SniffExecutor) {
+        val snapshot = _state.value
+        if (snapshot.sniffExecutor == executor) return
+        if (snapshot.sniff is SniffPhase.Running || snapshot.downloadInFlight) return
+        settings.sniffExecutor = executor
+        _state.update {
+            it.copy(
+                sniffExecutor = executor,
+                sniff = SniffPhase.Idle,
+                download = DownloadPhase.Idle,
+                selectedFormatId = null,
+                sniffNotice = null,
+            )
+        }
+    }
+
+    fun dismissSniffNotice() {
+        _state.update { it.copy(sniffNotice = null) }
+    }
+
     fun editSourceUrl(value: String) {
         _state.update {
             it.copy(
@@ -216,23 +257,103 @@ class HomeViewModel(
 
     fun sniff() {
         val snapshot = _state.value
-        val connected = snapshot.connection as? Connection.Connected ?: return
         val sourceUrl = snapshot.sourceUrl.trim()
-        val outputDir = connected.selfcheck.outputDirAllowlist.firstOrNull() ?: return
-        if (sourceUrl.isEmpty() || snapshot.sniff is SniffPhase.Running) return
+        if (sourceUrl.isEmpty() || !snapshot.canSniff) return
 
         sniffJob?.cancel()
         downloadJob?.cancel()
         _state.update { it.copy(sniff = SniffPhase.Running(TaskStatus.QUEUED), download = DownloadPhase.Idle, selectedFormatId = null) }
+
+        val connected = snapshot.connection as? Connection.Connected
+        val outputDir = connected?.selfcheck?.outputDirAllowlist?.firstOrNull()
         val request = SniffRequest(
             sourceUrl = sourceUrl,
-            cookiePolicy = connected.selfcheck.cookiePolicyDefault,
-            outputDir = outputDir,
+            cookiePolicy = connected?.selfcheck?.cookiePolicyDefault ?: CookiePolicy.NONE,
+            outputDir = outputDir.orEmpty(),
         )
+
         sniffJob = viewModelScope.launch {
-            // 裁决 2：嗅探固定走引擎；WebView 这条腿等第 3 步③接线后才可能被选中。
-            backends.sniff(SniffExecutor.ENGINE).sniff(request).collect { event -> applySniffEvent(event) }
+            if (snapshot.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
+                collectLocalSniff(request)
+                return@launch
+            }
+            if (connected == null || outputDir == null) {
+                // 引擎都没连上，没必要先等 90s 超时：直接降级，并留下可见提示与审计行。
+                degradeToLocal("pc_unreachable", switchDownload = true)
+                collectLocalSniff(request)
+                return@launch
+            }
+
+            var unreachable: BackendFailure.Local? = null
+            backends.sniff(SniffExecutor.ENGINE).sniff(request).collect { event ->
+                if (event is SniffEvent.Failed && event.failure.isEngineUnreachable()) {
+                    unreachable = event.failure as BackendFailure.Local
+                } else {
+                    applySniffEvent(event)
+                }
+            }
+            val failure = unreachable ?: return@launch
+            degradeToLocal(
+                reason = if (failure.reason == LocalReason.TIMEOUT) "engine_timeout" else "pc_unreachable",
+                // 超时说明引擎还活着，下载可以继续交给它；拒绝连接则本地下载也一并接管。
+                switchDownload = failure.reason == LocalReason.ENGINE_UNREACHABLE,
+            )
+            collectLocalSniff(request)
         }
+    }
+
+    /** 只有「电脑不可达」与「引擎嗅探超时」值得换腿；协议不符/空结果换腿不会变好。 */
+    private fun BackendFailure.isEngineUnreachable(): Boolean =
+        this is BackendFailure.Local &&
+            (reason == LocalReason.ENGINE_UNREACHABLE || reason == LocalReason.TIMEOUT)
+
+    /**
+     * 自动降级：切到手机 WebView，且**必须**让用户看见（[HomeUiState.sniffNotice]）
+     * 并留下 `audit_sniff_fallback`——静默换执行者会让屏上结果与用户以为的那条链路对不上。
+     */
+    private fun degradeToLocal(reason: String, switchDownload: Boolean) {
+        val hadMerge = _state.value.mergeSelected
+        settings.sniffExecutor = SniffExecutor.LOCAL_WEBVIEW
+        if (switchDownload) settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+        _state.update {
+            it.copy(
+                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                downloadExecutor = if (switchDownload) DownloadExecutor.LOCAL_DIRECT else it.downloadExecutor,
+                mergeSelected = if (switchDownload) false else it.mergeSelected,
+                download = DownloadPhase.Idle,
+                selectedFormatId = null,
+                sniffNotice = if (switchDownload) {
+                    "电脑不可达，已降级为手机本地嗅探与下载"
+                } else {
+                    "电脑嗅探超时，已降级为手机本地嗅探"
+                },
+            )
+        }
+        audit.log(
+            "audit_sniff_fallback",
+            mapOf(
+                "reason" to reason,
+                "from" to "engine",
+                "to" to "local_webview",
+                "download" to if (switchDownload) "local_direct" else "engine",
+            ),
+        )
+        if (switchDownload && hadMerge) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
+    }
+
+    private suspend fun collectLocalSniff(request: SniffRequest) {
+        backends.sniff(SniffExecutor.LOCAL_WEBVIEW).sniff(request).collect { event ->
+            applySniffEvent(event)
+            // 本地也失败要当场升级提示，不能等流关闭——WebView 失败后流可能就此挂住。
+            if (event is SniffEvent.Failed) upgradeFallbackNotice()
+        }
+    }
+
+    private fun upgradeFallbackNotice() {
+        val snapshot = _state.value
+        val note = snapshot.sniffNotice ?: return
+        if (snapshot.sniff !is SniffPhase.Failed || note.contains(LOCAL_ALSO_FAILED)) return
+        _state.update { it.copy(sniffNotice = "$note；$LOCAL_ALSO_FAILED") }
     }
 
     /**
@@ -260,10 +381,17 @@ class HomeViewModel(
     /** 嗅探结果出来后，另起一个 `mode=download` 任务向引擎要可选画质表。 */
     fun pickFormats() {
         val snapshot = _state.value
-        val connected = snapshot.connection as? Connection.Connected ?: return
-        val outputDir = connected.selfcheck.outputDirAllowlist.firstOrNull() ?: return
         val sourceUrl = snapshot.sourceUrl.trim()
         if (sourceUrl.isEmpty() || !snapshot.canPickFormats) return
+
+        val connected = snapshot.connection as? Connection.Connected
+        val outputDir = when (snapshot.downloadExecutor) {
+            DownloadExecutor.ENGINE ->
+                connected?.selfcheck?.outputDirAllowlist?.firstOrNull() ?: return
+
+            // 本机直链的画质表由嗅探结果合成，不读这个目录；真写盘时用 ViaLocal 的沙箱根。
+            DownloadExecutor.LOCAL_DIRECT -> snapshot.localSandboxRoot.orEmpty()
+        }
 
         sniffJob?.cancel()
         downloadJob?.cancel()
@@ -273,7 +401,7 @@ class HomeViewModel(
                 .prepare(
                     PrepareRequest(
                         sourceUrl = sourceUrl,
-                        cookiePolicy = connected.selfcheck.cookiePolicyDefault,
+                        cookiePolicy = connected?.selfcheck?.cookiePolicyDefault ?: CookiePolicy.NONE,
                         outputDir = outputDir,
                         sniffResults = (snapshot.sniff as? SniffPhase.Success)?.results.orEmpty(),
                     ),
@@ -422,6 +550,9 @@ class HomeViewModel(
     }
 
     companion object {
+        /** 降级后本地也失败时的提示后缀；测试与真机审计都认这几字。 */
+        const val LOCAL_ALSO_FAILED = "手机本地嗅探也失败，请检查网络或电脑引擎"
+
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
         fun factory(
             settings: EngineSettings,

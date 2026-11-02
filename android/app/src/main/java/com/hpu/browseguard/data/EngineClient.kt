@@ -32,8 +32,25 @@ sealed class EngineFailure {
     /** 引擎按协议返回了 ErrorPayload（PROTOCOL §5）。 */
     data class Protocol(val httpStatus: Int, val error: ErrorPayload) : EngineFailure()
 
-    /** 连不上、超时、协议头不符或响应体不是协议 JSON。 */
-    data class Transport(val reason: String) : EngineFailure()
+    /**
+     * 连不上、超时、协议头不符或响应体不是协议 JSON。
+     *
+     * [kind] 区分「电脑根本不可达」与「引擎答了但不是协议」：前者允许界面
+     * 自动降级到手机 WebView，后者降级没有意义（本地嗅探不会让协议版本对上）。
+     */
+    data class Transport(
+        val reason: String,
+        val kind: TransportKind = TransportKind.OTHER,
+    ) : EngineFailure()
+}
+
+/** 传输失败的可判性分类。 */
+enum class TransportKind {
+    /** TCP 拒绝、DNS/连接超时、读超时：电脑这一侧根本不可达。 */
+    UNREACHABLE,
+
+    /** 连上了但答的不是协议：版本不符、响应体不是协议 JSON。 */
+    OTHER,
 }
 
 class EngineException(val failure: EngineFailure) : Exception(failure.toString())
@@ -75,7 +92,7 @@ class EngineClient(private val http: OkHttpClient = DEFAULT_HTTP) {
     private fun taskPath(taskId: String) = listOf("v1", "tasks", taskId)
 
     private fun <T> encode(value: T, serializer: KSerializer<T>): String =
-        BgvJson.encodeToString(serializer, value)
+        EnginePayloadGuard.check(BgvJson.encodeToString(serializer, value))
 
     private fun <T> decode(serializer: KSerializer<T>, body: String): T =
         try {
@@ -100,7 +117,7 @@ class EngineClient(private val http: OkHttpClient = DEFAULT_HTTP) {
         val response = try {
             http.newCall(request).execute()
         } catch (e: IOException) {
-            throw EngineException(Transport("无法连接引擎：${e.message}"))
+            throw EngineException(Transport("无法连接引擎：${e.message}", TransportKind.UNREACHABLE))
         }
 
         response.use { resp ->

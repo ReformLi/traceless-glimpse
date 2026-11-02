@@ -34,6 +34,10 @@ internal object LocalFailures {
     fun transport(reason: String): BackendFailure.Local =
         BackendFailure.Local(LocalReason.TRANSPORT, reason)
 
+    /** 电脑不可达：措辞要自证是本地观察，且与 `TRANSPORT`（协议不符）区分开。 */
+    fun engineUnreachable(reason: String): BackendFailure.Local =
+        BackendFailure.Local(LocalReason.ENGINE_UNREACHABLE, reason)
+
     fun noSniffResults(): BackendFailure.Local =
         BackendFailure.Local(LocalReason.NO_SNIFF_RESULTS, "未发现可用媒体 · 引擎回空结果表，客户端本地判定")
 

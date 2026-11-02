@@ -20,7 +20,7 @@
     <string name="download_executor_label">下载执行者</string>
     <string name="download_executor_engine">引擎</string>
     <string name="download_executor_local">本地直链</string>
-    <string name="download_executor_hint">本地直链：手机自己下嗅探到的那条 HTTP 直链，断点存 .part，不经过引擎，也不做音视频合并。嗅探始终走引擎。切换会丢弃当前画质表。</string>
+    <string name="download_executor_hint">本地直链：手机自己下嗅探到的那条 HTTP 直链，断点存 .part，不经过引擎，也不做音视频合并。切换会丢弃当前画质表。</string>
     <string name="download_executor_busy">有任务正在进行：等它结束或取消后才能切换执行者</string>
 
     <string name="selfcheck_title">隐私自检</string>
@@ -34,6 +34,11 @@
     <string name="selfcheck_on">开</string>
     <string name="selfcheck_off">关</string>
     <string name="selfcheck_none">无</string>
+
+    <string name="sniff_mode_label">嗅探方式</string>
+    <string name="sniff_mode_engine">电脑</string>
+    <string name="sniff_mode_local">本机</string>
+    <string name="sniff_notice_dismiss">知道了</string>
 
     <string name="sniff_title">视频链接</string>
     <string name="sniff_field">网页链接</string>

@@ -11,10 +11,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 第 3 步①：后端构造收进组装根。
+ * 后端构造收进组装根。
  *
- * 静态部分钉「UI 不再 new 实现」；行为部分钉空壳 WebView 嗅探的第一条事实——
- * 被选中时给的是 `Local(WEBVIEW_UNAVAILABLE)` 且不带 §5 码，而不是空表。
+ * 静态部分钉「UI 不再 new 实现」；行为部分钉 WebView 的两类本地失败
+ * 与「Cookie 只进本地下载请求」这条隔离线。
  */
 class BackendInjectionTest {
 
@@ -26,7 +26,13 @@ class BackendInjectionTest {
         val files = ui.listFiles { f -> f.isFile && f.extension == "kt" }.orEmpty().sortedBy { it.name }
         assertTrue("扫描没落到位：${ui.absolutePath}", files.size >= 2)
 
-        val banned = listOf("HttpSniffer(", "HttpDownloader(", "LocalDirectDownloader(", "LocalWebViewSniffer(")
+        val banned = listOf(
+            "HttpSniffer(",
+            "HttpDownloader(",
+            "LocalDirectDownloader(",
+            "LocalWebViewSniffer(",
+            "WebViewCookieProvider(",
+        )
         val hits = files.flatMap { file ->
             file.readLines().withIndex()
                 .filter { (_, line) -> banned.any { line.contains(it) } }
@@ -77,7 +83,8 @@ class BackendInjectionTest {
         val container = File("$SRC_ROOT/data/AppContainer.kt").readText()
         assertTrue("连接态事实必须由组装根提供", container.contains("HttpEngineInfo(client)"))
         assertTrue("审计实现必须是 LogcatAuditLogger", container.contains("LogcatAuditLogger()"))
-        assertTrue("下载器必须拿到审计通道", container.contains("LocalDirectDownloader(audit = audit)"))
+        assertTrue("下载器必须拿到审计通道", container.contains("audit = audit"))
+        assertTrue("Cookie 通道必须由组装根构造", container.contains("cookies = WebViewCookieProvider()"))
         val route = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
         assertTrue("首页工厂必须传入引擎事实", route.contains("container.engineInfo"))
         assertTrue("首页工厂必须传入审计", route.contains("container.audit"))
@@ -106,6 +113,26 @@ class BackendInjectionTest {
         assertTrue("下载侧必须走共享策略", downloader.contains("SniffHeaderPolicy.sanitize("))
         assertTrue("嗅探侧必须在构造 SniffResult 前走共享策略", mapping.contains("SniffHeaderPolicy.sanitize("))
         assertTrue("WebView 必须经纯映射层产结果", sniffer.contains("LocalSniffMapping.toResult("))
+    }
+
+    /**
+     * Cookie 只属于本地下载：界面与 ViewModel 都不许碰 `CookieProvider`，
+     * 组装根也只把它交给 `LocalDirectDownloader`。
+     */
+    @Test
+    fun cookieProviderIsOnlyWiredIntoTheLocalDownloader() {
+        val viewModel = File("$SRC_ROOT/ui/HomeViewModel.kt").readText()
+        val route = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
+        val container = File("$SRC_ROOT/data/AppContainer.kt").readText()
+
+        assertFalse("ViewModel 不得持有 Cookie 通道", viewModel.contains("CookieProvider"))
+        assertFalse("界面不得接触 Cookie 通道", route.contains("CookieProvider"))
+        assertTrue("组装根必须注入", container.contains("cookies = WebViewCookieProvider()"))
+        assertFalse("引擎后端不得被注入 Cookie", container.contains("HttpDownloader(settings.baseUrl, client, "))
+
+        val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
+        assertTrue("只有本地下载器的请求构造处读 Cookie", downloader.contains("cookies.cookieFor("))
+        assertTrue("Cookie 不得写回 headersHint", downloader.contains("builder.header(\"Cookie\", cookie)"))
     }
 
     private companion object {

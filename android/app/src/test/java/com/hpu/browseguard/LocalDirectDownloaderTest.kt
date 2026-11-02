@@ -1,6 +1,7 @@
 package com.hpu.browseguard
 
 import com.hpu.browseguard.data.backend.BackendFailure
+import com.hpu.browseguard.data.backend.CookieProvider
 import com.hpu.browseguard.data.backend.DownloadEvent
 import com.hpu.browseguard.data.backend.LocalDirectDownloader
 import com.hpu.browseguard.data.backend.LocalReason
@@ -383,6 +384,55 @@ class LocalDirectDownloaderTest {
         assertEquals("https://m.example.com/watch", recorded.headers["Referer"])
         assertEquals("range", audit.of("range_stripped").single().fields["header"])
         assertEquals("cookie", audit.of("sensitive_header_stripped").single().fields["header"])
+    }
+
+    /**
+     * Cookie 只从注入的 [CookieProvider] 来：`headersHint` 里即使有人塞了值，
+     * 也必须被白名单剥掉并留审计行。这条把「凭据只走本地通道」钉在请求头上。
+     */
+    @Test
+    fun cookieComesFromTheProviderAndNeverFromHeadersHint() {
+        server.enqueue(reply(200, payload))
+        val audit = FakeAuditLogger()
+        val audited = LocalDirectDownloader(
+            audit = audit,
+            cookies = CookieProvider { "sid=good-cookie" },
+        )
+        val link = link("/media/clip.mp4").copy(
+            headersHint = mapOf(
+                "referer" to "https://m.example.com/watch",
+                "cookie" to "sid=from-hint",
+                "accept" to "application/json",
+            ),
+        )
+
+        runBlocking { audited.start(viaLocal(link)).toList() }
+
+        val recorded = server.takeRequest()
+        assertEquals("Cookie 必须来自页面 CookieStore", "sid=good-cookie", recorded.headers["Cookie"])
+        assertEquals("https://m.example.com/watch", recorded.headers["Referer"])
+        assertNull("Accept 不跟随浏览器", recorded.headers["Accept"])
+        assertEquals("hint 里的 Cookie 被剥", "cookie", audit.of("sensitive_header_stripped").single().fields["header"])
+        assertEquals("accept", audit.of("header_dropped").single().fields["header"])
+        val injected = audit.of("cookie_injected").single()
+        assertEquals("present", injected.fields["cookie"])
+        assertEquals(server.url("/").host, injected.fields["host"])
+        assertEquals("headersHint 本身不被改写", "sid=from-hint", link.headersHint["cookie"])
+    }
+
+    /** 406 是最典型的「少了 accept」信号：先留审计行，裁决前不改白名单。 */
+    @Test
+    fun a406LeavesAnAcceptMissingAuditRow() {
+        server.enqueue(reply(406, "not acceptable"))
+        val audit = FakeAuditLogger()
+        val audited = LocalDirectDownloader(audit = audit)
+
+        val events = runBlocking { audited.start(viaLocal(link("/media/clip.mp4"))).toList() }
+
+        assertEquals(LocalReason.LINK_UNLOADABLE, ((events.single() as DownloadEvent.Failed).failure as BackendFailure.Local).reason)
+        val row = audit.of("accept_missing_suspected").single()
+        assertEquals("406", row.fields["status"])
+        assertEquals(server.url("/").host, row.fields["host"])
     }
 
     private fun prepare(results: List<SniffResult>) = runBlocking {

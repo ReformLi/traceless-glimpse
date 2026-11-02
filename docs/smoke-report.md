@@ -2786,3 +2786,104 @@ device_result_url=http://127.0.0.1:8731/media/bulk.mp4 headers=[accept, accept-e
 4. **`headersHint` 仍保留 `accept` / `accept-encoding` 等非凭据头**：当前只做黑名单过滤，最终白名单策略等 Cookie 裁决一起定。
 5. **设备观测件依赖 media_server 与 `adb reverse`**：不在默认单测路径里，命令是 `./gradlew :android:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.hpu.browseguard.LocalWebViewSnifferDeviceTest`。
 
+
+---
+
+## 26. M4 第 3 步 ④：头白名单、Cookie 显式通道与自动降级（2026-11-02）
+
+本节落地用户对 §25 三项裁决的批复，并关闭 §25.6 的遗留 1/2/4。顺序：先写实现与 JVM 守卫，再上 MuMu 验证「WebView 嗅探 → Cookie 注入 → 本地下载」闭环，最后做变异体与全量复跑。
+
+### 26.1 裁决与落点
+
+| 裁决 | 实现 | 文件 |
+| --- | --- | --- |
+| 头白名单只放 `referer` / `user-agent` | 黑白名单彻底反转：`ALLOWED_HEADERS` 白名单，其余一律剥；每个被剥的头按类别留审计行 | `data/backend/SniffHeaderPolicy.kt` |
+| 406 先留痕、暂不加 `accept` | `LocalDirectDownloader` 在非 2xx 且 `406` 时写 `accept_missing_suspected`，仍按 `LINK_UNLOADABLE` 失败；绝不发 `accept-encoding` | `LocalDirectDownloader.kt` |
+| Cookie 只走本地显式通道 | 新增 `CookieProvider` + `WebViewCookieProvider`（`CookieManager.getInstance().getCookie(url)`），只在组装根注入 `LocalDirectDownloader` | `CookieProvider.kt`、`AppContainer.kt` |
+| 上行载荷不许出现 Cookie | `EngineClient` 所有请求体在序列化出口过 `EnginePayloadGuard.check`，JSON 键 `"cookie":` 直接抛错；`"cookiePolicy":` 不误伤 | `EnginePayloadGuard.kt`、`EngineClient.kt` |
+| 不可达自动降级且必须可见 | `TransportKind.UNREACHABLE` 与协议/版本问题分开；嗅探 `ENGINE_UNREACHABLE`/`TIMEOUT` 自动切本机，写 `audit_sniff_fallback`，界面弹出提示条 | `EngineClient.kt`、`EngineFailures.kt`、`BackendFailure.kt`、`HomeViewModel.kt` |
+| 显式入口、默认电脑 | 顶栏「嗅探方式」＋「电脑 / 本机」两个按钮；默认 `ENGINE`，选择持久化 | `HomeScreen.kt`、`EngineConfig.kt`、`strings.xml` |
+
+### 26.2 三条防线（Cookie 隔离）
+
+1. **来源层**：WebView 的 `requestHeaders` 里本来就没有 Cookie（§25.4 已证）；页面 Cookie 只存在于 `CookieManager`。`LocalSniffMapping` 产 `SniffResult` 前过白名单，Cookie 连 `headersHint` 都进不去。
+2. **使用层**：只有 `LocalDirectDownloader.exchange()` 调 `cookies.cookieFor(mediaUrl)`；取到后直接 `builder.header("Cookie", ...)`，不写回 `headersHint`。审计只记 `host` 与 `present`，不记原值。
+3. **上行层**：`EngineClient.encode()` 是唯一请求体出口，`EnginePayloadGuard` 在出口做实名检查；协议字段 `cookiePolicy` 是合法的，不会被正则误杀。
+
+### 26.3 降级语义
+
+- **触发条件**：引擎嗅探事件为 `Local(ENGINE_UNREACHABLE)`（TCP 拒绝/DNS/连接超时/读超时）或 `Local(TIMEOUT)`。
+- **不触发**：协议版本不符、响应不是协议 JSON、引擎按 §5 返回的业务错误——本地嗅探不会让这些变对，换腿只会掩盖事实。
+- **下载跟随**：连接拒绝时嗅探与下载一起切 `LOCAL_DIRECT`（引擎已经不在）；超时只切嗅探，下载仍留给可能还活着的引擎。
+- **可见性**：`HomeUiState.sniffNotice` 渲染为提示条（“电脑不可达，已降级为手机本地嗅探与下载”），并写 `audit_sniff_fallback reason=pc_unreachable|engine_timeout from=engine to=local_webview download=local_direct|engine`。本地再失败时，提示在同一事件上立刻追加“；手机本地嗅探也失败，请检查网络或电脑引擎”，不等流关闭。
+- **入口修正**：原 `canSniff` 要求引擎已连接，导致「PC 不可达」时嗅探按钮永远灰着、自动降级根本没有触发入口。现改为 `Connection.Failed` 也放行；点下即走“立即降级”分支，不再空等超时。
+
+### 26.4 JVM 守卫与全量
+
+| 测试 | 钉住什么 |
+| --- | --- |
+| `HeaderWhitelistTest`（新，3 条） | 白名单只留 referer/UA；Range/敏感头/其它头各留一条审计；白名单自身不得含敏感头 |
+| `EnginePayloadGuardTest`（新，3 条） | 真实 `TaskCreateRequest`/`DownloadRequest` 能过；`"cookie"`/`"Cookie"`/嵌套键被拒；`"cookiePolicy"` 放行 |
+| `LocalDirectDownloaderTest`（+2 条） | Cookie 只认 Provider（hint 里的被剥）；Accept 不跟随浏览器；406 留 `accept_missing_suspected` |
+| `HomeViewModelBehaviorTest`（+6 条） | 连接失败降级＋下载跟随＋审计＋持久化；超时只降嗅探；协议失败不降级；离线本机可嗅探；离线默认电脑也能点并降级；本地再失败升级提示 |
+| `EngineClientTest` | `TransportKind.UNREACHABLE` 与协议不符分开 |
+| `BackendInjectionTest`（+1 条静态守卫） | UI 不碰 `CookieProvider`；组装根只把它交给本地下载器；引擎下载器不得被注入 Cookie |
+
+结果：**131 tests / 0 failures / 0 errors / 0 skipped**（`./gradlew.bat :android:app:testDebugUnitTest --rerun`）。
+
+### 26.5 MuMu 真机取证（2026-11-02）
+
+设备 `SM-S9080` / Android 15；`engine/testsupport.media_server --port 8731`；`adb reverse tcp:8731 tcp:8731`。
+
+**夹具**：新增 `/page-cookie.html`，响应带 `Set-Cookie: sid=good-cookie; Path=/`，页面再请求 `/media/protected.mp4`；该路由无 Cookie 时 403，有则回 `sample.mp4`（61,456 字节）。`/` 路由表已列出新页面。
+
+**A. instrumentation 闭环（`CookieClosedLoopDeviceTest`）**
+
+```
+webview_session outcome=candidates host=127.0.0.1 requests=4 ranges=2 candidates=1 loaded=true
+device_cookie_present=true
+device_output_dir=/storage/emulated/0/Android/data/com.hpu.browseguard/files/Download/cookie-loop
+device_download_without_cookie=403
+cookie_injected host=127.0.0.1 cookie=present
+device_download_with_cookie=done bytes=61456 name=protected.mp4
+```
+
+产物 `protected.mp4` 61,456 字节，`md5=dc2afe7c3d014d85d570393a37baa142`，与源文件一致。服务端同期记录：第一次本地 GET `cookie_present=false`（403），第二次 `cookie_present=true`（200）。
+
+**B. 真实界面闭环（默认「电脑」，引擎未启动）**
+
+| 步骤 | 观察 |
+| --- | --- |
+| 启动 App | 「嗅探方式」默认电脑，引擎 `Connection.Failed`，嗅探按钮仍可点（入口修正生效） |
+| 输入 `/page-cookie.html` 并点嗅探 | 提示条出现“电脑不可达，已降级为手机本地嗅探与下载”；开关自动切「本机」，下载执行者切「本地直链」 |
+| 同一次操作 | 审计 `audit_sniff_fallback reason=pc_unreachable from=engine to=local_webview download=local_direct` |
+| WebView 返回 | `webview_session outcome=candidates ... candidates=1`；结果卡显示 `protected.mp4` |
+| 选择画质并下载 | 单行画质表自动选中；合并复选框禁用并提示“本地模式不支持合并，请连接引擎” |
+| 开始下载 | 屏上“下载完成 / protected.mp4 / 60.0 KB”；审计 `cookie_injected host=127.0.0.1 cookie=present` |
+| 落盘核对 | `/sdcard/Android/data/com.hpu.browseguard/files/Download/protected.mp4`，61,456 字节，md5 同上 |
+
+这条路径与 A 的区别：A 直接构造后端，B 走完整 `AppContainer` → `HomeViewModel` → 界面 → 本地下载，证明 Cookie 注入在真实组装里没有被漏接。
+
+### 26.6 变异体验证
+
+| 变异 | 预期红 | 实测 |
+| --- | --- | --- |
+| **M-26-A**：注释掉下载器的 `Cookie` 注入 | `cookieComesFromTheProviderAndNeverFromHeadersHint` 红；真机闭环红 | JVM 1/19 红；真机 `LINK_UNLOADABLE(403)`，报错点正是“注入 Cookie 后必须落到终态” |
+| **M-26-B**：把 `EnginePayloadGuard` 正则改成不匹配 `cookie` | `cookieKeysAreRejectedWhereverTheyAppear` 红 | 1/3 红 |
+
+两个变异均按原文还原，`git diff` 无残留标记；还原后 JVM 131/0、真机闭环重新绿。
+
+### 26.7 遗留与边界
+
+1. **只有 406 能归因**：其它 4xx 无法判断是否“少了 accept”，仍只报 `LINK_UNLOADABLE(status)`；`accept` 继续留在白名单外，等真实站点证据再裁决。
+2. **夹具不是互联网**：防盗链、登录、懒加载、`blob:`/MSE、跨域重定向仍未覆盖；本轮结论只到“同源 Cookie + 单文件直链”这一形态。
+3. **Cookie 作用域按浏览器语义**：`CookieManager.getCookie(url)` 返回该 URL 可见的全部 Cookie（host + path），会随本地 GET 一起发出；这是同源会话的预期行为，但若站点在同一 host 下混用多个身份，无法只挑其中一个。
+4. **降级只看连通性**：引擎 5xx / §5 业务错误不降级，是刻意选择；若后续要覆盖“引擎活着但嗅探能力坏了”，需要单独裁决，不能复用当前判据。
+5. **审计不含 Cookie 原值**：只记 `present` 与 host，取证时不能从日志还原凭据——这是验收标准 5 的要求，不是缺口。
+6. **真机闭环依赖夹具与 adb reverse**：默认单测不含设备件；命令为 `connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.hpu.browseguard.CookieClosedLoopDeviceTest`。
+
+### 26.8 环境清理
+
+- media_server：按命令行核对 PID 14196（`python -m testsupport.media_server --port 8731`）后终止，`8731` 监听已消失。
+- `adb reverse --remove tcp:8731` 已执行，reverse 列表为空。
+- 未启动引擎进程；App 与测试 APK 保留在 MuMu 上，便于下一轮复验。

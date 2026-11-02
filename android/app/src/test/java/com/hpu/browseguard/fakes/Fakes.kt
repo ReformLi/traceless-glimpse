@@ -89,18 +89,24 @@ class FakeDownloadBackend : DownloadBackend {
 
 class FakeBackendProvider(
     val sniffBackend: FakeSniffBackend = FakeSniffBackend(),
+    val localSniffBackend: FakeSniffBackend = FakeSniffBackend(),
     val downloadBackend: FakeDownloadBackend = FakeDownloadBackend(),
     override val localSandboxRoot: String? = DEFAULT_SANDBOX,
 ) : BackendProvider {
 
+    val sniffExecutors: MutableList<SniffExecutor> = Collections.synchronizedList(mutableListOf())
     var lastSniffExecutor: SniffExecutor? = null
         private set
     var lastDownloadExecutor: DownloadExecutor? = null
         private set
 
     override fun sniff(executor: SniffExecutor): SniffBackend {
+        sniffExecutors += executor
         lastSniffExecutor = executor
-        return sniffBackend
+        return when (executor) {
+            SniffExecutor.ENGINE -> sniffBackend
+            SniffExecutor.LOCAL_WEBVIEW -> localSniffBackend
+        }
     }
 
     override fun download(executor: DownloadExecutor): DownloadBackend {
@@ -110,6 +116,7 @@ class FakeBackendProvider(
 
     fun close() {
         sniffBackend.close()
+        localSniffBackend.close()
         downloadBackend.close()
     }
 
@@ -121,6 +128,7 @@ class FakeBackendProvider(
 class FakeEngineSettings(
     override var baseUrl: String = "http://127.0.0.1:8730",
     override var downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
+    override var sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
     var acceptSaves: Boolean = true,
 ) : EngineSettings {
 

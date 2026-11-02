@@ -1,6 +1,7 @@
 package com.hpu.browseguard.data.backend
 
 import com.hpu.browseguard.data.EngineFailure
+import com.hpu.browseguard.data.TransportKind
 
 /**
  * `EngineFailure` → `BackendFailure` 的**唯一**转换点。
@@ -18,5 +19,10 @@ internal fun EngineFailure.toBackendFailure(): BackendFailure = when (this) {
         detail = error.detail,
     )
 
-    is EngineFailure.Transport -> LocalFailures.transport(reason)
+    is EngineFailure.Transport ->
+        if (kind == TransportKind.UNREACHABLE) {
+            LocalFailures.engineUnreachable(reason)
+        } else {
+            LocalFailures.transport(reason)
+        }
 }

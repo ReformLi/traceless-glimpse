@@ -2,6 +2,7 @@ package com.hpu.browseguard.data.backend
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -174,6 +175,9 @@ class LocalWebViewSniffer(
         @SuppressLint("SetJavaScriptEnabled")
         fun start(url: String) {
             val view = webView ?: return
+            // 页面 JS 写的 Cookie 要留在 WebView 的 CookieStore 里，下载前由
+            // WebViewCookieProvider 读取；这里只确保接收开关开着。
+            runCatching { CookieManager.getInstance().setAcceptCookie(true) }
             userAgent = view.settings.userAgentString ?: ""
             view.settings.javaScriptEnabled = true
             view.settings.domStorageEnabled = true
@@ -262,6 +266,9 @@ class LocalWebViewSniffer(
                 webViewClient = WebViewClient()
                 destroy()
             }
+            // 会话结束后把内存里的 Cookie 落盘：下载器在同一进程读得到，
+            // 但应用被杀后下一次启动也要能续上同一站点的登录态。
+            runCatching { CookieManager.getInstance().flush() }
         }
 
         private fun headerValue(headers: Map<String, String>, name: String): String? =
