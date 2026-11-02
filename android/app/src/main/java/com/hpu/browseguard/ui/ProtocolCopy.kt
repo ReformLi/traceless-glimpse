@@ -1,6 +1,16 @@
 package com.hpu.browseguard.ui
 
+import com.hpu.browseguard.shared.model.ErrorCode
 import com.hpu.browseguard.shared.model.TaskStatus
+
+/**
+ * 协议 §5 错误码的线上写法。
+ *
+ * 只用于「拿到一个码字符串后判断它是哪一条」以及 Preview 取样；
+ * 本地失败不得用这个反推码——本地失败的类型里根本没有码（见 `LocalTimeoutTest`）。
+ * 枚举常量名与线上值完全一致（`ErrorPayload.kt` 的协议约束），所以这里直接取常量名。
+ */
+fun ErrorCode.wireCode(): String = name
 
 /**
  * 协议 §4 状态机的界面措辞。线名（`awaiting_selection` 之类）继续随文案一起显示，

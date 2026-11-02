@@ -16,7 +16,13 @@
 
     <string name="home_title">览盾视频</string>
     <string name="home_subtitle">本地执行 · 浏览器隔离嗅探</string>
-    <string name="home_stage">M3 · 客户端接入引擎</string>
+    <string name="home_stage">M6 · 首页与全状态覆盖</string>
+
+    <string name="status_pill_idle">未连接</string>
+    <string name="status_pill_checking">连接中…</string>
+    <string name="status_pill_connected">已连接电脑</string>
+    <string name="status_pill_offline">电脑离线</string>
+    <string name="status_pill_reconnect">点按重连</string>
 
     <string name="engine_title">本地引擎</string>
     <string name="engine_status_idle">等待连接</string>
@@ -50,25 +56,48 @@
     <string name="selfcheck_none">无</string>
 
     <string name="sniff_mode_label">嗅探方式</string>
-    <string name="sniff_mode_engine">电脑</string>
-    <string name="sniff_mode_local">本机</string>
+    <string name="sniff_mode_engine">电脑引擎</string>
+    <string name="sniff_mode_local">本机嗅探</string>
+    <string name="sniff_mode_hint">电脑引擎解析能力更强；本机嗅探无需电脑，但仅支持直链</string>
+    <string name="sniff_offline_hint">电脑引擎离线。可以点上方状态重连，或切到本机嗅探（仅直链）继续。</string>
+    <string name="sniff_offline_switch">切到本机嗅探</string>
     <string name="sniff_notice_dismiss">知道了</string>
 
     <string name="sniff_title">视频链接</string>
     <string name="sniff_field">网页链接</string>
     <string name="sniff_placeholder">粘贴要嗅探的页面地址</string>
+    <string name="sniff_paste">粘贴</string>
+    <string name="sniff_clear">清空</string>
+    <string name="sniff_clipboard_empty">剪贴板里没有可粘贴的文本</string>
+    <string name="sniff_url_invalid">只支持 http:// 或 https:// 链接</string>
+    <string name="sniff_url_hint">粘贴网页链接，或直接输入页面地址</string>
+    <string name="sniff_url_ready">链接格式可用，点「嗅探」开始</string>
     <string name="sniff_action">嗅探</string>
-    <!-- 这一行跟的是任务状态（§4），不是引擎连接状态；后者在上方状态卡。裁决 2026-11-01 收尾③① -->
+    <!-- 这一行跟的是任务状态（§4），不是引擎连接状态；后者在输入框上方的状态胶囊。裁决 2026-11-01 收尾③① -->
     <string name="sniff_running">任务状态：</string>
     <string name="sniff_result_title">嗅探结果</string>
+    <string name="sniff_count">共 %1$d 条</string>
     <string name="sniff_no_drm">无 DRM</string>
     <string name="sniff_retryable">可重试</string>
     <string name="sniff_not_retryable">不可重试</string>
     <string name="sniff_no_allowlist">引擎未返回输出目录白名单，无法发起任务</string>
+    <string name="sniff_retry">重试嗅探</string>
+    <string name="sniff_failed_title">嗅探失败</string>
+    <string name="sniff_no_media_title">没有发现可下载的媒体</string>
+    <string name="sniff_no_media_hint">换一个视频页，或换一种嗅探方式再试一次。</string>
+    <string name="sniff_drm_all_title">全部受 DRM 保护</string>
+    <string name="sniff_drm_all_body">这条页面上的媒体流都受 DRM 保护，当前版本不支持解密，无法下载。</string>
+    <string name="sniff_empty_title">还没有链接</string>
+    <string name="sniff_empty_body">粘贴一个网页链接开始嗅探，视频、音频与 HLS 流都会列在这里。</string>
+    <string name="sniff_ready_title">链接已就绪</string>
+    <string name="sniff_ready_body">点「嗅探」让电脑引擎或本机浏览器解析这条页面。</string>
 
     <string name="format_action">选择画质并下载</string>
     <string name="format_preparing">引擎解析画质中：</string>
     <string name="format_title">选择画质</string>
+    <string name="format_option_count">共 %1$d 项</string>
+    <string name="format_recommended">推荐</string>
+    <string name="format_drm_blocked">全部媒体流受 DRM 保护，无法发起下载</string>
     <!-- 画质行文案只有一处来源：ui/FormatRowCopy.kt（与 FormatSelection 映射同源），此处不再留副本 -->
     <string name="format_naming_field">命名模板</string>
     <string name="format_naming_hint">可选变量：{title} {platform} {date} {time} {uploader} {height} {width} {formatId} {taskId} {ext}</string>
@@ -79,14 +108,34 @@
     <string name="download_running_title">下载进度</string>
     <string name="download_done_title">下载完成</string>
     <string name="download_cancelled_title">任务已取消</string>
+    <string name="download_cancelled_hint">可以重新选择画质继续下载，或重新嗅探这条链接。</string>
     <string name="download_failed_title">下载失败</string>
     <string name="download_cancel">取消下载</string>
     <string name="download_cancelling">取消中…</string>
+    <string name="download_cancel_title">取消这次下载？</string>
+    <string name="download_cancel_message">已下载的分片会保留为 .part 文件；取消后任务不会继续。</string>
+    <string name="download_cancel_keep">继续下载</string>
     <string name="download_retry">重新选择画质</string>
-    <string name="download_no_progress">引擎尚未上报进度</string>
-    <string name="download_eta">剩余 %1$s</string>
-    <string name="download_output_dir">输出目录</string>
+    <string name="download_retry_sniff">重新嗅探</string>
     <string name="download_output_path">文件位置</string>
     <string name="download_naming">命名模板</string>
+    <string name="download_file_name">文件名</string>
     <string name="download_size">已下载</string>
+    <string name="download_stat_total">总大小</string>
+    <string name="download_stat_speed">速度</string>
+    <string name="download_stat_eta">剩余</string>
+    <string name="download_stat_unknown">—</string>
+    <string name="download_open_file">打开文件</string>
+    <string name="download_again">再次下载</string>
+    <string name="download_open_pc_hint">文件保存在电脑上（引擎侧），手机无法直接打开；请到电脑的文件位置查看。</string>
+    <string name="download_open_missing">文件已不在原位置，无法打开</string>
+    <string name="download_open_outside">该路径不在应用可共享的目录内，无法打开</string>
+    <string name="download_open_no_app">系统里没有能打开该文件的应用</string>
+
+    <string name="engine_panel_title">连接与引擎设置</string>
+    <string name="engine_panel_expand">展开</string>
+    <string name="engine_panel_collapse">收起</string>
+    <string name="engine_panel_summary_connected">已连接 · 引擎 %1$s</string>
+    <string name="engine_panel_summary_offline">未连接电脑引擎</string>
+    <string name="engine_panel_summary_local">本机嗅探 · 不需要电脑</string>
 </resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 本地直链的写盘根就是 getExternalFilesDir(DIRECTORY_DOWNLOADS)，整棵子树整体共享。 -->
+    <external-files-path name="app_external" path="." />
+</paths>
