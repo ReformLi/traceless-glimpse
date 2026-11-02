@@ -157,8 +157,9 @@ fun HomeScreen(
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(Modifier.height(4.dp))
+        val (sniffPart, downloadPart) = homeSubtitleRes(state.sniffExecutor, state.downloadExecutor)
         Text(
-            text = stringResource(R.string.home_subtitle),
+            text = stringResource(R.string.home_subtitle, stringResource(sniffPart), stringResource(downloadPart)),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

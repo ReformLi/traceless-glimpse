@@ -371,7 +371,7 @@ private fun RecordActions(
     onRetry: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val localFile = isLocalFile(record.outputPath, sandboxRoot)
+    val localFile = canOpenOnPhone(record.outputPath, sandboxRoot)
     Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
         Column(Modifier.padding(horizontal = 24.dp)) {
             Text(
@@ -488,8 +488,11 @@ private fun RecordStatus.labelRes(): Int = when (this) {
 }
 
 /** 只有落在应用沙箱内的路径才允许「打开文件」；引擎侧路径一律只给提示。 */
-private fun isLocalFile(path: String?, sandboxRoot: String?): Boolean {
-    if (path == null || sandboxRoot == null) return false
+/** `content://` 是手机侧 SAF 产物；本地路径还要确认仍在沙箱内且文件真的在。 */
+private fun canOpenOnPhone(path: String?, sandboxRoot: String?): Boolean {
+    if (path == null) return false
+    if (path.startsWith("content://")) return true
+    if (sandboxRoot == null) return false
     return try {
         val root = File(sandboxRoot).canonicalPath
         val file = File(path).canonicalPath

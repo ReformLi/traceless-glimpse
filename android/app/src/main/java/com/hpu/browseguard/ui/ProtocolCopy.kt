@@ -1,5 +1,8 @@
 package com.hpu.browseguard.ui
 
+import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.R
 import com.hpu.browseguard.shared.model.ErrorCode
 import com.hpu.browseguard.shared.model.TaskStatus
 
@@ -33,3 +36,23 @@ fun TaskStatus.wireName(): String = name.lowercase()
 
 /** 「状态中文 + 线名」一行显示，供界面与 ViewModel 共用。 */
 fun TaskStatus.displayWithWire(): String = "${displayLabel()}（${wireName()}）"
+
+/**
+ * 首页副标题的两段取值。
+ *
+ * 嗅探与下载的执行者是各自独立配置的，任何一侧写死都会让界面在另一侧被切走后
+ * 仍然宣称「本地执行」——用户据此判断的是「这次活儿到底是谁在跑」，写错就是误判。
+ */
+fun homeSubtitleRes(
+    sniff: SniffExecutor,
+    download: DownloadExecutor,
+): Pair<Int, Int> = Pair(
+    when (sniff) {
+        SniffExecutor.ENGINE -> R.string.home_subtitle_engine
+        SniffExecutor.LOCAL_WEBVIEW -> R.string.home_subtitle_sniff_local
+    },
+    when (download) {
+        DownloadExecutor.ENGINE -> R.string.home_subtitle_engine
+        DownloadExecutor.LOCAL_DIRECT -> R.string.home_subtitle_download_local
+    },
+)

@@ -1,8 +1,11 @@
 package com.hpu.browseguard
 
+import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.shared.model.TaskStatus
 import com.hpu.browseguard.ui.displayLabel
 import com.hpu.browseguard.ui.displayWithWire
+import com.hpu.browseguard.ui.homeSubtitleRes
 import com.hpu.browseguard.ui.wireName
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -55,5 +58,33 @@ class ProtocolCopyTest {
         assertEquals("已完成", TaskStatus.DONE.displayLabel())
         assertEquals("已取消", TaskStatus.CANCELLED.displayLabel())
         assertEquals("已失败", TaskStatus.FAILED.displayLabel())
+    }
+
+    /**
+     * 首页副标题四格取值（M6-4 收尾②）。
+     *
+     * 回归点：改造前这里写死「本地执行 · 浏览器隔离嗅探」，而默认执行者其实是电脑引擎，
+     * 用户照副标题判断「谁在跑这次活儿」就会判反。两段各自跟随各自的配置。
+     */
+    @Test
+    fun homeSubtitleFollowsBothExecutors() {
+        val engine = R.string.home_subtitle_engine
+        val expected = mapOf(
+            (SniffExecutor.ENGINE to DownloadExecutor.ENGINE) to (engine to engine),
+            (SniffExecutor.ENGINE to DownloadExecutor.LOCAL_DIRECT) to
+                (engine to R.string.home_subtitle_download_local),
+            (SniffExecutor.LOCAL_WEBVIEW to DownloadExecutor.ENGINE) to
+                (R.string.home_subtitle_sniff_local to engine),
+            (SniffExecutor.LOCAL_WEBVIEW to DownloadExecutor.LOCAL_DIRECT) to
+                (R.string.home_subtitle_sniff_local to R.string.home_subtitle_download_local),
+        )
+        assertEquals(4, expected.size)
+        expected.forEach { (executors, slots) ->
+            assertEquals(
+                "嗅探=${executors.first} 下载=${executors.second}",
+                slots,
+                homeSubtitleRes(executors.first, executors.second),
+            )
+        }
     }
 }
