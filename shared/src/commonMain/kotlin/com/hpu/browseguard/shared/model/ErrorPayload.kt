@@ -16,13 +16,13 @@ enum class ErrorCategory {
 }
 
 /**
- * 错误码全集：PROTOCOL §5 全部 28 个 + 裁决新增 VALIDATION_ERROR（共 29 个）。
+ * 错误码全集：PROTOCOL §5 全部 28 个 + 裁决新增 VALIDATION_ERROR、NOT_FOUND（共 30 个）。
  *
  * 所有 code 值均为大写蛇形，与 Kotlin 常量名完全一致，因此无需 @SerialName。
  * 序列化按常量名输出，即协议 code 值。
  *
- * VALIDATION_ERROR 仅用于请求体校验失败（含未知字段），PROTOCOL v0.1 文本未含，
- * M0 结束后另记 changelog（已裁决）。
+ * VALIDATION_ERROR 仅用于请求体校验失败（含未知字段），NOT_FOUND 仅用于 404 响应，
+ * PROTOCOL v0.1 文本未含两者（均已记 changelog）。
  */
 @Serializable
 enum class ErrorCode(

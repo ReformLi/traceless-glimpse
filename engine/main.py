@@ -262,7 +262,7 @@ def _do_download(record: TaskRecord) -> None:
     """
     _begin_download(record)
     if ENGINE_MODE == "real":
-        _download_real(record)
+        _download_safely(record)
 
 
 _FORMAT_UNAVAILABLE_MESSAGES = {
@@ -383,6 +383,37 @@ def _fail_task(
         return  # 取消与失败竞态：终态优先，不覆盖
     task.error = error_payload(code, detail=detail)
     _transition(task, TaskStatus.FAILED)
+
+
+def _advance_safely(record: TaskRecord) -> None:
+    """状态推进的兜底出口：逃逸异常必须落 failed（§8-12 审计的不变式）。
+
+    `TaskWorker._run` 对异常只记日志不改状态，`get_task` 的同步兜底更是会抛成 500——
+    两条路都让任务永久停在 `sniffing`，既不失败也不完成。逐个调用点补 try 靠人记得，
+    收尾③ 的 `sniffing` P0 已经证明记不住；兜底放在推进入口这一层。
+    """
+    try:
+        _advance(record)
+    except Exception as exc:  # noqa: BLE001 —— 非终态不得逃逸，否则任务永久停滞
+        logger.exception(
+            "advance_crashed task_id=%s type=%s", record.task.id, type(exc).__name__
+        )
+        _fail_task(record.task, ErrorCode.UNKNOWN, {"reason": "advance_crashed"})
+
+
+def _download_safely(record: TaskRecord) -> None:
+    """下载入口的兜底出口，理由同 `_advance_safely`。
+
+    `_download_real` 自己已经把下载异常收成 `UNKNOWN` / `PARTIAL_DOWNLOAD`，
+    这里补的是它**外面**那圈：解析器非契约异常、进度写回、终态转移自身崩掉。
+    """
+    try:
+        _download_real(record)
+    except Exception as exc:  # noqa: BLE001 —— 非终态不得逃逸，否则任务永久停滞
+        logger.exception(
+            "download_crashed task_id=%s type=%s", record.task.id, type(exc).__name__
+        )
+        _fail_task(record.task, ErrorCode.UNKNOWN, {"reason": "download_crashed"})
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +576,7 @@ def _advance(record: TaskRecord) -> None:
             logger.info("download_attempt task_id=%s", task.id)
             _do_download(record)
             record.last_selector_key = _selector_key(task.formatSelector)
-    elif task.status == TaskStatus.DOWNLOADING:
+    elif task.status == TaskStatus.DOWNLOADING and ENGINE_MODE == "stub":
         task.progress = Progress(
             phase="done",
             bytesDownloaded=524288000,
@@ -555,6 +586,9 @@ def _advance(record: TaskRecord) -> None:
             percent=100.0,
         )
         _transition(task, TaskStatus.DONE)
+    elif task.status == TaskStatus.DOWNLOADING:
+        # real 模式的 downloading 归 `_download_real` 所有：在这里推进会伪造 done 与字节数
+        logger.info("advance_skipped_downloading task_id=%s", task.id)
 
 
 def _selector_key(selector: FormatSelector) -> str:
@@ -650,9 +684,9 @@ async def _process_task(task_id: str) -> None:
         if record.sniff is None:
             _fail_task(task, ErrorCode.UNKNOWN, {"reason": "missing_sniff"})
             return
-        await asyncio.to_thread(_download_real, record)
+        await asyncio.to_thread(_download_safely, record)
         return
-    await asyncio.to_thread(_advance, record)
+    await asyncio.to_thread(_advance_safely, record)
 
 
 DEFAULT_AWAITING_SELECTION_TIMEOUT_SECONDS = 24 * 60 * 60
@@ -886,9 +920,9 @@ def list_tasks(limit: int = Query(default=50, ge=1, le=200), cursor: str | None 
 def get_task(task_id: str):
     record = _get_record_or_404(task_id)
     if ENGINE_MODE == "stub":
-        _advance(record)  # 桩语义：GET 惰性推进
+        _advance_safely(record)  # 桩语义：GET 惰性推进
     elif not _submit_if_queued(record):
-        _advance(record)  # worker 未启动兜底（正常启动必已启动）
+        _advance_safely(record)  # worker 未启动兜底（正常启动必已启动）
     return _task_response(record.task)
 
 
@@ -977,7 +1011,7 @@ def start_download(task_id: str, req: DownloadRequest):
         if WORKER.started:
             WORKER.submit(task.id)
         else:
-            _download_real(record)
+            _download_safely(record)
         return response
     _do_download(record)
     record.last_selector_key = _selector_key(req.formatSelector)
