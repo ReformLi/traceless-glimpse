@@ -40,6 +40,10 @@ import org.junit.runner.RunWith
  *
  * 页面地址由 instrumentation 参数 `baseUrl` 传入，默认走 `adb reverse` 的
  * media_server（`http://127.0.0.1:8731`）。观察一律走 `BgvAudit`。
+ *
+ * M6-5 把闭环再往前推两格，证的是「门槛」而不是「读取」：
+ * 撤销授权后同一条直链必须重新 403（且授权位要回来就能立刻恢复，说明撤销≠删值）；
+ * 一键清除之后由 `CookieManager.getCookie` 亲口作证值已经空了，此后即使授权还在也下不动。
  */
 @RunWith(AndroidJUnit4::class)
 class CookieClosedLoopDeviceTest {
@@ -104,7 +108,8 @@ class CookieClosedLoopDeviceTest {
         assertFalse("失败不得留下成品文件", File(outputDir, "protected.mp4").exists())
         Log.w("BgvAudit", "device_download_without_cookie=403")
 
-        val gated = ConsentCookieProvider(WebViewCookieVault(audit = audit), consent, audit)
+        val vault = WebViewCookieVault(audit = audit)
+        val gated = ConsentCookieProvider(vault, consent, audit)
         val withCookie = LocalDirectDownloader(audit = audit, cookies = gated).start(
             StartRequest.ViaLocal(link, outputDir.absolutePath, roots),
         ).toList()
@@ -119,5 +124,67 @@ class CookieClosedLoopDeviceTest {
             "BgvAudit",
             "device_download_with_cookie=done bytes=${product.length()} name=${product.name}",
         )
+
+        // 撤销：授权位一收，下载器连 CookieStore 都不碰，直接回到 403 那条原始出口。
+        consent.revoke(cookieHostOf(link.mediaUrl))
+        val afterRevoke = LocalDirectDownloader(audit = audit, cookies = gated).start(
+            StartRequest.ViaLocal(link, outputDir.absolutePath, roots),
+        ).toList()
+        val revoked = afterRevoke.filterIsInstance<DownloadEvent.Failed>().singleOrNull()
+            ?: error("撤销授权后必须重新读不到登录态：$afterRevoke")
+        val revokedFailure = revoked.failure as BackendFailure.Local
+        assertEquals(LocalReason.LINK_UNLOADABLE, revokedFailure.reason)
+        assertTrue("撤销后仍是站点的 403：${revokedFailure.message}", revokedFailure.message.contains("403"))
+        Log.w("BgvAudit", "device_revoke_ends_the_loop=403")
+
+        // 重新授权只把「读」的许可要回来，值本身还在 jar 里——这是撤销≠删除的直接证据。
+        consent.grant(cookieHostOf(link.mediaUrl))
+        val regranted = LocalDirectDownloader(audit = audit, cookies = gated).start(
+            StartRequest.ViaLocal(link, outputDir.absolutePath, roots),
+        ).toList()
+        assertEquals(
+            "撤销再授权后应恢复原闭环：$regranted",
+            TaskStatus.DONE,
+            regranted.filterIsInstance<DownloadEvent.Terminal>().last().task.status,
+        )
+        Log.w("BgvAudit", "device_regrant_works=done")
+
+        // 一键清除：`removeAllCookies` 是唯一能把值抹掉的出口，清完由 CookieManager 亲口作证。
+        vault.clearAll()
+        assertTrue(
+            "清除后 CookieManager 必须读不到任何 Cookie",
+            cookieIsGoneWithin(link.mediaUrl, 5_000L),
+        )
+        Log.w("BgvAudit", "device_clear_all_get_cookie=empty")
+
+        val afterClear = LocalDirectDownloader(audit = audit, cookies = gated).start(
+            StartRequest.ViaLocal(link, outputDir.absolutePath, roots),
+        ).toList()
+        val cleared = afterClear.filterIsInstance<DownloadEvent.Failed>().singleOrNull()
+            ?: error("值已清空：授权位还在也不该下得动：$afterClear")
+        assertEquals(LocalReason.LINK_UNLOADABLE, (cleared.failure as BackendFailure.Local).reason)
+        Log.w(
+            "BgvAudit",
+            "device_cleared_download=403 consent_still_granted=" +
+                consent.isGranted(cookieHostOf(link.mediaUrl)),
+        )
+
+        consent.revoke(cookieHostOf(link.mediaUrl))
+    }
+
+    /** `removeAllCookies` 是异步的：给它 flush 的机会，再让 `getCookie` 自己回答。 */
+    private fun cookieIsGoneWithin(url: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val cookie = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+            if (cookie.isNullOrEmpty()) return true
+            try {
+                Thread.sleep(200L)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        return false
     }
 }

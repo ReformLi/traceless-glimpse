@@ -419,6 +419,154 @@ class HomeViewModelBehaviorTest {
         assertEquals(localOutputPath(task), row.outputPath)
     }
 
+    /**
+     * 401/403 且这一站还没授权 = 差一次点头，不是失败。
+     * 任务停在等待授权态：画质表留着、历史不动、执行者开关锁住。
+     */
+    @Test
+    fun a403FromAnUngrantedHostWaitsForConsentInsteadOfFailing() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val vm = fakes.connectedViewModel()
+        val link = sniffResult()
+        fakes.reachLocalSelecting(vm, link)
+
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+
+        val awaiting = vm.state.value.download as? DownloadPhase.AwaitingCookieConsent
+            ?: error("403 且未授权必须停在等待授权态：${vm.state.value.download}")
+        assertEquals("cdn.example.com", awaiting.host)
+        assertEquals(403, awaiting.status)
+        assertEquals(
+            "画质表要留着，点同意之后直接接上同一条",
+            listOf(localTaskId(link.mediaUrl)),
+            awaiting.formats.map { it.formatId },
+        )
+        assertEquals(localTaskId(link.mediaUrl), vm.state.value.selectedFormatId)
+        assertTrue("等待授权算在途：换执行者会把这张表换掉", vm.state.value.downloadInFlight)
+        assertFalse("没点头不许偷偷记授权", fakes.consent.isGranted("cdn.example.com"))
+        assertFalse("差一次同意不是失败：历史不能落成 FAILED", fakes.history.calls.contains("markFailed"))
+        assertEquals("403", fakes.audit.of("cookie_consent_required").single().fields["status"])
+    }
+
+    /** 401 与 403 是同一条出路：都说明这一站要先有登录状态。 */
+    @Test
+    fun a401IsTheSameMissingLoginAsA403() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val vm = fakes.connectedViewModel()
+        fakes.reachLocalSelecting(vm, sniffResult())
+
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(401)))
+
+        val awaiting = vm.state.value.download as? DownloadPhase.AwaitingCookieConsent
+            ?: error("401 也该等一次授权：${vm.state.value.download}")
+        assertEquals(401, awaiting.status)
+    }
+
+    /** 点「拒绝」回到改造前的出口：措辞、无 §5 码、历史写失败，一个都不变。 */
+    @Test
+    fun denyingFallsBackToTheOriginalLinkUnloadableExit() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val vm = fakes.connectedViewModel()
+        fakes.reachLocalSelecting(vm, sniffResult())
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+
+        vm.denyCookieConsent()
+
+        val failed = vm.state.value.download as DownloadPhase.Failed
+        assertNull("站点 403 不是引擎的码", failed.code)
+        assertEquals(LocalFailures.linkUnloadable(403).message, failed.message)
+        assertTrue("用户自己拒了，这一行就该写失败", fakes.history.calls.contains("markFailed"))
+        assertFalse("拒绝就是拒绝：不许留下授权", fakes.consent.isGranted("cdn.example.com"))
+        assertEquals("cdn.example.com", fakes.audit.of("cookie_consent_denied").single().fields["host"])
+    }
+
+    /**
+     * 点「同意并继续」= 一次点击跑完三步：重放本机嗅探（这次才允许页面存 Cookie）
+     * → 画质表回来 → 自动开下。中间不能再问用户第二次。
+     */
+    @Test
+    fun agreeingReRunsTheLocalSniffAndStartsTheDownloadWithoutAskingAgain() = runTest(dispatcher) {
+        val fakes = Fakes(
+            settings = FakeEngineSettings(
+                downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+            ),
+        )
+        val vm = fakes.connectedViewModel()
+        val link = sniffResult()
+        fakes.reachLocalSniffSuccess(vm, link)
+        fakes.reachLocalSelectingAfter(vm, link)
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+
+        vm.grantCookieConsent()
+
+        assertTrue("同意即记账", fakes.consent.isGranted("cdn.example.com"))
+        assertEquals(
+            "本机嗅探这一页必须重放一次：Cookie 是页面加载时写进容器的",
+            2,
+            fakes.provider.localSniffBackend.requests.size,
+        )
+
+        fakes.provider.localSniffBackend.emit(SniffEvent.Results(listOf(link)))
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
+        )
+
+        val starts = fakes.provider.downloadBackend.startRequests
+        assertEquals("画质表回来后直接续上下载", 2, starts.size)
+        assertTrue("续跑的仍是本机直链那一条", starts.last() is StartRequest.ViaLocal)
+        assertEquals(
+            "重放时替用户点掉的就是原来那条画质",
+            localTaskId(link.mediaUrl),
+            vm.state.value.selectedFormatId,
+        )
+    }
+
+    /** 已经授权过的站点再回 403 是真的读不到：不能再拿弹窗糊第二次。 */
+    @Test
+    fun anAlreadyGrantedHostGetsThePlainFailureNotAnotherDialog() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        fakes.consent.grant("cdn.example.com")
+        val vm = fakes.connectedViewModel()
+        fakes.reachLocalSelecting(vm, sniffResult())
+
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+
+        assertTrue("授权过了就是真失败", vm.state.value.download is DownloadPhase.Failed)
+        assertTrue(fakes.audit.of("cookie_consent_required").isEmpty())
+        assertTrue(fakes.history.calls.contains("markFailed"))
+    }
+
+    /** 授权管的是「手机自己直连」那一条；交给电脑引擎时不问，也不该问。 */
+    @Test
+    fun theEngineExecutorNeverAsksForCookieConsent() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+        fakes.reachSniffSuccess(vm, listOf(sniffResult()))
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(DownloadEvent.Selecting("01a1", listOf(formatInfo("137"))))
+        vm.startDownload()
+
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+
+        assertTrue("引擎下载这一支不弹窗：${vm.state.value.download}", vm.state.value.download is DownloadPhase.Failed)
+        assertTrue(fakes.audit.of("cookie_consent_required").isEmpty())
+    }
+
+    /** 等待授权时那张表是重试要用的东西：换执行者必须被挡下。 */
+    @Test
+    fun switchingTheExecutorIsRefusedWhileWaitingForConsent() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val vm = fakes.connectedViewModel()
+        fakes.reachLocalSelecting(vm, sniffResult())
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+        assertTrue(vm.state.value.download is DownloadPhase.AwaitingCookieConsent)
+
+        vm.selectDownloadExecutor(DownloadExecutor.ENGINE)
+
+        assertEquals(DownloadExecutor.LOCAL_DIRECT, vm.state.value.downloadExecutor)
+    }
+
     private class Fakes(
         val settings: FakeEngineSettings = FakeEngineSettings(),
         val provider: FakeBackendProvider = FakeBackendProvider(),
@@ -437,6 +585,29 @@ class HomeViewModelBehaviorTest {
             vm.sniff()
             provider.sniffBackend.emit(SniffEvent.Results(results))
             assertEquals(SniffPhase.Success(results), vm.state.value.sniff)
+        }
+
+        /** 本机嗅探成功：走 [FakeBackendProvider.localSniffBackend] 那一条腿。 */
+        suspend fun reachLocalSniffSuccess(vm: HomeViewModel, link: SniffResult) {
+            vm.editSourceUrl("https://example.com/watch")
+            vm.sniff()
+            provider.localSniffBackend.emit(SniffEvent.Results(listOf(link)))
+            assertEquals(SniffPhase.Success(listOf(link)), vm.state.value.sniff)
+        }
+
+        /** 画质表就位、`startDownload()` 已发出——403 之类的开局都从这里起步。 */
+        suspend fun reachLocalSelectingAfter(vm: HomeViewModel, link: SniffResult) {
+            vm.pickFormats()
+            provider.downloadBackend.emitPrepare(
+                DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
+            )
+            vm.startDownload()
+        }
+
+        /** 嗅探（电脑引擎那条腿）→ 画质表 → 开下，一次铺完。 */
+        suspend fun reachLocalSelecting(vm: HomeViewModel, link: SniffResult) {
+            reachSniffSuccess(vm, listOf(link))
+            reachLocalSelectingAfter(vm, link)
         }
 
         /** 本地直链一路走到成功终态；SAF 复制是否成功由 [FakeBackendProvider.publishResult] 决定。 */
