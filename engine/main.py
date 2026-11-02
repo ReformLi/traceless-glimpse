@@ -927,6 +927,24 @@ async def protocol_version_middleware(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def cookie_audit_middleware(request: Request, call_next):
+    """每个请求留一行 Cookie 存在性审计（M6-5 D4），值永不进日志。
+
+    协议 §1 规定客户端不该发 Cookie，但「不该」不等于「没有」：这条行是
+    可 grep 的正面证据（`cookie=present` 计数为 0），而不是靠「日志里没有」推断。
+    只打方法/路径/存在性，路径也刻意丢掉查询串——query 里可能带 token。
+    """
+    logger.info(
+        "http_request method=%s path=%s cookie=%s set_cookie=%s",
+        request.method,
+        request.url.path,
+        "present" if "cookie" in request.headers else "absent",
+        "present" if "set-cookie" in request.headers else "absent",
+    )
+    return await call_next(request)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     """硬验收（用户裁决）：请求体/参数校验失败 → 422 VALIDATION_ERROR
