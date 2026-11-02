@@ -8,9 +8,9 @@ import org.junit.Test
 /**
  * 本地模式的两条界面/状态契约（细节 1、3 与缺口裁决 ① 的第二道门）。
  *
- * 这些路径没有可直接驱动的 JVM 入口（`HomeViewModel` 依赖 `Application`），
- * 所以用源码契约钉住：函数体提取后做包含/排斥判定，并先断言哨兵，
- * 确保扫描本身不是空的——否则「没找到就等于没违规」会让守卫变成一句空话。
+ * 这些路径没有可直接驱动的界面入口，因此用源码契约钉住：
+ * 函数体提取后做包含/排斥判定，并先断言哨兵，确保扫描本身不是空的——
+ * 否则「没找到就等于没违规」会让守卫变成一句空话。
  */
 class LocalModeContractTest {
 
@@ -21,7 +21,7 @@ class LocalModeContractTest {
     @Test
     fun executorSwitchIsRefusedWhileATaskIsInFlight() {
         val body = functionBody(viewModel, "selectDownloadExecutor")
-        assertTrue("扫描没落到位：$body", body.contains("config.downloadExecutor = executor"))
+        assertTrue("扫描没落到位：$body", body.contains("settings.downloadExecutor = executor"))
         assertTrue("缺了活跃任务门", body.contains("if (snapshot.downloadInFlight) return"))
         assertFalse("切换不得再取消正在跑的任务", body.contains("downloadJob?.cancel()"))
     }

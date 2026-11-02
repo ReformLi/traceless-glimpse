@@ -2536,10 +2536,128 @@ MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
 
 ### 22.6 仍开放的遗留
 
-1. **`BGV_OUTPUT_DIR_ALLOWLIST` 的语义偏差待你确认**（见 §22.1 末尾）：字面复用不可能，手机侧等价物已落地。
-2. **`LocalWebViewSniffer` 仍未写**，裁决 2 明示留到下一步；细节 4 的「嗅探入口切换 + PC 不可达降级」也随之下一步设计。
+1. **`BGV_OUTPUT_DIR_ALLOWLIST` 的语义偏差已裁决**（2026-11-02）：Android 侧沙箱根就用应用专属外部
+   Download 目录，`LocalOutputSandbox` 的 `canonicalFile` 校验保持不变；不复用 PC 侧白名单。
+2. **`LocalWebViewSniffer` 空壳已落 §23**（`WEBVIEW_UNAVAILABLE` 有了第一个生产者）；真实
+   `shouldInterceptRequest` 拦截与细节 4 的「嗅探入口切换 + PC 不可达降级」仍是下一步。
 3. **`localSandboxRoot` 只在进程启动时取一次**。外部存储若中途重挂，`mkdirs()` 已经执行过，后续写盘会
    失败成 `Local(DISK)`（沙箱仍会先判，目录不存在时判为 reject）。这不是安全缺口，但提示文案会偏「磁盘」。
 4. **本地链路与引擎链路共用一个 `DOWNLOAD_POLL_INTERVAL_MS = 800ms`**（§21.5-5 原样保留）。
 5. **本轮设备取证只覆盖本地直链**；引擎模式下载在 UI 加了「执行中禁用切换」后未再跑真机，回归面靠 97 条单测兜底。
+
+## 23. M4 第 3 步 ①：后端注入 + WebView 排雷核对（2026-11-02）
+
+本节对应裁决后的第 3 步第 1 小步：把后端构造从界面里拔出来，收进一个组装根；
+并附上 `shouldInterceptRequest` 落地前的三条环境限制核对。**界面行为零变化**——
+没有新增控件、没有改文案，改的是「谁 new 后端、谁持有设置」。
+
+### 23.1 落地形态
+
+| 文件 | 职责 | 关键点 |
+| --- | --- | --- |
+| [EngineConfig.kt:28](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineConfig.kt#L28) | `EngineSettings` 接口 | 只暴露 `baseUrl` / `save` / `downloadExecutor`；`EngineConfig` 实现它。§15.3 早就指出 ViewModel 层单测的门槛是 `Application` + `SharedPreferences`，这一步先把设置这道门拆掉，第 ② 小步的 FakeBackend 行为单测才不用拖 Android 运行时 |
+| [BackendProvider.kt:9](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendProvider.kt#L9) | `SniffExecutor` 枚举 | `ENGINE` / `LOCAL_WEBVIEW`。**不持久化、无界面选项**：裁决 2 说嗅探固定引擎，这里只留注入接缝，避免在细节 4 定案前造出一个半截设置 |
+| [:20](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendProvider.kt#L20) | `BackendProvider` 接口 | 三个出口：`localSandboxRoot`、`sniff(executor)`、`download(executor)`。界面只依赖它，不 import 任何实现 |
+| [AppContainer.kt:21](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/AppContainer.kt#L21) | 组装根 | 全仓唯一 new 具体后端的地方；持有 `settings`、共享 `EngineClient`、沙箱根。`sniff()`(:35) 按执行者选 `HttpSniffer` / `LocalWebViewSniffer`，`download()`(:40) 选 `HttpDownloader` / `LocalDirectDownloader` |
+| [LocalWebViewSniffer.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalWebViewSniffer.kt) | WebView 嗅探空壳 | 被选中时只发一条 `SniffEvent.Failed(Local(WEBVIEW_UNAVAILABLE))`；`WEBVIEW_UNAVAILABLE` 在 [BackendFailure.kt:58](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt#L58) 首次有了生产者，文案见 [LocalFailures.kt:58](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L58)「请连接电脑」 |
+| [HomeViewModel.kt:135](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L135) | 纯 `ViewModel` | 构造只收 `EngineSettings` + `BackendProvider`；不再继承 `AndroidViewModel`。嗅探走 [:230](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L230) `backends.sniff(SniffExecutor.ENGINE)`；下载走 [:268](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L268)/[:375](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L375)/[:386](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L386) `backends.download(...)`；装配口在 [:419](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L419) |
+| [MainActivity.kt:13](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/MainActivity.kt#L13) | 组装根的宿主 | `by lazy { AppContainer(applicationContext) }`；[HomeScreen.kt:70](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L70) `HomeRoute(container)` 用工厂取 ViewModel |
+
+三条设计决定：
+
+1. **设置也一起注入，不只是后端**。只把后端换成接口、却让 ViewModel 继续 `EngineConfig(app)`，
+   等于第 ② 小步还是造不出 ViewModel。这一步把「Android 三件套」整体挡在 `AppContainer` 里，
+   ViewModel 从此是纯 Kotlin 类。
+2. **保留「每次调用按当前设置构造」**。引擎地址改完立即生效，与改造前一致（§20.6-3 的取舍没变）；
+   本地下载器本来就不依赖实例身份——取消表是进程级的。
+3. **空壳也走注入，不绕过**。`LocalWebViewSniffer` 现在没有界面入口，但它已经能通过
+   `BackendProvider.sniff(LOCAL_WEBVIEW)` 被选中并有单测钉住失败形状；
+   第 ③ 小步只需要换实现体，不用再动装配结构。
+
+**仍未解开的门**：`sniff()` 开头仍要求 `Connection.Connected`（[HomeViewModel.kt:215](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L215)），
+因为 `SniffRequest.outputDir` 取的是引擎自检白名单。所以今天 UI 走不到 `LOCAL_WEBVIEW`；
+全本地模式的嗅探入口属于第 ③ 小步 + 细节 4 的 UI 裁决。
+
+### 23.2 取证（现场复跑）
+
+- `:android:app:testDebugUnitTest --rerun` → **101 passed / 0 failed / 0 errors / 0 skipped**
+  （16 个类；新增 `BackendInjectionTest` 4 条）。
+- `assembleDebug` 通过；APK 32,064,774 字节。`classes*.dex` 里能搜到 `AppContainer`、
+  `LocalWebViewSniffer`、`WEBVIEW_UNAVAILABLE`（Python zip 扫描，不是看构建日志猜）。
+- 变异体 I：把 `backends.sniff(...)` 换回 `HttpSniffer(settings.baseUrl, client)` 并补 import →
+  `BackendInjectionTest` 4 条中 **3 条红**（`uiNeverConstructsBackendImplementations`、
+  `viewModelDependsOnTheInjectedInterfacesOnly`、`assemblyRootIsTheOnlyConstructionSite`），
+  空壳行为那条仍绿——两组守卫各管一边，不是同一条断言换名字。还原后 `diff -q` 逐字节一致，
+  全量复跑 101/0。
+- 本条没有设备取证：改的是构造路径，屏上没有新东西；真机观察留到第 ③ 小步一次做。
+
+### 23.3 WebView 排雷核对报告（第 ③ 小步的输入）
+
+说明：以下 Android 行为按平台 API 口径核对（`WebViewClient.shouldInterceptRequest`、
+`WebResourceRequest.getRequestHeaders`、`CookieManager`、`WebSettings`）。本机离线，
+**官方网页没抓到，所以标了「待真机日志确认」的项不算已证事实**——第 ③ 小步先打一轮
+header 观测日志再定稿。
+
+#### 限制 1：拦截请求拿不到完整请求头
+
+| 项 | 口径 | 影响 |
+| --- | --- | --- |
+| `getRequestHeaders()` | 平台只承诺「这个请求的请求头」，**不承诺完整**；`Cookie` 通常不在其中（由 `CookieManager` 单独管理），`Referer` 也可能缺席 | 防盗链站点按 Referer/UA 判定，直接拿 URL 去下会 403 |
+| `CookieManager.getCookie(url)` | 能按 URL 取到浏览器当前 Cookie（含 HttpOnly） | 可以作为 Cookie 来源，但**不能塞回 `headersHint`**：协议脱敏约定与本地下载器的 `FORBIDDEN_HEADERS` 都会把它滤掉 |
+| JS 注入（`fetch`/XHR 包装） | 只能看见 JS 发起的请求，看不见 `<video src>` / MSE 的网络栈 | 只能当补充手段，不能当主路径；`blob:`/MSE 页面本来就没有可下载直链 |
+
+**方案（按优先级）**：
+1. 嗅探会话在**主线程**捕获页面 URL 与 `WebSettings.getUserAgentString()`，下载时合成
+   `Referer` + `User-Agent`；这两项是防盗链最常见的组合，且不涉及凭据。
+2. Cookie 若要支持，必须新增一条**显式**通道（例如 `SniffResult.cookieHeader` 或下载前的
+   `CookieProvider`），并同步改协议脱敏与本地下载器——**不在 `headersHint` 里夹带**。
+   在通道没定之前，需要 Cookie 的站点走「403 → 提示连接电脑」，不做静默降级。
+3. JS 注入只用于捕获接口式直链（页面用 `fetch` 取播放地址的那类），且要过同一套头过滤。
+4. 硬编码 UA/Referer 只当兜底，不写死成唯一方案——站点换了规则就会静默失效。
+5. 真机验证件：media_server 加一个「必须带指定 Referer 才给 200」的 fixture，
+   分别验「合成 Referer 成功」和「缺失时 403 文案正确」。
+
+#### 限制 2：WebView 主线程 vs 下载 IO 线程
+
+- `shouldInterceptRequest` 的回调**不在 UI 线程**（平台明确要求客户端自行注意线程安全），
+  所以不能在里面读 `webView.url`、改设置或碰视图。
+- 设计：回调只做三件轻活——判断是否候选媒体、去重、`trySend` 进 `Channel`
+  （线程安全、非阻塞），然后立刻 `return null` 让页面继续加载；页面 URL/UA 已在主线程
+  的 `onPageStarted` 捕获好，随会话一起传入。
+- `HomeViewModel` 在 `viewModelScope`（Main）收集候选；下载器内部是
+  `flow { … }.flowOn(Dispatchers.IO)`，网络与写盘不占主线程。
+- 收尾：第一个候选或超时后关闭 `Channel`，`destroy()` 回到主线程执行；会话有明确的
+  「成功 / 超时 / 无候选」三出口，不靠 WebView 一直挂着。
+
+#### 限制 3：Range 分段必须在 `SniffResult` 层清掉
+
+- WebView 对 `<video>` 的请求天然带 `Range`，且可能先来一个 `bytes=0-0` 探测。
+  §22.3 已经证明「原样回放」会变成 `206 + 1 字节 = 完成` 的假成功。
+- 设计：把 `LocalDirectDownloader` 现在的 `FORBIDDEN_HEADERS` 提成共享策略
+  （例如 `SniffHeaderPolicy.sanitize`），**嗅探侧在构造 `SniffResult` 之前就过滤**，
+  下载侧再过滤一次（纵深防御，两侧都不信任输入）。至少丢掉
+  `range` / `if-range` / `cookie` / `authorization` / `proxy-authorization` / `set-cookie`，
+  只保留 `referer` / `user-agent`（必要时 `origin`）。
+- 去重按 `scheme://host/path?query`：同一 URL 的多次 Range 请求只产出一行；
+  查询串必须保留（签名直链靠它），fragment 丢掉。
+- 守卫：一条静态断言「两侧都调用同一过滤函数」+ 一条行为单测「两次带不同 Range 的候选 →
+  一行结果、没有 range 键」。
+
+#### 其它必须在第 ③ 小步一起定的点
+
+- **WebView 可用性**：创建/加载必须在主线程；页面不可见时部分站点不会触发懒加载，
+  先用离屏 WebView 试，抓不到就落 `WEBVIEW_UNAVAILABLE` 并提示连电脑，不假装支持。
+- **安全开关**：`javaScriptEnabled` 按站点需要开；`allowFileAccess` / `allowUniversalAccessFromFileURLs`
+  保持关闭；嗅探会话结束清缓存与 Cookie 的策略要显式写，不默认继承用户浏览器态。
+- **明文直链**：局域网 `http://` fixture 在真机上要过 `network_security_config`；
+  第 ③ 小步的设备验证沿用 §22 的做法（临时放行 + 用完即删），不写进默认配置。
+
+### 23.4 遗留
+
+1. **嗅探仍被引擎连接门控**（`sniff()` 需要 `selfcheck.outputDirAllowlist`），
+   `LOCAL_WEBVIEW` 今天没有界面可达路径；这是第 ③ 小步 + 细节 4 的联合裁决点。
+2. **`connect()` 仍直用 `EngineClient`**，没抽 `InfoBackend`（§20.6-2 原样保留）；
+   `AppContainer` 里的 client 与 ViewModel 里的 client 共用同一个 OkHttp 实例，不额外开连接池。
+3. **WebView 报告里的「实际给哪些头」未在设备上观测**；第 ③ 小步先打日志再加合成逻辑。
+4. **FakeBackend + `sniffing`/`format_preparing` 行为单测**是第 ② 小步，尚未开工。
 

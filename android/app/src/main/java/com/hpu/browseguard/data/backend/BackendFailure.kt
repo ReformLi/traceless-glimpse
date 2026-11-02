@@ -53,4 +53,7 @@ enum class LocalReason {
      * 这里是「没试，先拒」，界面文案与排查方向都不一样。
      */
     OUTPUT_DIR_REJECTED,
+
+    /** 手机侧 WebView 嗅探不可用：尚未接线，或该页面只能从 PC 侧嗅。 */
+    WEBVIEW_UNAVAILABLE,
 }

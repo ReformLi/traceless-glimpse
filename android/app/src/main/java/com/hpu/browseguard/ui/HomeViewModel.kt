@@ -1,25 +1,22 @@
 package com.hpu.browseguard.ui
 
-import android.app.Application
-import android.os.Environment
 import android.util.Log
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.hpu.browseguard.data.EngineClient
-import com.hpu.browseguard.data.EngineConfig
-import com.hpu.browseguard.data.EngineFailure
 import com.hpu.browseguard.data.EngineException
+import com.hpu.browseguard.data.EngineFailure
+import com.hpu.browseguard.data.EngineSettings
 import com.hpu.browseguard.data.FormatSelection
 import com.hpu.browseguard.data.backend.BackendFailure
-import com.hpu.browseguard.data.backend.DownloadBackend
+import com.hpu.browseguard.data.backend.BackendProvider
 import com.hpu.browseguard.data.backend.DownloadEvent
 import com.hpu.browseguard.data.backend.DownloadExecutor
-import com.hpu.browseguard.data.backend.HttpDownloader
-import com.hpu.browseguard.data.backend.HttpSniffer
-import com.hpu.browseguard.data.backend.LocalDirectDownloader
 import com.hpu.browseguard.data.backend.LocalFailures
 import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.SniffEvent
+import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
@@ -129,29 +126,30 @@ data class HomeUiState(
             connection.selfcheck.outputDirAllowlist.isNotEmpty()
 }
 
-class HomeViewModel(app: Application) : AndroidViewModel(app) {
+/**
+ * 首页状态机。
+ *
+ * 设置与后端都从外部注入：这个类不再认识 `Application`、`SharedPreferences`
+ * 或任何具体后端，JVM 单测可以用假设置 + FakeBackend 直接驱动状态流转。
+ */
+class HomeViewModel(
+    private val settings: EngineSettings,
+    private val backends: BackendProvider,
+) : ViewModel() {
 
-    private val config = EngineConfig(app)
     private val client = EngineClient()
-
-    /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
-    private val localSandboxRoot: String? = try {
-        app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.apply { mkdirs() }?.absolutePath
-    } catch (e: SecurityException) {
-        null
-    }
 
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
 
     private val _state = MutableStateFlow(
         HomeUiState(
-            engineUrl = config.baseUrl,
-            engineUrlDraft = config.baseUrl,
-            downloadExecutor = config.downloadExecutor,
+            engineUrl = settings.baseUrl,
+            engineUrlDraft = settings.baseUrl,
+            downloadExecutor = settings.downloadExecutor,
             // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
-            mergeSelected = config.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
-            localSandboxRoot = localSandboxRoot,
+            mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
+            localSandboxRoot = backends.localSandboxRoot,
         ),
     )
     val state: StateFlow<HomeUiState> = _state.asStateFlow()
@@ -169,11 +167,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveEngineUrl() {
-        if (!config.save(_state.value.engineUrlDraft)) {
+        if (!settings.save(_state.value.engineUrlDraft)) {
             _state.update { it.copy(engineUrlInvalid = true) }
             return
         }
-        _state.update { it.copy(engineUrl = config.baseUrl, engineUrlInvalid = false) }
+        _state.update { it.copy(engineUrl = settings.baseUrl, engineUrlInvalid = false) }
         refreshConnection()
     }
 
@@ -189,7 +187,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         val snapshot = _state.value
         if (snapshot.downloadExecutor == executor) return
         if (snapshot.downloadInFlight) return
-        config.downloadExecutor = executor
+        settings.downloadExecutor = executor
         _state.update {
             it.copy(
                 downloadExecutor = executor,
@@ -228,7 +226,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             outputDir = outputDir,
         )
         sniffJob = viewModelScope.launch {
-            HttpSniffer(config.baseUrl, client).sniff(request).collect { event -> applySniffEvent(event) }
+            // 裁决 2：嗅探固定走引擎；WebView 这条腿等第 3 步③接线后才可能被选中。
+            backends.sniff(SniffExecutor.ENGINE).sniff(request).collect { event -> applySniffEvent(event) }
         }
     }
 
@@ -266,7 +265,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         downloadJob?.cancel()
         _state.update { it.copy(download = DownloadPhase.Preparing(TaskStatus.QUEUED), selectedFormatId = null) }
         downloadJob = viewModelScope.launch {
-            downloadBackend()
+            backends.download(snapshot.downloadExecutor)
                 .prepare(
                     PrepareRequest(
                         sourceUrl = sourceUrl,
@@ -277,12 +276,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 .collect { event -> applyDownloadEvent(event) }
         }
-    }
-
-    /** 界面按全局开关选后端，两条流程对界面是同一条——画质表那一屏的形状不因执行者而变。 */
-    private fun downloadBackend(): DownloadBackend = when (_state.value.downloadExecutor) {
-        DownloadExecutor.ENGINE -> HttpDownloader(config.baseUrl, client)
-        DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader()
     }
 
     /**
@@ -379,17 +372,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         downloadJob = viewModelScope.launch {
-            downloadBackend().start(request).collect { event -> applyDownloadEvent(event) }
+            backends.download(snapshot.downloadExecutor).start(request).collect { event -> applyDownloadEvent(event) }
         }
     }
 
     /** 取消只发协议请求，终态仍由 [startDownload] 那条流写入——避免两处同时改状态。 */
     fun cancelDownload() {
-        val running = _state.value.download as? DownloadPhase.Running ?: return
+        val snapshot = _state.value
+        val running = snapshot.download as? DownloadPhase.Running ?: return
         if (running.cancelRequested) return
         _state.update { it.copy(download = running.copy(cancelRequested = true)) }
         viewModelScope.launch {
-            downloadBackend().cancel(running.task.id)?.let { failure ->
+            backends.download(snapshot.downloadExecutor).cancel(running.task.id)?.let { failure ->
                 _state.update { state ->
                     if (state.download is DownloadPhase.Running) {
                         state.copy(download = failure.toDownloadPhase())
@@ -408,7 +402,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun connect() {
         _state.update { it.copy(connection = Connection.Checking) }
-        val baseUrl = config.baseUrl
+        val baseUrl = settings.baseUrl
         _state.update {
             it.copy(
                 connection = try {
@@ -418,6 +412,20 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 },
             )
         }
+    }
+
+    companion object {
+        /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
+        fun factory(settings: EngineSettings, backends: BackendProvider): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    require(modelClass.isAssignableFrom(HomeViewModel::class.java)) {
+                        "HomeViewModel.Factory 不认识的类型：$modelClass"
+                    }
+                    return HomeViewModel(settings, backends) as T
+                }
+            }
     }
 }
 

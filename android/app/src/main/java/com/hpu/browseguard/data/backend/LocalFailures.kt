@@ -54,5 +54,12 @@ internal object LocalFailures {
     fun outputDirRejected(what: String): BackendFailure.Local =
         BackendFailure.Local(LocalReason.OUTPUT_DIR_REJECTED, "本地写入目录未通过沙箱校验 · $what，客户端本地判定")
 
+    /** WebView 嗅探当前不可用；措辞引导用户回到「连接电脑」这条已知可行的路。 */
+    fun webViewUnavailable(): BackendFailure.Local =
+        BackendFailure.Local(
+            LocalReason.WEBVIEW_UNAVAILABLE,
+            "手机 WebView 嗅探不可用 · 请连接电脑，客户端本地判定",
+        )
+
     private fun seconds(windowMs: Long): String = "${windowMs / 1000}s"
 }

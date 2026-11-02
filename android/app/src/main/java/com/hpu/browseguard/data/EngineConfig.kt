@@ -20,19 +20,34 @@ object EngineUrl {
 }
 
 /**
+ * 设置读写的最小接口。
+ *
+ * `HomeViewModel` 只依赖这一层，JVM 单测可以给假实现——不必为了一个地址字段
+ * 把整台 Android 运行时拖进单测。
+ */
+interface EngineSettings {
+    val baseUrl: String
+
+    /** 返回 false 表示地址不合法，调用方保持原值并提示。 */
+    fun save(raw: String): Boolean
+
+    var downloadExecutor: DownloadExecutor
+}
+
+/**
  * 引擎地址存在 SharedPreferences：只存地址，不含令牌。
  *
  * 手机连 PC 上的引擎走 `adb reverse`，模拟器走 `10.0.2.2`，两者地址不同，故开放给用户覆盖。
  */
-class EngineConfig(context: Context) {
+class EngineConfig(context: Context) : EngineSettings {
 
     private val prefs = context.applicationContext.getSharedPreferences("bgv_engine", Context.MODE_PRIVATE)
 
-    val baseUrl: String
+    override val baseUrl: String
         get() = prefs.getString(KEY_BASE_URL, EngineUrl.DEFAULT) ?: EngineUrl.DEFAULT
 
     /** 返回 false 表示地址不合法，调用方保持原值并提示。 */
-    fun save(raw: String): Boolean {
+    override fun save(raw: String): Boolean {
         val normalized = EngineUrl.normalize(raw) ?: return false
         prefs.edit().putString(KEY_BASE_URL, normalized).apply()
         return true
@@ -44,7 +59,7 @@ class EngineConfig(context: Context) {
      * 只切下载执行者——嗅探固定走引擎，所以「引擎离线时本机上有没有媒体可下」
      * 仍然取决于引擎，这是 M4 第 3 步（`LocalWebViewSniffer`）才补的那一段。
      */
-    var downloadExecutor: DownloadExecutor
+    override var downloadExecutor: DownloadExecutor
         get() = DownloadExecutor.values().firstOrNull { it.name == prefs.getString(KEY_DOWNLOAD_EXECUTOR, null) }
             ?: DownloadExecutor.ENGINE
         set(value) {

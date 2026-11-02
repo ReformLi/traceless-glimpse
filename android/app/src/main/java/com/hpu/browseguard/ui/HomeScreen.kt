@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
+import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
@@ -66,7 +67,12 @@ import com.hpu.browseguard.ui.theme.BgvTheme
 import java.util.Locale
 
 @Composable
-fun HomeRoute(viewModel: HomeViewModel = viewModel()) {
+fun HomeRoute(
+    container: AppContainer,
+    viewModel: HomeViewModel = viewModel(
+        factory = HomeViewModel.factory(container.settings, container),
+    ),
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     HomeScreen(
         state = state,

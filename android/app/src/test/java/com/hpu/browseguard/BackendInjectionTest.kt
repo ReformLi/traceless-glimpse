@@ -1,0 +1,92 @@
+package com.hpu.browseguard
+
+import com.hpu.browseguard.data.backend.BackendFailure
+import com.hpu.browseguard.data.backend.LocalReason
+import com.hpu.browseguard.data.backend.LocalWebViewSniffer
+import com.hpu.browseguard.data.backend.SniffEvent
+import com.hpu.browseguard.data.backend.SniffRequest
+import com.hpu.browseguard.shared.model.CookiePolicy
+import com.hpu.browseguard.ui.toSniffPhase
+import java.io.File
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 第 3 步①：后端构造收进组装根。
+ *
+ * 静态部分钉「UI 不再 new 实现」；行为部分钉空壳 WebView 嗅探的第一条事实——
+ * 被选中时给的是 `Local(WEBVIEW_UNAVAILABLE)` 且不带 §5 码，而不是空表。
+ */
+class BackendInjectionTest {
+
+    private val src = File(SRC_ROOT)
+    private val ui = File("$SRC_ROOT/ui")
+
+    @Test
+    fun uiNeverConstructsBackendImplementations() {
+        val files = ui.listFiles { f -> f.isFile && f.extension == "kt" }.orEmpty().sortedBy { it.name }
+        assertTrue("扫描没落到位：${ui.absolutePath}", files.size >= 2)
+
+        val banned = listOf("HttpSniffer(", "HttpDownloader(", "LocalDirectDownloader(", "LocalWebViewSniffer(")
+        val hits = files.flatMap { file ->
+            file.readLines().withIndex()
+                .filter { (_, line) -> banned.any { line.contains(it) } }
+                .map { (index, line) -> "${file.name}:${index + 1}: ${line.trim()}" }
+        }
+        assertTrue("界面层不得 new 具体后端：\n${hits.joinToString("\n")}", hits.isEmpty())
+    }
+
+    @Test
+    fun viewModelDependsOnTheInjectedInterfacesOnly() {
+        val text = File("$SRC_ROOT/ui/HomeViewModel.kt").readText()
+        assertTrue("设置必须是注入的", text.contains("private val settings: EngineSettings"))
+        assertTrue("后端必须是注入的", text.contains("private val backends: BackendProvider"))
+        assertFalse("不得再继承 AndroidViewModel", text.contains("AndroidViewModel"))
+        assertTrue("嗅探必须经组装点", text.contains("backends.sniff("))
+        assertTrue("下载必须经组装点", text.contains("backends.download("))
+    }
+
+    @Test
+    fun assemblyRootIsTheOnlyConstructionSite() {
+        val files = src.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        assertTrue("扫描没落到位：${src.absolutePath}", files.size >= 10)
+
+        val construction = Regex("""(HttpSniffer|HttpDownloader|LocalDirectDownloader|LocalWebViewSniffer)\(""")
+        val hits = files.flatMap { file ->
+            file.readLines().withIndex()
+                .filter { (_, line) ->
+                    val trimmed = line.trim()
+                    !trimmed.startsWith("class ") &&
+                        !trimmed.startsWith("internal class ") &&
+                        !trimmed.startsWith("*") &&
+                        !trimmed.startsWith("//") &&
+                        construction.containsMatchIn(line)
+                }
+                .map { (_, line) -> "${file.name}: ${line.trim()}" }
+        }
+        val owners = hits.map { it.substringBefore(':') }.distinct().sorted()
+        assertEquals("具体后端只允许在组装根里构造：\n${hits.joinToString("\n")}", listOf("AppContainer.kt"), owners)
+    }
+
+    @Test
+    fun theWebViewShellFailsLocallyWithoutBorrowingAProtocolCode() = runBlocking {
+        val events = LocalWebViewSniffer()
+            .sniff(SniffRequest("https://example.com/page", CookiePolicy.NONE, "/tmp"))
+            .toList()
+
+        val failed = events.single() as SniffEvent.Failed
+        val local = failed.failure as BackendFailure.Local
+        assertEquals(LocalReason.WEBVIEW_UNAVAILABLE, local.reason)
+        assertNull("本地判定不得借 §5 码", failed.failure.toSniffPhase().code)
+        assertTrue("文案要引导到连接电脑", local.message.contains("请连接电脑"))
+    }
+
+    private companion object {
+        const val SRC_ROOT = "src/main/java/com/hpu/browseguard"
+    }
+}
