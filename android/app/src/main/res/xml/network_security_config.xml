@@ -9,8 +9,20 @@
   删地址不是删便利——留着就等于承认「明文可以打到回环以外的主机」，与上面的承诺矛盾。
 -->
 <network-security-config>
+    <!-- 默认情况：强制所有网络请求必须使用 HTTPS（安全） -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 例外白名单：只允许这些地址使用 HTTP 明文 -->
     <domain-config cleartextTrafficPermitted="true">
+        <!-- 手机自己连自己（本地引擎回环） -->
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>
+
+        <!-- 你电脑的局域网 IP -->
+        <domain includeSubdomains="false">192.1.1.1</domain>
     </domain-config>
 </network-security-config>
