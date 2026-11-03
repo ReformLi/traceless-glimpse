@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  引擎默认只监听回环（PRD FR-SEC-05），因此明文 HTTP 只对回环/模拟器宿主网关放行，
-  其余任何主机一律要求 TLS——不把 cleartext 开放成全局开关。
-  10.0.2.2 是 Android 模拟器访问宿主机的固定地址。
+  明文只放行回环：127.0.0.1 与 localhost 都由 DNS 解析到 127.0.0.1/::1，流量不出本机，
+  「引擎默认只监听回环」（PRD FR-SEC-05）加上 adb reverse 就够手机连电脑用了。
+  其余任何主机——局域网 IP、mDNS 名、公网域名——一律强制 TLS，没有全局 cleartext 开关。
+
+  曾经还放行 10.0.2.2（Android 模拟器访问宿主机的固定网关）。它是可路由地址而非回环，
+  Release 收口时删掉：AVD 连本机引擎请同样用 adb reverse，或给引擎配 TLS 后走 https。
+  删地址不是删便利——留着就等于承认「明文可以打到回环以外的主机」，与上面的承诺矛盾。
 -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">10.0.2.2</domain>
     </domain-config>
 </network-security-config>

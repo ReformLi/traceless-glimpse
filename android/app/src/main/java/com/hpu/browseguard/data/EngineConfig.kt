@@ -41,7 +41,8 @@ interface EngineSettings {
 /**
  * 引擎地址存在 SharedPreferences：只存地址，不含令牌。
  *
- * 手机连 PC 上的引擎走 `adb reverse`，模拟器走 `10.0.2.2`，两者地址不同，故开放给用户覆盖。
+ * 手机连 PC 上的引擎走 `adb reverse`，所以默认地址就是回环；局域网部署请配 TLS 后用 `https://`
+ * （明文只放行回环，见 `res/xml/network_security_config.xml`）。地址开放给用户覆盖。
  */
 class EngineConfig(context: Context) : EngineSettings {
 

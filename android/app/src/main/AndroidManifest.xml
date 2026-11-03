@@ -3,10 +3,18 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      allowBackup=false：这个 App 的承诺是「数据没有可去的地方」，而云备份与换机迁移正是两条
+      「数据自己走去别处」的路径。可备份的内容里全是要紧的：Cookie 授权记录与引擎地址
+      （shared_prefs/bgv_cookie、bgv_engine、bgv_output）、历史记录库（browseguard.db），
+      以及 WebView 自己的 CookieStore（app_webview/ 下的加密域文件，落在 database/file 备份域里）。
+      用 <exclude> 一条条排除也可以，但清单得人工跟着新增文件跑——漏一个就是一个静默泄漏，
+      与项目「不静默降级」的规矩冲突，所以整条通道关死。
+      代价（登记在验收报告）：换机后设置、引擎地址、Cookie 授权、历史记录从零开始；
+      已下载的产物在 Download 目录与 SAF 所选文件夹里，不受影响。
+    -->
     <application
-        android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
