@@ -64,11 +64,14 @@ output-metadata.json
 
 # ==================== 5. 本地配置文件 ====================
 local.properties
+# 签名口令只留本机（键文件本身在下一节按扩展名忽略）
+android/app/keystore.properties
 
 # ==================== 6. 安全敏感文件 ====================
 # 签名密钥（非常危险，切勿提交！）
 *.jks
 *.keystore
+android/app/keystore/
 # Google 服务 API 密钥（如 Firebase 等）
 google-services.json
 

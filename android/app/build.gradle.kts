@@ -1,7 +1,26 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+/**
+ * 签名口令从本机 `android/app/keystore.properties` 读，文件与密钥目录都在 .gitignore 里。
+ *
+ * 读不到时不报错、也不签——CI 与别人 clone 下来仍能 `assembleRelease` 出一个未签名包，
+ * 只是装不上设备。把「没有密钥」做成构建失败，会让所有不带密钥的验证构建陪绑。
+ */
+val keystoreProperties = Properties().apply {
+    val source = file("keystore.properties")
+    if (source.isFile) source.inputStream().use { load(it) }
+}
+val releaseKeystore = keystoreProperties.takeIf { props ->
+    listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !props.getProperty(it).isNullOrEmpty() }
+}
+if (releaseKeystore == null) {
+    logger.lifecycle("未读到可用的 keystore.properties：本次 Release 产出未签名 APK（装不上设备，仅供构建验证）")
 }
 
 android {
@@ -23,13 +42,34 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        releaseKeystore?.let { props ->
+            create("release") {
+                storeFile = file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+                // minSdk 29 意味着装这个包的机器最少也是 Android 10：v1（JAR 签名）只服务
+                // API < 24 的安装路径，打开它只是往 APK 里塞一份永远不会被读的 META-INF/*.SF。
+                // v3 才是 Android 11+ 用来确认「签名者没换过」的那一层，得显式要。
+                // v4 是给 Play 流式安装算 Merkle 树用的，侧载用不上，还会多产出 .idsig 文件。
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            releaseKeystore?.let { signingConfig = signingConfigs.getByName("release") }
         }
     }
     compileOptions {
