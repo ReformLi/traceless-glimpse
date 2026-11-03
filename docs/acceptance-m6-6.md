@@ -20,7 +20,7 @@ uiautomator 节点表里根节点类名是 `aq`（混淆生效）。
 | 4 签名 | `signingConfigs` 读本机 `keystore.properties`（与 `keystore/` 均已 gitignore）；测试 release keystore 生成成功 | §6 |
 | 5 真机复验 | debug 卸载 → Release 安装 → 三 Tab + 引擎/本机两条主流程 + 取消 + 历史 + 设置 | §7 |
 | 5 硬证据 | 5,581 行 logcat 里 `JsonDecodingException`/`SerializationException` **0 命中**；`BgvAudit` 27 行仍在 | §8 |
-| 6 提交拆分 | `build` / `feat` / `docs` 三条 | §11 |
+| 6 提交拆分 | `build` / `feat` / `docs` 三条 + 收尾一条 `docs`（归档 mapping） | §11 |
 
 ## 2. 明文放行：只剩回环
 
@@ -250,12 +250,67 @@ BgvAudit 行                                                              27 行
 |---|---|---|
 | 1 | **v2 签名方案在 minSdk 29 下不落地**（§6 三条排查） | Android 10+ 走 v3 足够，无设备装不上。若将来为兼容 API 24–27 而下调 minSdk，必须回头复核这一条 |
 | 2 | `allowBackup=false` 的换机代价 | 设置、引擎地址、Cookie 授权、历史记录从零开始；产物不受影响。用户已裁决「关死」，这里只登记代价 |
-| 3 | 测试 keystore 不能用于分发 | 自签、`OU=Release Test`、口令只存在本机一个明文文件里。正式签名要换密钥、进密码管理器，并同步归档当次 `mapping.txt` |
-| 4 | `mapping.txt` 不入库 | 崩栈还原目前只依赖本机 `build/` 目录，`clean` 就没了。正式发布需按版本号归档到仓库外 |
+| 3 | 测试 keystore 不能用于分发 | 自签、`OU=Release Test`、口令只存在本机一个明文文件里。正式签名要换密钥、进密码管理器，并按 [release-checklist.md](release-checklist.md) §2 归档当次 mapping |
+| 4 | ~~`mapping.txt` 不入库~~ **本轮收尾已关闭** | 见 §10.1：`release-artifacts/mapping-v1.0-code1.txt.gz` 已入库，还原流程已实测跑通，规矩写在 [release-checklist.md](release-checklist.md) §2 |
 | 5 | `HistoryScreen.kt:250` 编译告警：`rememberSwipeToDismissBoxState(confirmValueChange=...)` 已弃用 | 官方替代是 dynamic anchors，改它会动滑动删除的交互行为，本轮未点名 → 不动。这是 release 构建里**唯一**一条编译告警 |
-| 6 | 引擎把「格式表抽取失败」降级成 WARNING，客户端只能看到空表 | 界面文案因此只能说「引擎回空格式表，客户端本地判定」，无法告诉用户「这台站点要登录，请把下载执行者换成本机直链」。修法在协议侧（`Task.warnings` 带原因），牵动三端，不属 M6-6 范围 |
+| 6 | 受保护站点在「本机嗅探 + 引擎下载」组合下只能说「空格式表」，说不出「这是要登录」 | 协议级缺口，用户裁决接受现状、归 V1.1（走 `Task.warnings`）。现象、文案边界与影响面见 §10.2，表格里不塞得下 |
 | 7 | `engine -m real` 本轮未复跑 | 本轮 `git status` 里引擎零改动（只有 `android/`、`.gitignore`、`docs/`）。沿用 M6-5 基线 175 passed + 1 xfailed，未当场复现，按缺口登记 |
 | 8 | 未跑 Release 变体的仪器化测试 | AGP 9.1 的 `:android:app` 只有 `testDebugUnitTest`，`connectedAndroidTest` 同样只出 debug。§7 全部走人工设备腿取证替代 |
+
+### 10.1 mapping 归档（本轮收尾关闭）
+
+原始文件 36,442,304 B，gzip 后 2,606,108 B（7.2%）入库为
+`release-artifacts/mapping-v1.0-code1.txt.gz`；归档前做了往返校验，解出来的 sha256
+`7922724dd10c07653978a72c30460860329cb98d3a39938af58cec8f14cdfa29` 与原文件逐字相同。
+命名带 `code1` 是因为 `versionName` 可以被人为复用而 `versionCode` 不会——错配 mapping 比没有
+mapping 更糟，它会把崩栈"还原"成另一个函数的名字，看起来完全可信。
+
+还原路径当场验证过，不是照抄网上教程：build-tools 36.0.0 / 35.0.0 / 34.0.0 / 33.0.1 **都没有**
+`retrace.bat`，入口类在 Gradle 缓存的 AGP `builder-9.1.0.jar` 里
+（`com.android.tools.r8.retrace.Retrace`），且 retrace 只吃明文 mapping，直接喂 `.gz` 报
+`InvalidMappingFileException`。用真映射造了一段崩栈跑通：`c50.a(SourceFile:146)` →
+`com.hpu.browseguard.data.EngineClient.a(EngineClient.kt:146)`，`lc.run(Unknown Source:7)` →
+`AppContainer.run(AppContainer.kt:7)`。完整命令与实测输出贴在 checklist §2。
+
+### 10.2 403 降级的体验缺口（接受现状，归 V1.1）
+
+**现象（§7 第 8 腿，`m66-20b-formcard`）**：用户在手机上用「本机浏览器嗅探」打开需要登录的站点，
+WebView 带着会话成功拦到直链（`protected.mp4`，站点侧 `cookie_present=true`）；把下载执行者切到
+「电脑引擎」后，同一条直链由引擎去抓，引擎没有 Cookie，站点回 403。界面最后停在：
+
+> 未发现可用画质 · 引擎回空格式表，客户端本地判定
+
+**为什么这是体验缺口而不是 bug**：链路每个环节都做对了。站点 403 是它该拒绝的；引擎抽不到格式表是
+事实；客户端报「空格式表」也没撒谎。丢的是**归因**——用户看不出「这个站点要登录」，更看不出
+「把执行者换回本机直链就能下载」（同一条腿里换回本机后确实下载成功，`m66-28b-localdone`，61,456 B
+落盘）。对一个自用工具来说，这一屏会把人引向「重试」或「换链接」这两条必然无用的路。
+
+**为什么文案不能说「403」也不能说「需要登录」**：`LocalFailures.kt:44` 的 `noFormats()` 是客户端
+自己的判定，而引擎此刻发的是 HTTP 200 + `formats: []`、`error: null`。403 是站点回给引擎的，
+这个信息从来没上过协议——客户端手里没有它，写出来就是编造。把本地判定借一个 §5 协议码上报同样不行
+（M4 起就定的规矩，同文件头注释把理由写死了：「引擎发了 200，没说失败，替它发一个 §5 码就是造假」）。
+所以当前这条「自证是本地计时/本地判定」的口径，已经是**在不伪造的前提下能写的极限**。
+
+**引擎侧的丢信息点**：`engine/main.py:789-793`——抽取抛异常时只 `logger.warning("formats_extract_failed
+task_id=%s type=%s", ...)`，然后把 `record.formats = []` 照常发出去。原因（异常类型、HTTP 状态）
+只存在于引擎日志里，任务 JSON 一个字都不带。这正是 `docs/PROTOCOL-CHANGELOG.md` §提案 A 的动机段
+所描述的那类「降级完成了但界面上看不出来」。
+
+**协议侧修法与它的前置代价**：`Task.warnings: list[TaskWarning]`（`code` 蛇形、与既有审计行同名，
+不新造语义；`message` 可读；`detail` 脱敏）。但 PROTOCOL-CHANGELOG 兼容性硬约束那一段已经查实：
+双端对未知字段都是严格拒绝（引擎 `engine/models.py:22` `extra="forbid"`，客户端 `BgvJson.kt:14`
+`ignoreUnknownKeys = false`，且客户端所有解码只走这一份），所以「加一个可选响应字段」在 v0.1
+**不是**向后兼容动作——引擎一开始发 `warnings`，已装的旧客户端查任务会直接抛错，表现是「任务查不到」
+而不是「少一条提示」。三条出路（顺序约束 / 响应侧忽略未知键 / 另开只读诊断端点）记在同文件 §104-129，
+V1.1 动手前必须先选一条。
+
+**影响面**：只影响「嗅探执行者 = 本机、下载执行者 = 引擎」这一组合下、且站点需要登录的场景。
+不影响：引擎嗅探 + 引擎下载（同一条会话，Cookie 本就不同步，M6-5 的结论）；本机嗅探 + 本机下载
+（已知可行路径）。纯本地无引擎的场景不涉及这条缺口。
+
+**V1.1 待办（登记于此，不在本轮做）**：① 先裁决 `warnings` 的兼容性出路三选一；② 引擎在
+`formats_extract_failed` 处带上脱敏原因；③ 客户端在空格式表卡片上区分「引擎无权限」与「页面确实没有」，
+并给出「换回本机直链下载」这条已知可行的动作按钮。
 
 ## 11. 测试与提交
 
@@ -270,12 +325,13 @@ BgvAudit 行                                                              27 行
 AGP 9.1 不生成 `testReleaseUnitTest`（`:android:app:tasks --all` 里只有 debug 变体），
 所以「Release 下的行为」只能靠 §7/§8 的设备证据回答，不能靠单测。
 
-提交三条：
+提交四条（前三条为本轮主体，第四条是 mapping 归档收尾，只动 `release-artifacts/` 与 `docs/`）：
 
 ```
 build(android): M6-6 配置 R8 混淆与本地签名
 feat(android):  M6-6 替换正式图标与清理文案
 docs(android):  M6-6 发布清单与合规收口
+docs(android):  归档 release mapping 并补充发版 checklist
 ```
 
 ## 12. 复现命令
@@ -306,6 +362,16 @@ cd engine && BGV_ENGINE_MODE=real BGV_SSRF_ALLOWLIST=127.0.0.1 BGV_DEV_ALLOW_SSR
 MSYS_NO_PATHCONV=1 adb -s 192.168.31.57:5555 logcat -d > .devtmp/m6-6/release-logcat.txt
 grep -cE "JsonDecodingException|SerializationException" .devtmp/m6-6/release-logcat.txt   # 期望 0
 grep -c BgvAudit .devtmp/m6-6/release-logcat.txt                                          # 期望 > 0
+
+# 7. 归档 mapping（出包后立刻做）+ 还原崩栈
+#    完整流程与实测输出在 docs/release-checklist.md §2；retrace 不在 build-tools 里，
+#    入口类是 Gradle 缓存 AGP builder jar 中的 com.android.tools.r8.retrace.Retrace
+export GRADLE_USER_HOME=D:/Android/GradleUserHome
+BUILDER=$(find "$GRADLE_USER_HOME/caches/modules-2/files-2.1/com.android.tools.build/builder/9.1.0" \
+    -name 'builder-9.1.0.jar')
+python -c "import gzip; open('/tmp/mapping.txt','wb').write(\
+    gzip.open('release-artifacts/mapping-v1.0-code1.txt.gz','rb').read())"
+java -cp "$BUILDER" com.android.tools.r8.retrace.Retrace /tmp/mapping.txt crash.log
 ```
 
 设备操作两个坑（本轮都踩过）：`adb shell input text` 在 MuMu 上不解码 `%3A` 之类的百分号转义，
