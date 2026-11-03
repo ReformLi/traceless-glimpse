@@ -1,14 +1,10 @@
-<!--
-  背景层：满幅墨蓝（与深色主题窗口底色同源 #0B1220）。
-  换成满幅实色而不是渐变或网格，是因为启动器会把图标裁成圆/方/水滴各种形状——
-  实色在任何遮罩下都不会出现「切边露底」，浅色启动器主题下也有足够对比度托住青绿盾牌。
--->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path
-        android:fillColor="#FF0B1220"
-        android:pathData="M0,0 L108,0 L108,108 L0,108 Z" />
-</vector>
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <!-- angle="45" 表示从左下到右上的对角线渐变 -->
+    <gradient
+        android:angle="-90"
+        android:startColor="#00BFFF"
+        android:endColor="#1A1A1A"
+        android:type="linear" />
+</shape>
