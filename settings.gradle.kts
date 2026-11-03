@@ -22,7 +22,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "traceless-glimpse-agent"
+rootProject.name = "traceless-glimpse"
 
 // M3：android/ 客户端接入构建；协议模型仍由 :shared 单一来源提供。
 include(":shared")
