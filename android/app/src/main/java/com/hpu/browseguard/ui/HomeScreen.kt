@@ -211,13 +211,6 @@ fun HomeScreen(
             onSaveEngineUrl = onSaveEngineUrl,
             onSelectDownloadExecutor = onSelectDownloadExecutor,
         )
-
-        Spacer(Modifier.height(24.dp))
-        Text(
-            text = stringResource(R.string.home_stage),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 
     // 阻断式：这一层不写历史、不标失败，任务就停在这里等一次显式点头。

@@ -233,13 +233,6 @@ fun SettingsScreen(
             clearing = clearingHistory,
             onRequestClear = { confirmingClear = true },
         )
-
-        Spacer(Modifier.height(24.dp))
-        Text(
-            text = stringResource(R.string.home_stage),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 
     if (confirmingClear) {

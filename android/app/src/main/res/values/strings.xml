@@ -86,7 +86,6 @@
     <string name="home_subtitle_engine">电脑引擎</string>
     <string name="home_subtitle_sniff_local">本机浏览器</string>
     <string name="home_subtitle_download_local">本地直链</string>
-    <string name="home_stage">M6 · 首页与全状态覆盖</string>
 
     <string name="status_pill_idle">未连接</string>
     <string name="status_pill_checking">连接中…</string>
@@ -105,7 +104,7 @@
     <string name="engine_url_field">http://127.0.0.1:8730</string>
     <string name="engine_url_save">保存</string>
     <string name="engine_url_invalid">需为 http(s)://主机[:端口]，不带路径与参数</string>
-    <string name="engine_url_hint">手机连电脑：在电脑执行 adb reverse tcp:8730 tcp:8730；模拟器把 127.0.0.1 换成 10.0.2.2</string>
+    <string name="engine_url_hint">手机连电脑：在电脑执行 adb reverse tcp:8730 tcp:8730。明文只放行回环，局域网或模拟器宿主网关请给引擎配 TLS 后用 https://</string>
 
     <string name="download_executor_label">下载执行者</string>
     <string name="download_executor_engine">引擎</string>
