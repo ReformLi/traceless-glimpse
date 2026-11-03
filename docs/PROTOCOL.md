@@ -1,4 +1,4 @@
-# BrowseGuard Vid 接口协议（PROTOCOL v0.2）
+# 无痕掠影 (Traceless Glimpse) 接口协议（PROTOCOL v0.2）
 
 | 项    | 内容                                    |
 | ---- | ------------------------------------- |

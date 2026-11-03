@@ -13,7 +13,7 @@ import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
 
-private const val SERVER_NAME = "browseguard-vid"
+private const val SERVER_NAME = "traceless-glimpse"
 private const val SERVER_VERSION = "0.2.0"
 
 /**

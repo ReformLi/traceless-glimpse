@@ -1,4 +1,4 @@
-# BrowseGuard Vid 的 R8 规则。
+# Traceless Glimpse 的 R8 规则。
 #
 # 只写三件事，理由各自不同。写之前把依赖自带的 consumer 规则逐个拆开看过
 # （取证过程记在 docs/acceptance-m6-6.md），库里已经覆盖的一律不抄——

@@ -1,4 +1,4 @@
-# BrowseGuard Vid 发版 checklist
+# 无痕掠影 (Traceless Glimpse) 发版 checklist
 
 这份文件解决的是一个具体事故场景：用户发来一张 release 崩溃截图，栈里只有
 `aq.r(SourceFile:37)`，而 `mapping.txt` 躺在本机 `build/` 目录里、上一次 `clean` 已经把它删了。
@@ -109,15 +109,27 @@ Caused by: java.lang.NullPointerException
 
 | versionName / code | APK sha256 | APK 字节 | mapping 归档 | 设备腿结论 | 验收报告 |
 |---|---|---|---|---|---|
-| 1.0 / 1 | `d486c26851138b865dededee6811fd5bb2d2e7bb550a68fa2b42975486f5ad68` | 3,206,651 | `release-artifacts/mapping-v1.0-code1.txt.gz`（原 36,442,304 B，sha256 `7922724dd10c07653978a72c30460860329cb98d3a39938af58cec8f14cdfa29`） | MuMu SM-S9080 / Android 15 十四腿全过，反序列化异常 0 命中 | [acceptance-m6-6.md](acceptance-m6-6.md) |
+| 1.0 / 1（2026-11-03 09:02，M6-6 测试签名） | `d486c26851138b865dededee6811fd5bb2d2e7bb550a68fa2b42975486f5ad68` | 3,206,651 | 旧 mapping（sha256 `7922724d…`，已被下行取代） | MuMu SM-S9080 / Android 15 十四腿全过，反序列化异常 0 命中 | [acceptance-m6-6.md](acceptance-m6-6.md) |
+| 1.0 / 1（2026-11-03 10:33，定名「无痕掠影」重建，**未签名**） | 待签名后补 | 3,194,363（`app-release-unsigned.apk`） | `release-artifacts/mapping-v1.0-code1.txt.gz`（原 36,442,414 B，sha256 `7f6ae9fc519ed91d2c7e590261ea032cee1b4ab7d92e439e48cf1bbc7de2959e`） | 未跑设备腿（本机无签名口令，未出可安装包） | 本文件 §3 备注 |
+
+三条备注（2026-11-03 定名重建）：
+
+- **mapping 只保留一份**，已按定名后的源码重建并覆盖旧档。09:02 那份 APK 从未分发，所以覆盖它
+  不会让任何在外的崩栈失去对照；反过来说，**下次改代码再出包，必须回来重走第 3 步**，否则这条
+  归档会悄悄变成"对不上的 mapping"。
+- 未签名包只用于证明 R8 与资源在改名后仍能跑通（`aapt2 dump badging` 的
+  `application-label:'无痕掠影'`、包名仍是 `com.hpu.browseguard`）。**可安装的 Release 需由维护者
+  在本机填好口令后自己打**；打完把 sha256 与字节数补到上表第二行。
+- 换签名密钥后，设备上旧的测试签名版本**不能覆盖安装**（签名不同），要先卸载。
 
 ## 4. 发布前置（一次性，但每次都要确认没坏）
 
-- `android/app/keystore.properties` 存在且四个字段非空，键文件在 `android/app/keystore/` 下。
-  两者都在 `.gitignore` 里（`*.jks` 那条本来就挡住了键）。**读不到时构建不失败，只出一个未签名包**
-  并打一行提示——所以判据不是"构建成功"，而是第 5 步的 `apksigner verify` 真能验过。
-- 正式分发前必须换掉现在这把测试键：它是自签、`OU=Release Test`、口令只存在本机一个明文文件里。
-  换键意味着**老用户无法覆盖安装**，这是不可逆决定，要提前想好。
+- `android/app/keystore.properties` 存在且四个字段非空。当前密钥是 `android/browseguard-vid.jks`
+  （`storeFile=../browseguard-vid.jks`、`keyAlias=mykey`），口令由维护者本机填写，仓库里只有空位。
+  两者的忽略规则都在 `.gitignore`（`*.jks` 那条本来就挡住了键）。**读不到时构建不失败，只出一个
+  未签名包**并打一行提示——所以判据不是"构建成功"，而是第 5 步的 `apksigner verify` 真能验过。
+- 换键之后旧安装无法覆盖，必须先卸载；这是不可逆决定。正式分发前确认这把 key 的 DN 与保存位置，
+  口令不要只留在本机一个明文文件里。
 - 签名方案实测：`enableV2Signing=true` 在 minSdk 29 下**不会**产出 v2 pair（apksigner CLI 重签同样不出），
   落地的是 v3。Android 10+ 装包与校验都不受影响；若将来为兼容 API 24–27 下调 minSdk，这条必须重新验。
 - `network_security_config.xml` 只放行 `127.0.0.1` 与 `localhost`，`AndroidManifest.xml` 是

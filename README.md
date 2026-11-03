@@ -1,4 +1,4 @@
-# BrowseGuard Vid / 览盾视频
+# 无痕掠影 (Traceless Glimpse)
 
 > 在隔离的浏览器里嗅探，在本地完成下载与处理，数据没有可去的地方。
 
@@ -70,7 +70,7 @@ Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文�
 ```json
 {
   "mcpServers": {
-    "browseguard-vid": {
+    "traceless-glimpse": {
       "command": "cmd",
       "args": [
         "/c",

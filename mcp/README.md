@@ -46,7 +46,7 @@ Claude Desktop / Cursor 的 MCP 配置示例（`command` 指向安装目录下�
 ```json
 {
   "mcpServers": {
-    "browseguard-vid": {
+    "traceless-glimpse": {
       "command": "cmd",
       "args": [
         "/c",

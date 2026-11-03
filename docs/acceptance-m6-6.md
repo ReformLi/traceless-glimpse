@@ -1,4 +1,4 @@
-# BrowseGuard Vid M6-6 验收报告（发布资产与 Release 配置）
+# 无痕掠影 (Traceless Glimpse) M6-6 验收报告（发布资产与 Release 配置）
 
 日期：2026-11-03。设备：MuMu SM-S9080 / Android 15（`192.168.31.57:5555`）。
 被测包：`android/app/build/outputs/apk/release/app-release.apk`，**3,206,651 字节**，09:02 构建、09:07 安装。

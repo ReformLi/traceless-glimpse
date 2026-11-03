@@ -1,10 +1,10 @@
-# 览盾视频 / BrowseGuard Vid 需求文档（PRD v0.2）
+# 无痕掠影 (Traceless Glimpse) 需求文档（PRD v0.2）
 
 | 项          | 内容                      |
 | ---------- | ----------------------- |
-| 产品名称       | 览盾视频（App 显示名）           |
-| 项目英文名      | BrowseGuard Vid         |
-| 仓库名        | `browseguard-vid-agent` |
+| 产品名称       | 无痕掠影（App 显示名）           |
+| 项目英文名      | Traceless Glimpse       |
+| 仓库名        | `traceless-glimpse-agent` |
 | Android 包名 | `com.hpu.browseguard`   |
 | 文档版本       | v0.2 草案                 |
 | 文档状态       | 待评审                     |
@@ -19,7 +19,7 @@
 
 ### 1.2 产品定位
 
-**览盾视频**是一个以 AI Agent 为编排核心、以本地执行为默认、以浏览器隔离嗅探为入口的视频获取工具。它在数据路径上不设第三方中间节点，在浏览器身份上不污染用户日常环境，在工作流上允许用户用自然语言与配置深度定制。
+**无痕掠影**是一个以 AI Agent 为编排核心、以本地执行为默认、以浏览器隔离嗅探为入口的视频获取工具。它在数据路径上不设第三方中间节点，在浏览器身份上不污染用户日常环境，在工作流上允许用户用自然语言与配置深度定制。
 
 ### 1.3 一句话描述
 
@@ -266,7 +266,7 @@ Policy      { domain?, forceProxy?, cookieMode, maxResolution?, maxSizeBytes?, a
 | 依赖安全            | yt-dlp 等核心依赖曾出现 Cookie 重定向泄露类漏洞 | 固定版本、订阅安全公告、Cookie 经 stdin 传递、定期升级        |
 | 反爬对抗            | 站点策略变化导致解析失败                    | 依赖上游更新；失败原因可读；不静默降级                       |
 | Android 内置引擎复杂度 | 端侧运行 Playwright/FFmpeg 成本高      | v1 以远程连接本地引擎为主，内置能力仅覆盖轻量直链下载              |
-| 命名查重            | `BrowseGuard` 可能被同类安全产品占用       | 发布前查 GitHub、包管理器、商标；备选 `VidShield Browse` |
+| 命名查重            | 旧名 `BrowseGuard` / `览盾视频` 已停用       | 2026-11-03 正式定名「无痕掠影 / Traceless Glimpse」；包名与内部代号仍保留 `com.hpu.browseguard`，以免破坏覆盖安装 |
 | 法律合规            | 下载行为可能违反站点条款                    | UI 明示提示；不提供 DRM 绕过；不做批量爬取型默认配置            |
 
 ---

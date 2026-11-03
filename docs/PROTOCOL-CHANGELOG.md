@@ -1,4 +1,4 @@
-# BrowseGuard Vid 协议变更记录（PROTOCOL-CHANGELOG）
+# 无痕掠影 (Traceless Glimpse) 协议变更记录（PROTOCOL-CHANGELOG）
 
 记录 `docs/PROTOCOL.md` 正文之外的**增量裁决**。协议正文仍以 `docs/PROTOCOL.md` v0.2 为准，
 本文件不改动正文；条目最终是否并入正式协议版本，由下一版协议评审时确认。

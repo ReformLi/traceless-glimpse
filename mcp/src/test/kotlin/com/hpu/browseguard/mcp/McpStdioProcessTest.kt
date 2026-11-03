@@ -95,7 +95,7 @@ class McpStdioProcessTest {
                 val initResult = handshake["result"]!!.jsonObject
                 assertTrue(initResult["protocolVersion"]!!.jsonPrimitive.content.isNotBlank())
                 assertEquals(
-                    "browseguard-vid",
+                    "traceless-glimpse",
                     initResult["serverInfo"]!!.jsonObject["name"]!!.jsonPrimitive.content,
                 )
                 assertNotNull(initResult["capabilities"]!!.jsonObject["tools"])

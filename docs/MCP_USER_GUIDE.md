@@ -127,7 +127,7 @@ $init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersio
 $init | cmd /c "E:\code\android\BrowseGuardVid\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat"
 ```
 
-期望只输出一行合法 JSON，包含 `"serverInfo":{"name":"browseguard-vid"...}`，进程退出码 0。出现任何提示词、空行、日志横幅都视为异常。
+期望只输出一行合法 JSON，包含 `"serverInfo":{"name":"traceless-glimpse"...}`，进程退出码 0。出现任何提示词、空行、日志横幅都视为异常。
 
 ---
 
@@ -153,7 +153,7 @@ notepad "$env:APPDATA\Claude\claude_desktop_config.json"
 ```json
 {
   "mcpServers": {
-    "browseguard-vid": {
+    "traceless-glimpse": {
       "command": "cmd",
       "args": [
         "/c",
@@ -172,7 +172,7 @@ notepad "$env:APPDATA\Claude\claude_desktop_config.json"
 
 - Windows 上通过 `cmd /c` 启动 `.bat` 最稳，避免客户端直接 spawn `.bat` 失败。
 - `JAVA_HOME` 是本机已核实的值；升级 JDK 后同步改这里，或删掉并确保 `java` 在系统 PATH。
-- 如果文件里已经有其他 `mcpServers`，**只把 `browseguard-vid` 这一项加进去**，不要覆盖整个文件。
+- 如果文件里已经有其他 `mcpServers`，**只把 `traceless-glimpse` 这一项加进去**，不要覆盖整个文件。
 
 ### 3.2 Cursor
 
@@ -191,8 +191,8 @@ notepad "$env:USERPROFILE\.cursor\mcp.json"
 
 ### 3.3 重启并确认
 
-- Claude Desktop：托盘图标右键 → **Quit**，再重新打开；新建对话，在工具/连接器里确认 `browseguard-vid` 存在且列出 5 个工具：`sniff` / `probe` / `download` / `status` / `cancel`。
-- Cursor：`Ctrl+Shift+P` → **Developer: Reload Window**；Settings → MCP 里确认 `browseguard-vid` 为已连接，工具数为 5。
+- Claude Desktop：托盘图标右键 → **Quit**，再重新打开；新建对话，在工具/连接器里确认 `traceless-glimpse` 存在且列出 5 个工具：`sniff` / `probe` / `download` / `status` / `cancel`。
+- Cursor：`Ctrl+Shift+P` → **Developer: Reload Window**；Settings → MCP 里确认 `traceless-glimpse` 为已连接，工具数为 5。
 
 > 引擎没启动时，MCP 仍然会出现，但调用工具会返回 `{"localError":"engine_unreachable"}`。先开引擎，再验收。
 
@@ -203,7 +203,7 @@ notepad "$env:USERPROFILE\.cursor\mcp.json"
 ### Prompt 1：只嗅探，列格式
 
 ```text
-请使用 browseguard-vid 的 sniff 工具嗅探这个链接：<把视频页面链接粘在这里>。
+请使用 traceless-glimpse 的 sniff 工具嗅探这个链接：<把视频页面链接粘在这里>。
 列出所有候选媒体流和格式表（分辨率、码率、容器、是否含音频），先不要下载。
 最后把 taskId 告诉我。
 ```
@@ -274,7 +274,7 @@ C:\Users\19564\AppData\Roaming\Claude\logs
 ```powershell
 Get-ChildItem "$env:APPDATA\Claude\logs" | Sort-Object LastWriteTime -Descending | Select-Object -First 10 Name, LastWriteTime
 
-# 通常会有 mcp-server-browseguard-vid.log；名字不完全一致时用通配符兜底
+# 通常会有 mcp-server-traceless-glimpse.log；名字不完全一致时用通配符兜底
 Get-Content (Get-ChildItem "$env:APPDATA\Claude\logs\mcp*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName -Tail 100 -Wait
 ```
 
@@ -313,7 +313,7 @@ cd E:\code\android\BrowseGuardVid
 | `{"code":"DRM_PROTECTED"}` | 内容受 DRM 保护 | 按设计停止，不尝试下载 |
 | `{"code":"NO_MEDIA_FOUND"}` | 页面没有可下载媒体，或需要登录 | 换公开页面；MCP 不接受 Cookie 路径 |
 | `{"code":"DOWNLOAD_FAILED"}` 且日志提示 ffmpeg/ffprobe | PATH 缺 ffmpeg | 安装并加入 PATH，重启引擎 |
-| 客户端里看不到 `browseguard-vid` | 配置路径/JSON 写错、Java 找不到 | 用第 2 节手动命令验证；看 5.3 / 5.4 日志 |
+| 客户端里看不到 `traceless-glimpse` | 配置路径/JSON 写错、Java 找不到 | 用第 2 节手动命令验证；看 5.3 / 5.4 日志 |
 
 ---
 

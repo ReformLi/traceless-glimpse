@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">览盾视频</string>
+    <string name="app_name">无痕掠影</string>
     <string name="nav_home">首页</string>
     <string name="nav_history">历史</string>
     <string name="nav_settings">设置</string>
@@ -80,7 +80,7 @@
     <string name="settings_history_clear_cancel">取消</string>
     <string name="settings_history_clear_hint">只清理手机侧的产物（应用目录与所选文件夹）；电脑引擎侧的文件不受影响。</string>
 
-    <string name="home_title">览盾视频</string>
+    <string name="home_title">无痕掠影</string>
     <!-- 副标题跟着当前执行者走：写死「本地执行」会在选了电脑引擎时误导用户。 -->
     <string name="home_subtitle">嗅探：%1$s · 下载：%2$s</string>
     <string name="home_subtitle_engine">电脑引擎</string>

@@ -1,4 +1,4 @@
-"""BrowseGuard Vid 本地引擎（协议 §6 P0 端点 + §9 四示例）。
+"""Traceless Glimpse 本地引擎（协议 §6 P0 端点 + §9 四示例）。
 
 两种模式（`BGV_ENGINE_MODE`，默认 stub）：
 - stub：嗅探 / 格式列表来自 fixture（sourceUrl 路径含 /drm → DRM 场景）；
@@ -926,7 +926,7 @@ def install_console_logging(stream=None) -> logging.Handler:
     return handler
 
 
-app = FastAPI(title="BrowseGuard Vid Engine (stub)", version=ENGINE_VERSION)
+app = FastAPI(title="Traceless Glimpse Engine", version=ENGINE_VERSION)
 
 
 @app.on_event("startup")

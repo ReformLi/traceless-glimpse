@@ -1,4 +1,4 @@
-# BrowseGuard Vid M6-4 验收报告（设置页与 SAF 输出目录）
+# 无痕掠影 (Traceless Glimpse) M6-4 验收报告（设置页与 SAF 输出目录）
 
 | 项 | 值 |
 |---|---|

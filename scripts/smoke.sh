@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BrowseGuard Vid M0 smoke（联调合同 §9.1–§9.4 + 偏差 2 端到端 + §10 DRM 零下载）
+# Traceless Glimpse M0 smoke（联调合同 §9.1–§9.4 + 偏差 2 端到端 + §10 DRM 零下载）
 #
 # 用法（Git Bash）：
 #   BASE=http://127.0.0.1:8730 \

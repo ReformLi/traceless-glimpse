@@ -1,4 +1,4 @@
-# BrowseGuard Vid M2 验收报告（PRD §9 标准 2 / 5 / 6）
+# 无痕掠影 (Traceless Glimpse) M2 验收报告（PRD §9 标准 2 / 5 / 6）
 
 | 项 | 值 |
 |---|---|

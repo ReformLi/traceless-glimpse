@@ -1,4 +1,4 @@
-# BrowseGuard Vid M6-5 验收报告（Cookie 显式授权、按域管理与隔离守卫）
+# 无痕掠影 (Traceless Glimpse) M6-5 验收报告（Cookie 显式授权、按域管理与隔离守卫）
 
 日期：2026-11-02。设备：MuMu SM-S9080 / Android 15（`192.168.31.57:5555`），APK `app-debug.apk` 22:17 构建。
 链路：引擎 real 模式 `127.0.0.1:8730`（经 `adb reverse`），测试媒体 `127.0.0.1:8731`——

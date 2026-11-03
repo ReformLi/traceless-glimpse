@@ -120,7 +120,7 @@ class BgvRoot(private val app: AppContext) : CliktCommand(name = "bgv") {
         )
     }
 
-    override fun help(context: Context): String = "BrowseGuardVid 引擎命令行客户端"
+    override fun help(context: Context): String = "Traceless Glimpse 引擎命令行客户端"
 
     override fun helpEpilog(context: Context): String =
         "退出码：0 成功 | 2 输入错误 | 3 安全拒绝 | 4 内容不可用 | 5 引擎不可达 | 6 存储错误 | 7 内部错误 | 8 用户主动取消"

@@ -1,6 +1,6 @@
 # android/ — Android 客户端
 
-包名 `com.hpu.browseguard`（应用显示名「览盾视频」）。定位：客户端与轻量入口，连接本机引擎（USB / 局域网 TLS）或使用内置轻量下载能力。
+包名 `com.hpu.browseguard`（应用显示名「无痕掠影」，英文名 Traceless Glimpse）。定位：客户端与轻量入口，连接本机引擎（USB / 局域网 TLS）或使用内置轻量下载能力。
 
 ## 现状（M0）
 
