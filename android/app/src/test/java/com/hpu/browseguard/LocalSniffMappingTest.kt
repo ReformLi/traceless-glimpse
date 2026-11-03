@@ -33,19 +33,66 @@ class LocalSniffMappingTest {
         assertEquals(LocalSniffMapping.SESSION_TASK_ID, result.taskId)
     }
 
-    /** 清单与切片交给本地下载器只会下出残片：宁可不给，也不给一条会假成功的行。 */
+    /** HLS 清单是一条真结果：本地下载器会逐段拉取，不再下出一个 96 字节的假文件。 */
     @Test
-    fun manifestsSegmentsAndUnknownExtensionsAreRejected() {
+    fun hlsMasterPlaylistIsADownloadableResult() {
+        val result = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/hls/master.m3u8?token=abc",
+            pageUrl = "https://example.com/watch",
+            userAgent = "BGV-UA",
+            requestHeaders = emptyMap(),
+            discoveredAt = NOW,
+        )!!
+
+        assertEquals(MediaStreamType.HLS, result.type)
+        assertEquals("m3u8", result.container)
+        assertEquals("https://example.com/watch", result.headersHint["referer"])
+    }
+
+    /** 扩展名给不出答案时，Content-Type 可以兜底；切片与 DASH 仍然拒绝。 */
+    @Test
+    fun contentTypeCanIdentifyAnExtensionlessPlaylistButNeverASegment() {
+        val playlist = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/play?id=42",
+            pageUrl = "https://example.com/watch",
+            userAgent = "BGV-UA",
+            requestHeaders = emptyMap(),
+            discoveredAt = NOW,
+            contentType = "application/vnd.apple.mpegurl; charset=utf-8",
+        )!!
+        assertEquals(MediaStreamType.HLS, playlist.type)
+
+        val mp4 = LocalSniffMapping.toResult(
+            rawUrl = "https://cdn.example.com/stream/abc",
+            pageUrl = null,
+            userAgent = "",
+            requestHeaders = emptyMap(),
+            discoveredAt = NOW,
+            contentType = "video/mp4",
+        )!!
+        assertEquals(MediaStreamType.MP4, mp4.type)
+        assertEquals("mp4", mp4.container)
+
         listOf(
-            "https://cdn.example.com/master.m3u8",
-            "https://cdn.example.com/manifest.mpd",
             "https://cdn.example.com/seg0.ts",
             "https://cdn.example.com/chunk-1.m4s",
+            "https://cdn.example.com/manifest.mpd",
             "https://cdn.example.com/evil.exe",
             "https://cdn.example.com/v/videoplayback",
         ).forEach { url ->
             assertNull("不该成为候选：$url", LocalSniffMapping.toResult(url, null, "", emptyMap(), NOW))
         }
+        assertNull(
+            "video/mp2t 是切片，不是一条可下载结果",
+            LocalSniffMapping.toResult(
+                "https://cdn.example.com/play?id=42",
+                null,
+                "",
+                emptyMap(),
+                NOW,
+                contentType = "video/mp2t",
+            ),
+        )
     }
 
     /**

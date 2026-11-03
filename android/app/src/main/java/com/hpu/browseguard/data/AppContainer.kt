@@ -49,6 +49,13 @@ class AppContainer(context: Context) : BackendProvider {
 
     private val webViewSniffer = LocalWebViewSniffer(app, audit, cookieConsents)
 
+    /** 每次内置浏览器会话一个中枢；WebView 本身仍由界面创建/销毁。 */
+    fun newBrowserSniffer() = com.hpu.browseguard.data.browser.BrowserSniffController(
+        context = app,
+        audit = audit,
+        cookies = ConsentCookieProvider(cookieVault, cookieConsents, audit),
+    )
+
     /** 应用专属外部存储不需要任何存储权限，是手机侧能给出的最窄写盘根。 */
     override val localSandboxRoot: String? = try {
         app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.apply { mkdirs() }?.absolutePath

@@ -1,28 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  明文只放行回环：127.0.0.1 与 localhost 都由 DNS 解析到 127.0.0.1/::1，流量不出本机，
-  「引擎默认只监听回环」（PRD FR-SEC-05）加上 adb reverse 就够手机连电脑用了。
-  其余任何主机——局域网 IP、mDNS 名、公网域名——一律强制 TLS，没有全局 cleartext 开关。
+  内置浏览器要打开用户自己输入的任意站点：很多视频站与媒体 CDN 仍是 HTTP，
+  只放行回环会让 M7「纯手机模式」在第一步就失败。因此全局允许明文。
 
-  曾经还放行 10.0.2.2（Android 模拟器访问宿主机的固定网关）。它是可路由地址而非回环，
-  Release 收口时删掉：AVD 连本机引擎请同样用 adb reverse，或给引擎配 TLS 后走 https。
-  删地址不是删便利——留着就等于承认「明文可以打到回环以外的主机」，与上面的承诺矛盾。
+  代价与边界：
+  - 地址栏对 http:// 页面显示「不安全」提示，用户知道自己在明文上；
+  - 电脑引擎仍由 EngineSettings 校验（非回环默认 HTTPS），这条开关只服务网页浏览；
+  - 下载器只访问用户点选的那条媒体 URL，不做域名枚举。
 -->
 <network-security-config>
-    <!-- 默认情况：强制所有网络请求必须使用 HTTPS（安全） -->
-    <base-config cleartextTrafficPermitted="false">
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-
-    <!-- 例外白名单：只允许这些地址使用 HTTP 明文 -->
-    <domain-config cleartextTrafficPermitted="true">
-        <!-- 手机自己连自己（本地引擎回环） -->
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-
-        <!-- 你电脑的局域网 IP -->
-        <domain includeSubdomains="false">192.1.1.1</domain>
-    </domain-config>
 </network-security-config>

@@ -2,6 +2,9 @@ package com.hpu.browseguard.data.backend
 
 import com.hpu.browseguard.data.AuditLogger
 import com.hpu.browseguard.data.NoopAuditLogger
+import com.hpu.browseguard.data.backend.hls.HlsDownloader
+import com.hpu.browseguard.data.backend.hls.HlsOutcome
+import com.hpu.browseguard.data.backend.hls.HlsPrepare
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSource
@@ -17,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onCompletion
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -42,6 +46,8 @@ class LocalDirectDownloader(
     private val audit: AuditLogger = NoopAuditLogger,
     private val cookies: CookieProvider = NoCookieProvider,
 ) : DownloadBackend {
+
+    private val hls = HlsDownloader(http, cookies)
 
     override fun prepare(request: PrepareRequest): Flow<DownloadEvent> = flow {
         val candidates = request.sniffResults.filter { !it.drmDetected && it.mediaUrl.isHttpUrl() }
@@ -78,7 +84,17 @@ class LocalDirectDownloader(
         }
 
         val handle = localTaskId(link.mediaUrl)
-        val productName = link.productName()
+        if (link.isHls()) {
+            // HLS 要先读清单才知道容器与段数，所以不能在这里先把产物名定死。
+            downloadHls(target, link, handle) { emit(it) }
+            return@flow
+        }
+
+        val productName = target.productName
+            ?.let(::sanitizeProductName)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { withContainer(it, link.container) }
+            ?: link.productName()
         val partFile = java.io.File(target.outputDir, "$productName.part")
         val finalFile = java.io.File(target.outputDir, productName)
 
@@ -205,7 +221,144 @@ class LocalDirectDownloader(
                 link.localSnapshot(target.outputDir, productName, downloaded, downloaded, TaskStatus.DONE),
             ),
         )
-    }.flowOn(Dispatchers.IO)
+    }
+        // 收尾只补一行汇总：这一轮真实拦了几次、注了几次（重复行已被按域名抑制）。
+        // 成功、失败、取消都走到这里，否则「抑制掉的次数」就成了无人认领的缺口。
+        .onCompletion { cookies.finish() }
+        .flowOn(Dispatchers.IO)
+
+    /**
+     * HLS 分支：先读清单（这一步就能拿到 403，因此会在写盘之前停下），
+     * 再逐段拼接。取消/失败会删掉 `.part`——HLS 没有可续传的段索引，
+     * 留一个半截文件只会让下一次以为能接着下。
+     */
+    private suspend fun downloadHls(
+        target: StartRequest.ViaLocal,
+        link: SniffResult,
+        handle: String,
+        emit: suspend (DownloadEvent) -> Unit,
+    ) {
+        try {
+            val plan = when (val prepared = hls.prepare(link) { Cancellations.cancelled(handle) }) {
+                is HlsPrepare.Failed -> {
+                    emit(DownloadEvent.Failed(prepared.failure))
+                    return
+                }
+
+                is HlsPrepare.Ready -> prepared.plan
+            }
+            val productName = target.productName
+                ?.let(::sanitizeProductName)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { withContainer(it, plan.container) }
+                ?: withContainer(link.baseName(), plan.container)
+            val partFile = java.io.File(target.outputDir, "$productName.part")
+            val finalFile = java.io.File(target.outputDir, productName)
+
+            LocalOutputSandbox.reject(partFile, target.allowedRoots)?.let { reason ->
+                emit(DownloadEvent.Failed(LocalFailures.outputDirRejected(reason)))
+                return
+            }
+
+            emit(
+                DownloadEvent.Started(
+                    link.hlsSnapshot(target.outputDir, productName, 0L, 0, plan.segments.size),
+                ),
+            )
+
+            var lastReport = System.currentTimeMillis()
+            var windowBytes = 0L
+            var windowMillis = lastReport
+            val outcome = hls.download(
+                plan = plan,
+                link = link,
+                partFile = partFile,
+                isCancelled = { Cancellations.cancelled(handle) },
+            ) { bytes, done, total ->
+                val now = System.currentTimeMillis()
+                if (now - lastReport >= LocalFailures.DOWNLOAD_POLL_INTERVAL_MS || done == total) {
+                    val elapsed = (now - windowMillis).coerceAtLeast(1L)
+                    val speed = (bytes - windowBytes) * 1000 / elapsed
+                    emit(
+                        DownloadEvent.Progress(
+                            link.hlsSnapshot(
+                                target.outputDir,
+                                productName,
+                                bytes,
+                                done,
+                                total,
+                                speedBps = speed,
+                            ),
+                        ),
+                    )
+                    windowBytes = bytes
+                    windowMillis = now
+                    lastReport = now
+                }
+            }
+
+            when (outcome) {
+                is HlsOutcome.Done -> {
+                    if (finalFile.exists()) finalFile.delete()
+                    if (!partFile.renameTo(finalFile)) {
+                        emit(DownloadEvent.Failed(LocalFailures.disk("改名落地失败")))
+                        return
+                    }
+                    emit(
+                        DownloadEvent.Terminal(
+                            link.hlsSnapshot(
+                                target.outputDir,
+                                productName,
+                                outcome.bytes,
+                                outcome.segments,
+                                plan.segments.size,
+                                TaskStatus.DONE,
+                            ),
+                        ),
+                    )
+                }
+
+                is HlsOutcome.Cancelled -> {
+                    partFile.delete()
+                    emit(
+                        DownloadEvent.Terminal(
+                            link.hlsSnapshot(
+                                target.outputDir,
+                                productName,
+                                outcome.bytes,
+                                outcome.segments,
+                                plan.segments.size,
+                                TaskStatus.CANCELLED,
+                            ),
+                        ),
+                    )
+                }
+
+                is HlsOutcome.Failed -> {
+                    partFile.delete()
+                    emit(DownloadEvent.Failed(outcome.failure))
+                }
+            }
+        } finally {
+            Cancellations.clear(handle)
+        }
+    }
+
+    private fun SniffResult.hlsSnapshot(
+        outputDir: String,
+        productName: String,
+        bytes: Long,
+        done: Int,
+        total: Int,
+        status: TaskStatus = TaskStatus.DOWNLOADING,
+        speedBps: Long = 0L,
+    ) = localTask(
+        link = this,
+        outputDir = outputDir,
+        productName = productName,
+        status = status,
+        progress = localHlsProgress(bytes, done, total, speedBps),
+    )
 
     override suspend fun cancel(taskId: String): BackendFailure? {
         Cancellations.request(taskId)
@@ -274,6 +427,33 @@ class LocalDirectDownloader(
         return if (cleaned.contains('.')) cleaned else "$cleaned.${container.ifBlank { "bin" }}"
     }
 
+    private fun SniffResult.isHls(): Boolean =
+        type == MediaStreamType.HLS ||
+            container.equals("m3u8", ignoreCase = true) ||
+            mediaUrl.substringBefore('?').endsWith(".m3u8", ignoreCase = true)
+
+    /** HLS 的产物基名：路径末段去掉扩展名，页面标题优先由调用方传进来。 */
+    private fun SniffResult.baseName(): String {
+        val raw = mediaUrl.substringBefore('#').substringBefore('?').substringAfterLast('/')
+        val cleaned = sanitizeProductName(raw.substringBeforeLast('.'))
+        return cleaned.ifBlank { "video" }
+    }
+
+    private fun sanitizeProductName(raw: String): String = raw
+        .map { ch -> if (ch.isISOControl() || ch in "\\/:*?\"<>|") ' ' else ch }
+        .joinToString("")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .trim('.')
+        .take(80)
+
+    private fun withContainer(name: String, container: String): String {
+        val ext = container.ifBlank { "bin" }.lowercase()
+        val lower = name.lowercase()
+        val hit = MEDIA_EXTENSIONS.firstOrNull { lower.endsWith(".$it") }
+        return if (hit != null) name.dropLast(hit.length + 1) + "." + ext else "$name.$ext"
+    }
+
     private fun String.isHttpUrl(): Boolean =
         lowercase().startsWith("http://") || lowercase().startsWith("https://")
 
@@ -282,6 +462,8 @@ class LocalDirectDownloader(
     private companion object {
         /** 画质表这一行的“任务”不属于引擎，用一个固定串占位，界面不拿它发请求。 */
         const val LOCAL_TABLE_ID = "local"
+
+        val MEDIA_EXTENSIONS = listOf("ts", "mp4", "m3u8", "mkv", "webm", "mov", "m4v", "mp3", "m4a")
 
         val LOCAL_HTTP = OkHttpClient.Builder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)

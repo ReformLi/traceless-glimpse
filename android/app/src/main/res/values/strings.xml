@@ -161,6 +161,45 @@
     <string name="sniff_ready_title">链接已就绪</string>
     <string name="sniff_ready_body">点「嗅探」让电脑引擎或本机浏览器解析这条页面。</string>
 
+    <!-- 内置浏览器（M7）：地址栏 + WebView + 底部嗅探抽屉 -->
+    <string name="browser_back">后退</string>
+    <string name="browser_forward">前进</string>
+    <string name="browser_reload">刷新</string>
+    <string name="browser_stop">停止</string>
+    <string name="browser_go">打开</string>
+    <string name="browser_address_placeholder">输入网址，例如 https://…</string>
+    <string name="browser_address_invalid">请输入一个 http:// 或 https:// 网址</string>
+    <string name="browser_insecure">此页面使用 HTTP 明文连接</string>
+    <string name="browser_engine_switch">电脑引擎</string>
+    <string name="browser_engine_switch_busy">有任务在跑，结束后才能切换</string>
+    <string name="browser_start_title">在应用内打开视频页</string>
+    <string name="browser_start_body">输入网址后点网页里的播放按钮。抓到 m3u8 / mp4 会立刻出现在下方，点「下载」即可存到手机。</string>
+    <string name="browser_page_error">页面加载失败：%1$s</string>
+    <string name="browser_panel_title">嗅探结果</string>
+    <string name="browser_panel_count">%1$d 条</string>
+    <string name="browser_panel_expand">展开</string>
+    <string name="browser_panel_collapse">收起</string>
+    <string name="browser_panel_waiting">正在监听页面请求，点网页里的播放按钮</string>
+    <string name="browser_panel_empty">还没有抓到媒体。先让网页里的视频开始播放。</string>
+    <string name="browser_blob_title">这是 MSE 分片流（blob:）</string>
+    <string name="browser_blob_body">网页用 JavaScript 把分片推给播放器，本机拿不到可下载的整段地址。请改用电脑引擎嗅探。</string>
+    <string name="browser_blob_switch">改用电脑引擎</string>
+    <string name="browser_candidate_download">下载</string>
+    <string name="browser_candidate_copy">复制</string>
+    <string name="browser_candidate_copied">链接已复制</string>
+    <string name="browser_quality_parsing">解析画质中…</string>
+    <string name="browser_quality_unknown">未知画质</string>
+    <string name="browser_segments">%1$d 段</string>
+    <string name="browser_download_preparing">正在解析媒体清单…</string>
+    <string name="browser_download_running">下载中</string>
+    <string name="browser_download_done">已保存到手机</string>
+    <string name="browser_download_cancelled">下载已取消</string>
+    <string name="browser_download_failed">下载失败</string>
+    <string name="browser_download_open">打开文件</string>
+    <string name="browser_download_retry_hint">可以再点一次上面那条「下载」重试。</string>
+    <string name="browser_consent_waiting">等待 Cookie 授权</string>
+    <string name="browser_not_downloadable">这条不能在本机下载</string>
+
     <string name="format_action">选择画质并下载</string>
     <string name="format_preparing">引擎解析画质中：</string>
     <string name="format_title">选择画质</string>

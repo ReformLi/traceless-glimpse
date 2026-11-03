@@ -78,4 +78,22 @@ internal fun localProgress(
     percent = if (bytesTotal > 0L) bytesDownloaded * 100.0 / bytesTotal else 0.0,
 )
 
+/**
+ * HLS 的进度按「已落盘段数」算：总字节数在拼接前不可知，百分比却已经确定。
+ * `bytesTotal` 留 0，界面据此走不确定进度条，但百分比/段数照样能显示。
+ */
+internal fun localHlsProgress(
+    bytesDownloaded: Long,
+    segmentsDone: Int,
+    segmentsTotal: Int,
+    speedBps: Long,
+): TaskProgress = TaskProgress(
+    phase = "hls $segmentsDone/$segmentsTotal",
+    bytesDownloaded = bytesDownloaded,
+    bytesTotal = 0L,
+    speedBps = speedBps,
+    etaSeconds = 0,
+    percent = if (segmentsTotal > 0) segmentsDone * 100.0 / segmentsTotal else 0.0,
+)
+
 private const val LOCAL_PHASE = "local_direct"

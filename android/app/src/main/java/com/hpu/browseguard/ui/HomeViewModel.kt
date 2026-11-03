@@ -128,6 +128,13 @@ data class HomeUiState(
     val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
     /** 嗅探交给电脑引擎还是手机 WebView；默认电脑，界面可显式切换。 */
     val sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
+    /**
+     * 显示「地址栏 + WebView + 嗅探面板」的内置浏览器。
+     *
+     * 只有用户显式选了本机嗅探才为真；电脑不可达时的自动降级仍走离屏嗅探，
+     * 免得浏览器停在空白页、而结果落在看不见的另一条腿上。
+     */
+    val browserMode: Boolean = false,
     /** 自动降级/失败后的可见提示；`null` 表示没有要说的。 */
     val sniffNotice: String? = null,
     /**
@@ -223,12 +230,32 @@ class HomeViewModel(
     private var historyId: String? = null
     private var historyTaskId: String? = null
 
+    /** 浏览器面板点「下载」后：画质表一回来就直接开下，中间不再让用户按第二次。 */
+    private var autoStartSelection = false
+
+    /**
+     * 这次等待授权来自内置浏览器：同意的只是「读 Cookie」，页面一直活着、Cookie 也已经在容器里，
+     * 所以续跑直接开下，不再像离屏嗅探那样重放一次页面。
+     */
+    private var browserDownloadActive = false
+
+    /** 浏览器页标题，只给本地产物起名；引擎任务不接受这个字段。 */
+    private var browserProductName: String? = null
+
+    /** 离开浏览器这条腿：自动开下、授权续跑与产物名都不该跟着跑到下一次离屏嗅探上。 */
+    private fun clearBrowserSession() {
+        autoStartSelection = false
+        browserDownloadActive = false
+        browserProductName = null
+    }
+
     private val _state = MutableStateFlow(
         HomeUiState(
             engineUrl = settings.baseUrl,
             engineUrlDraft = settings.baseUrl,
             downloadExecutor = settings.downloadExecutor,
             sniffExecutor = settings.sniffExecutor,
+            browserMode = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW,
             // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
             mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
             localSandboxRoot = backends.localSandboxRoot,
@@ -274,6 +301,8 @@ class HomeViewModel(
         if (executor == DownloadExecutor.LOCAL_DIRECT && snapshot.mergeSelected) {
             audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
         }
+        autoStartSelection = false
+        browserDownloadActive = false
         _state.update {
             it.copy(
                 downloadExecutor = executor,
@@ -294,14 +323,61 @@ class HomeViewModel(
         if (snapshot.sniffExecutor == executor) return
         if (snapshot.sniff is SniffPhase.Running || snapshot.downloadInFlight) return
         settings.sniffExecutor = executor
+        clearBrowserSession()
         _state.update {
             it.copy(
                 sniffExecutor = executor,
+                browserMode = executor == SniffExecutor.LOCAL_WEBVIEW,
                 sniff = SniffPhase.Idle,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
                 sniffNotice = null,
             )
+        }
+    }
+
+    /**
+     * 内置浏览器面板点了「下载」：接管这条直链，不再走离屏嗅探。
+     *
+     * 浏览器页面一直活着、Cookie 也已经在容器里，所以这里直接合成一张单行画质表，
+     * 表一回来就自动开下（[autoStartSelection]），用户只按过一次「下载」。
+     */
+    fun downloadFromBrowser(result: SniffResult, pageUrl: String, pageTitle: String?) {
+        val snapshot = _state.value
+        if (snapshot.downloadInFlight) return
+        val switching = snapshot.downloadExecutor != DownloadExecutor.LOCAL_DIRECT
+        if (switching) {
+            settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+            if (snapshot.mergeSelected) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
+        }
+        sniffJob?.cancel()
+        downloadJob?.cancel()
+        resumeFormatId = null
+        autoStartSelection = true
+        browserDownloadActive = true
+        browserProductName = pageTitle?.trim()?.takeIf { it.isNotEmpty() }
+
+        val recordId = UUID.randomUUID().toString()
+        historyId = recordId
+        historyTaskId = null
+        _state.update {
+            it.copy(
+                downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+                mergeSelected = if (switching) false else it.mergeSelected,
+                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                browserMode = true,
+                sourceUrl = pageUrl,
+                sniff = SniffPhase.Success(listOf(result)),
+                download = DownloadPhase.Idle,
+                selectedFormatId = null,
+                sniffNotice = null,
+            )
+        }
+        viewModelScope.launch {
+            history.beginSniff(recordId, pageUrl)
+            history.markReady(recordId, format = null)
+            // 历史行先落地，后面的 Started 才有东西可回填。
+            pickFormats()
         }
     }
 
@@ -311,6 +387,9 @@ class HomeViewModel(
 
     fun editSourceUrl(value: String) {
         resumeFormatId = null
+        autoStartSelection = false
+        browserDownloadActive = false
+        browserProductName = null
         _state.update {
             it.copy(
                 sourceUrl = value,
@@ -324,6 +403,9 @@ class HomeViewModel(
     fun sniff() {
         // 用户主动重嗅 = 放弃「授权后续跑」那条线索，别再悄悄接着下别的任务。
         resumeFormatId = null
+        autoStartSelection = false
+        browserDownloadActive = false
+        browserProductName = null
         startSniff()
     }
 
@@ -412,6 +494,8 @@ class HomeViewModel(
         _state.update {
             it.copy(
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                // 自动降级留在旧首页：离屏嗅探正在跑，换成空浏览器只会让结果无处可看。
+                browserMode = false,
                 downloadExecutor = if (switchDownload) DownloadExecutor.LOCAL_DIRECT else it.downloadExecutor,
                 mergeSelected = if (switchDownload) false else it.mergeSelected,
                 download = DownloadPhase.Idle,
@@ -544,6 +628,7 @@ class HomeViewModel(
             is DownloadEvent.Selecting -> {
                 attachHistoryTask(event.taskId)
                 val resume = resumeFormatId
+                val autoStart = autoStartSelection
                 _state.update {
                     it.copy(
                         download = DownloadPhase.Selecting(event.taskId, event.formats),
@@ -551,8 +636,9 @@ class HomeViewModel(
                             ?: event.formats.singleOrNull()?.formatId,
                     )
                 }
-                // 授权续跑的第二步：画质表回来后直接接上下载，中间不再问一次。
-                if (resume != null && _state.value.selectedFormat != null) {
+                // 授权续跑的第二步 / 浏览器点过一次「下载」：画质表回来后直接接上下载，中间不再问一次。
+                if ((resume != null || autoStart) && _state.value.selectedFormat != null) {
+                    if (autoStart) autoStartSelection = false
                     viewModelScope.launch { startDownload() }
                 }
             }
@@ -582,6 +668,8 @@ class HomeViewModel(
 
             is DownloadEvent.Terminal -> {
                 attachHistoryTask(event.task.id)
+                autoStartSelection = false
+                browserDownloadActive = false
                 val phase = event.task.toFinalPhase()
                 val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
                 if (phase is DownloadPhase.Success && isLocal) {
@@ -600,6 +688,8 @@ class HomeViewModel(
                     // 差一次同意，不是失败：历史行原样留着，`.part` 本来也没写过。
                     _state.update { it.copy(download = awaiting) }
                 } else {
+                    autoStartSelection = false
+                    browserDownloadActive = false
                     val phase = event.failure.toDownloadPhase()
                     record { markFailed(it, phase.code) }
                     _state.update { it.copy(download = phase) }
@@ -650,17 +740,18 @@ class HomeViewModel(
     /**
      * 用户点了「同意并继续」：记授权，然后接着把那一步做完。
      *
-     * 本机嗅探过的那一页还没被允许存 Cookie，所以必须先重放一次嗅探（这次允许存），
-     * 画质表出来后直接续上下载——用户只点了一次同意，中间不再问他。
+     * 内置浏览器那一页一直活着、Cookie 也已经在容器里，同意后直接重试下载；
+     * 离屏嗅探则相反——那一页从没被允许存 Cookie，必须先重放一次嗅探（这次允许存），
+     * 画质表出来后直接续上下载。两条路都只让用户点一次同意。
      */
     fun grantCookieConsent() {
         val awaiting = _state.value.download as? DownloadPhase.AwaitingCookieConsent ?: return
         consent.grant(awaiting.host)
         _state.update { it.copy(download = DownloadPhase.Selecting(awaiting.taskId, awaiting.formats)) }
-        if (_state.value.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
-            startSniff()
-        } else {
-            startDownload()
+        when {
+            browserDownloadActive -> startDownload()
+            _state.value.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW -> startSniff()
+            else -> startDownload()
         }
     }
 
@@ -668,6 +759,8 @@ class HomeViewModel(
     fun denyCookieConsent() {
         val awaiting = _state.value.download as? DownloadPhase.AwaitingCookieConsent ?: return
         resumeFormatId = null
+        autoStartSelection = false
+        browserDownloadActive = false
         audit.log("cookie_consent_denied", mapOf("host" to awaiting.host))
         val phase = LocalFailures.linkUnloadable(awaiting.status).toDownloadPhase()
         record { markFailed(it, phase.code) }
@@ -797,6 +890,8 @@ class HomeViewModel(
                     link = link,
                     outputDir = sandboxRoot,
                     allowedRoots = listOf(sandboxRoot),
+                    // 浏览器页标题只给产物起名；离屏本地嗅探没有标题，退回 URL 末段。
+                    productName = browserProductName,
                 )
             }
         }
@@ -834,6 +929,9 @@ class HomeViewModel(
     fun resetDownload() {
         downloadJob?.cancel()
         resumeFormatId = null
+        autoStartSelection = false
+        browserDownloadActive = false
+        browserProductName = null
         _state.update { it.copy(download = DownloadPhase.Idle, selectedFormatId = null) }
     }
 

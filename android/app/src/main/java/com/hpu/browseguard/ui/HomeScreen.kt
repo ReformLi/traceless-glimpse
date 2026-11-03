@@ -107,6 +107,12 @@ fun HomeRoute(
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // 显式选了「本机嗅探」就是内置浏览器；电脑不可达的自动降级仍留在旧首页，
+    // 让离屏嗅探的结果有地方可看。
+    if (state.browserMode) {
+        BrowserRoute(container, viewModel)
+        return
+    }
     HomeScreen(
         state = state,
         onRefresh = viewModel::refreshConnection,

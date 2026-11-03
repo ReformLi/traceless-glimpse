@@ -81,6 +81,8 @@ sealed interface StartRequest {
         val link: SniffResult,
         val outputDir: String,
         val allowedRoots: List<String>,
+        /** 浏览器页标题，只用来给产物起名；为空时退回 URL 末段。 */
+        val productName: String? = null,
     ) : StartRequest
 }
 
