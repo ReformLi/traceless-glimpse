@@ -6,6 +6,7 @@ import com.hpu.browseguard.data.backend.DownloadEvent
 import com.hpu.browseguard.data.backend.LocalDirectDownloader
 import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.NoCookieProvider
+import com.hpu.browseguard.data.backend.REMUX_PHASE
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.hls.HlsDownloader
 import com.hpu.browseguard.data.backend.hls.HlsKey
@@ -322,7 +323,9 @@ class HlsConcurrentDownloadTest {
         val terminal = events.last() as DownloadEvent.Terminal
         assertEquals(TaskStatus.DONE, terminal.task.status)
         val phases = events.filterIsInstance<DownloadEvent.Progress>().mapNotNull { it.task.progress?.phase }
-        assertEquals("进度必须是「hls 已下段数/总段数」，实际 $phases", "hls 5/5", phases.last())
+        // JVM 里没有 MediaExtractor/Muxer，转封装会降级；降级前仍要先报一次 remux 阶段。
+        assertEquals("段下载完要进入转封装阶段，实际 $phases", REMUX_PHASE, phases.last())
+        assertEquals("进度必须是「hls 已下段数/总段数」，实际 $phases", "hls 5/5", phases.dropLastWhile { it == REMUX_PHASE }.last())
         val product = requireNotNull(out.listFiles()?.singleOrNull()) { "产物应当只有一个文件：${out.list()?.toList()}" }
         assertEquals((0 until count).joinToString("") { segmentBody(it) }, product.readText())
 

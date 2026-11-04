@@ -1,10 +1,13 @@
 package com.hpu.browseguard.data.backend
 
+import android.os.StatFs
 import com.hpu.browseguard.data.AuditLogger
 import com.hpu.browseguard.data.NoopAuditLogger
 import com.hpu.browseguard.data.backend.hls.HlsDownloader
 import com.hpu.browseguard.data.backend.hls.HlsOutcome
 import com.hpu.browseguard.data.backend.hls.HlsPrepare
+import com.hpu.browseguard.data.backend.remux.RemuxResult
+import com.hpu.browseguard.data.backend.remux.TsRemuxer
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSource
@@ -28,9 +31,10 @@ import okhttp3.Request
 /**
  * 本地直链下载器：单条 HTTP GET 落到手机存储，`.part` 断点续传。
  *
- * 只做这一件事——不碰 yt-dlp（§18.5 已裁决放弃端侧内嵌），也不做 FFmpeg 合并：
+ * 只做这一件事——不碰 yt-dlp（§18.5 已裁决放弃端侧内嵌），也不跑 FFmpeg：
  * 直链本身就是完整音视频文件，`postActions` 在这里没有对应动作，界面选了合并也不会
  * 由本实现执行，这条限制写进 `StartRequest.ViaLocal` 的形状里（它压根不收 postActions）。
+ * HLS 拼出的 `.ts` 只做容器转换（平台 muxer，copy remux），不是合并、不重编码。
  *
  * 失败一律发 [BackendFailure.Local]：403 是**站点**说的，不是引擎说的，
  * 借 §5 的 `AUTH_REQUIRED` 就等于替引擎发言（§19.3 那三条伪造的教训）。
@@ -48,6 +52,7 @@ class LocalDirectDownloader(
 ) : DownloadBackend {
 
     private val hls = HlsDownloader(http, cookies)
+    private val remuxer = TsRemuxer()
 
     override fun prepare(request: PrepareRequest): Flow<DownloadEvent> = flow {
         val candidates = request.sniffResults.filter { !it.drmDetected && it.mediaUrl.isHttpUrl() }
@@ -316,16 +321,102 @@ class LocalDirectDownloader(
                         ),
                     )
 
+                    var terminalName = productName
+                    var remuxFallback = false
+                    if (plan.container.equals("ts", ignoreCase = true)) {
+                        val mp4Name = withContainer(productName, "mp4")
+                        val mp4Part = java.io.File(target.outputDir, "$mp4Name.part")
+                        val mp4Final = java.io.File(target.outputDir, mp4Name)
+                        emit(
+                            DownloadEvent.Progress(
+                                link.hlsSnapshot(
+                                    target.outputDir,
+                                    productName,
+                                    outcome.bytes,
+                                    outcome.segments,
+                                    plan.segments.size,
+                                    phase = REMUX_PHASE,
+                                ),
+                            ),
+                        )
+                        val free = availableBytes(target.outputDir)
+                        val result = if (free < outcome.bytes + REMUX_SPACE_MARGIN_BYTES) {
+                            RemuxResult.Skipped("disk_low")
+                        } else {
+                            remuxer.remux(
+                                source = finalFile,
+                                target = mp4Part,
+                                expectedDurationMs = plan.durationSeconds * 1000L,
+                                isCancelled = { Cancellations.cancelled(handle) },
+                            )
+                        }
+                        when (result) {
+                            is RemuxResult.Done -> {
+                                if (mp4Final.exists()) mp4Final.delete()
+                                if (mp4Part.renameTo(mp4Final)) {
+                                    // 只有 `.mp4` 已经落地，才允许删源 `.ts`。
+                                    finalFile.delete()
+                                    terminalName = mp4Name
+                                    audit.log(
+                                        "hls_remux_done",
+                                        mapOf(
+                                            "host" to hostOf(link.mediaUrl),
+                                            "bytes" to result.bytes.toString(),
+                                            "ms" to result.durationMs.toString(),
+                                            "video" to result.videoSamples.toString(),
+                                            "audio" to result.audioSamples.toString(),
+                                        ),
+                                    )
+                                } else {
+                                    mp4Part.delete()
+                                    remuxFallback = true
+                                    audit.log(
+                                        "hls_remux_skipped",
+                                        mapOf("host" to hostOf(link.mediaUrl), "reason" to "rename_failed"),
+                                    )
+                                }
+                            }
+
+                            is RemuxResult.Skipped -> {
+                                mp4Part.delete()
+                                remuxFallback = true
+                                audit.log(
+                                    "hls_remux_skipped",
+                                    mapOf("host" to hostOf(link.mediaUrl), "reason" to result.reason),
+                                )
+                            }
+
+                            RemuxResult.Cancelled -> {
+                                mp4Part.delete()
+                                finalFile.delete()
+                                emit(
+                                    DownloadEvent.Terminal(
+                                        link.hlsSnapshot(
+                                            target.outputDir,
+                                            productName,
+                                            outcome.bytes,
+                                            outcome.segments,
+                                            plan.segments.size,
+                                            TaskStatus.CANCELLED,
+                                        ),
+                                    ),
+                                )
+                                return
+                            }
+                        }
+                    }
+
                     emit(
                         DownloadEvent.Terminal(
                             link.hlsSnapshot(
                                 target.outputDir,
-                                productName,
+                                terminalName,
                                 outcome.bytes,
                                 outcome.segments,
                                 plan.segments.size,
                                 TaskStatus.DONE,
                             ),
+                            remuxFallback = remuxFallback,
                         ),
                     )
                 }
@@ -364,12 +455,13 @@ class LocalDirectDownloader(
         total: Int,
         status: TaskStatus = TaskStatus.DOWNLOADING,
         speedBps: Long = 0L,
+        phase: String = "hls $done/$total",
     ) = localTask(
         link = this,
         outputDir = outputDir,
         productName = productName,
         status = status,
-        progress = localHlsProgress(bytes, done, total, speedBps),
+        progress = localHlsProgress(bytes, done, total, speedBps, phase),
     )
 
     override suspend fun cancel(taskId: String): BackendFailure? {
@@ -383,6 +475,10 @@ class LocalDirectDownloader(
         RandomAccessFile(partFile, "rw").close()
         return partFile.length()
     }
+
+    /** 查询不到就当作「不缺空间」：真正写失败时还有一次降级兜底。 */
+    private fun availableBytes(dir: String): Long =
+        runCatching { StatFs(dir).availableBytes }.getOrDefault(Long.MAX_VALUE)
 
     /** 发一次带 Range 的 GET；返回 `null` 表示服务端回了 416，调用方需要清断点重来。 */
     private fun exchange(link: SniffResult, from: Long): okhttp3.Response? {
@@ -476,6 +572,9 @@ class LocalDirectDownloader(
         const val LOCAL_TABLE_ID = "local"
 
         val MEDIA_EXTENSIONS = listOf("ts", "mp4", "m3u8", "mkv", "webm", "mov", "m4v", "mp3", "m4a")
+
+        /** 转封装期间 `.ts` 与 `.mp4` 会同时存在；余量不够就不赌，保留 `.ts`。 */
+        const val REMUX_SPACE_MARGIN_BYTES = 64L * 1024 * 1024
 
         val LOCAL_HTTP = OkHttpClient.Builder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)

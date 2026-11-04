@@ -91,6 +91,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
+import com.hpu.browseguard.data.backend.REMUX_PHASE
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.browser.BrowserCandidate
 import com.hpu.browseguard.data.browser.BrowserSniffController
@@ -815,7 +816,7 @@ private fun BrowserDownloadCard(phase: DownloadPhase, onCancel: () -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = runningDetail(task),
+                            text = runningDetail(task, stringResource(R.string.download_remuxing)),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f),
@@ -934,6 +935,13 @@ private fun BrowserSuccessContent(phase: DownloadPhase.Success) {
             color = MaterialTheme.colorScheme.error,
         )
     }
+    if (phase.remuxFallback) {
+        Text(
+            text = stringResource(R.string.download_remux_fallback),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     openProblem?.let { problem ->
         Text(
             text = openProblemText(problem),
@@ -943,8 +951,9 @@ private fun BrowserSuccessContent(phase: DownloadPhase.Success) {
     }
 }
 
-private fun runningDetail(task: com.hpu.browseguard.shared.model.Task): String {
+private fun runningDetail(task: com.hpu.browseguard.shared.model.Task, remuxLabel: String): String {
     val progress = task.progress ?: return ""
+    if (progress.phase == REMUX_PHASE) return remuxLabel
     val parts = ArrayList<String>(3)
     if (progress.bytesTotal > 0) {
         parts += "${formatBytes(progress.bytesDownloaded)} / ${formatBytes(progress.bytesTotal)}"

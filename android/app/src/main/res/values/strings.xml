@@ -243,6 +243,8 @@
     <string name="download_open_outside">该路径不在应用可共享的目录内，无法打开</string>
     <string name="download_open_no_app">系统里没有能打开该文件的应用</string>
     <string name="download_open_permission">所选文件夹的授权已失效，请在设置里重新选择</string>
+    <string name="download_remuxing">正在转封装为 MP4…</string>
+    <string name="download_remux_fallback">转封装失败，已保留 .ts（系统播放器可能不认这个格式）</string>
     <string name="download_publishing">正在保存到所选文件夹…</string>
     <string name="download_published">%1$s（所选文件夹）</string>
     <string name="download_publish_failed">已下载到应用目录，但复制到所选文件夹失败：%1$s</string>

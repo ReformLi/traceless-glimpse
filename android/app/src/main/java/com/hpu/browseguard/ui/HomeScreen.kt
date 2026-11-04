@@ -67,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.REMUX_PHASE
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
@@ -966,7 +967,11 @@ private fun RunningDownloadContent(phase: DownloadPhase.Running, onCancel: () ->
     )
     Spacer(Modifier.height(4.dp))
     Text(
-        text = task.status.displayWithWire(),
+        text = if (task.progress?.phase == REMUX_PHASE) {
+            stringResource(R.string.download_remuxing)
+        } else {
+            task.status.displayWithWire()
+        },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -1144,6 +1149,14 @@ private fun SuccessDownloadContent(
             text = stringResource(R.string.download_publish_failed, warning),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
+        )
+    }
+    if (phase.remuxFallback) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = stringResource(R.string.download_remux_fallback),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     openProblem?.let { problem ->

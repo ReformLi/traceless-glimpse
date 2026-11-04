@@ -18,7 +18,7 @@ enum class DownloadExecutor {
     /** 引擎 `mode=download` 任务：画质表、后处理、产物都归引擎。 */
     ENGINE,
 
-    /** 本机直链：单条 HTTP GET + `.part` 续传，不跑 yt-dlp，也不跑 FFmpeg。 */
+    /** 本机直链：单条 HTTP GET + `.part` 续传；HLS 的 TS 产物用平台 muxer 转 MP4。 */
     LOCAL_DIRECT,
 }
 
@@ -106,8 +106,14 @@ sealed interface DownloadEvent {
     /**
      * 任务落到终态。`done` → 成功、`cancelled` → 已取消，其余由界面从
      * `task.error` 解释——那是引擎写的载荷，客户端不替它编码。
+     *
+     * [remuxFallback] 只描述本机事实：HLS 合并出的 `.ts` 没能转成 MP4，
+     * 产物仍是 `.ts`。引擎任务恒为 false，不参与协议。
      */
-    data class Terminal(val task: Task) : DownloadEvent
+    data class Terminal(
+        val task: Task,
+        val remuxFallback: Boolean = false,
+    ) : DownloadEvent
 
     data class Failed(val failure: BackendFailure) : DownloadEvent
 }

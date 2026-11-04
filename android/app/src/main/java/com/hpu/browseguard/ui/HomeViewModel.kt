@@ -108,6 +108,8 @@ sealed interface DownloadPhase {
         val publishedName: String? = null,
         val publishing: Boolean = false,
         val publishWarning: String? = null,
+        /** HLS 的 `.ts` 没能转成 MP4：产物还在，但是 `.ts`。 */
+        val remuxFallback: Boolean = false,
     ) : DownloadPhase
     data class Cancelled(val task: Task) : DownloadPhase
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : DownloadPhase
@@ -670,7 +672,12 @@ class HomeViewModel(
                 attachHistoryTask(event.task.id)
                 autoStartSelection = false
                 browserDownloadActive = false
-                val phase = event.task.toFinalPhase()
+                val terminal = event.task.toFinalPhase()
+                val phase = if (event.remuxFallback && terminal is DownloadPhase.Success) {
+                    terminal.copy(remuxFallback = true)
+                } else {
+                    terminal
+                }
                 val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
                 if (phase is DownloadPhase.Success && isLocal) {
                     // 本地产物还要经过一次可选复制；先让界面进入「保存中」，别提前宣告落盘位置。

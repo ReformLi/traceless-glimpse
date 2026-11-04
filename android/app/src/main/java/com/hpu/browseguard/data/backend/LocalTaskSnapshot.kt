@@ -81,19 +81,26 @@ internal fun localProgress(
 /**
  * HLS 的进度按「已落盘段数」算：总字节数在拼接前不可知，百分比却已经确定。
  * `bytesTotal` 留 0，界面据此走不确定进度条，但百分比/段数照样能显示。
+ *
+ * 段下完之后还可能停在这个阶段：转封装到 MP4。这时 [phase] 换成 [REMUX_PHASE]，
+ * 段数保持满格，界面把这一行文案换成「正在转封装为 MP4…」。
  */
 internal fun localHlsProgress(
     bytesDownloaded: Long,
     segmentsDone: Int,
     segmentsTotal: Int,
     speedBps: Long,
+    phase: String = "hls $segmentsDone/$segmentsTotal",
 ): TaskProgress = TaskProgress(
-    phase = "hls $segmentsDone/$segmentsTotal",
+    phase = phase,
     bytesDownloaded = bytesDownloaded,
     bytesTotal = 0L,
     speedBps = speedBps,
     etaSeconds = 0,
     percent = if (segmentsTotal > 0) segmentsDone * 100.0 / segmentsTotal else 0.0,
 )
+
+/** 转封装阶段的机器名；中文文案留在 UI 层，数据层不塞展示文本。 */
+internal const val REMUX_PHASE = "remux"
 
 private const val LOCAL_PHASE = "local_direct"
