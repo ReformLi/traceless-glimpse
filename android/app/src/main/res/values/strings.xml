@@ -183,6 +183,9 @@
     <string name="browser_panel_empty">还没有抓到媒体。先让网页里的视频开始播放。</string>
     <string name="browser_blob_title">这是 MSE 分片流（blob:）</string>
     <string name="browser_blob_body">网页用 JavaScript 把分片推给播放器，本机拿不到可下载的整段地址。请改用电脑引擎嗅探。</string>
+    <string name="browser_blob_hls_caught">检测到 MSE 伪装流，但已截获底层 HLS 清单，可尝试本地强行下载（需耗时较长）。</string>
+    <string name="browser_blob_force_hls">强行下载 HLS（%1$d 段）</string>
+    <string name="browser_blob_force_hls_plain">强行下载 HLS</string>
     <string name="browser_blob_switch">改用电脑引擎</string>
     <string name="browser_candidate_download">下载</string>
     <string name="browser_candidate_copy">复制</string>

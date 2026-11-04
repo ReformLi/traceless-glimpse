@@ -537,7 +537,14 @@ private fun BrowserSniffDrawer(
 
             if (sniff.blobLinks.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                BlobHintCard(onSwitchToEngine = onSwitchToEngine, enabled = !busy)
+                // blob 只是播放器拿到的假地址；排序保证 HLS 清单在第一张，
+                // 所以「第一条可下载」就是我们要强行下载的那条底层清单。
+                BlobHintCard(
+                    hlsTarget = sniff.candidates.firstOrNull { it.downloadable },
+                    enabled = !busy,
+                    onSwitchToEngine = onSwitchToEngine,
+                    onDownload = onDownload,
+                )
             }
 
             when {
@@ -596,7 +603,12 @@ private fun CountChip(text: String) {
 }
 
 @Composable
-private fun BlobHintCard(onSwitchToEngine: () -> Unit, enabled: Boolean) {
+private fun BlobHintCard(
+    hlsTarget: BrowserCandidate?,
+    enabled: Boolean,
+    onSwitchToEngine: () -> Unit,
+    onDownload: (SniffResult) -> Unit,
+) {
     Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -610,11 +622,40 @@ private fun BlobHintCard(onSwitchToEngine: () -> Unit, enabled: Boolean) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = stringResource(R.string.browser_blob_body),
+                text = if (hlsTarget != null) {
+                    stringResource(R.string.browser_blob_hls_caught)
+                } else {
+                    stringResource(R.string.browser_blob_body)
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
-            TextButton(onClick = onSwitchToEngine, enabled = enabled) {
-                Text(stringResource(R.string.browser_blob_switch))
+            Spacer(Modifier.height(6.dp))
+            if (hlsTarget != null) {
+                // 黄卡自己就带下载入口：抽屉只有 220dp 时下面那张卡的按钮会被裁掉，
+                // 只靠卡片可点等于没放行。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilledTonalButton(
+                        onClick = { onDownload(hlsTarget.result) },
+                        enabled = enabled,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            text = if (hlsTarget.segments > 0) {
+                                stringResource(R.string.browser_blob_force_hls, hlsTarget.segments)
+                            } else {
+                                stringResource(R.string.browser_blob_force_hls_plain)
+                            },
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = onSwitchToEngine, enabled = enabled) {
+                        Text(stringResource(R.string.browser_blob_switch))
+                    }
+                }
+            } else {
+                TextButton(onClick = onSwitchToEngine, enabled = enabled) {
+                    Text(stringResource(R.string.browser_blob_switch))
+                }
             }
         }
     }

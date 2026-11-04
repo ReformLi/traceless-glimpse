@@ -304,6 +304,18 @@ class LocalDirectDownloader(
                         emit(DownloadEvent.Failed(LocalFailures.disk("改名落地失败")))
                         return
                     }
+                    // 一行交代这一趟的真实代价：段数、字节、重试了多少次。
+                    // 33 分钟那种慢案场就靠这行判断「是 CDN 限速还是我们这边在反复重试」。
+                    audit.log(
+                        "hls_download_done",
+                        mapOf(
+                            "host" to hostOf(link.mediaUrl),
+                            "segments" to outcome.segments.toString(),
+                            "bytes" to outcome.bytes.toString(),
+                            "retries" to outcome.retries.toString(),
+                        ),
+                    )
+
                     emit(
                         DownloadEvent.Terminal(
                             link.hlsSnapshot(

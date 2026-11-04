@@ -52,6 +52,21 @@ class BrowserWiringTest {
         assertTrue("浏览器会话有属于自己的 Cookie 账本", container.contains("cookies = ConsentCookieProvider(cookieVault, cookieConsents, audit),"))
     }
 
+    /**
+     * MSE 伪装流放行（M7.5 需求 1）。
+     *
+     * 抽屉只有 220dp 时黄卡下面的候选卡会被裁掉「下载」按钮，所以强行下载入口必须
+     * 做在黄卡自己身上——否则「卡片其实可点」在真机上等于不可点。
+     */
+    @Test
+    fun theBlobHintCardCarriesItsOwnDownloadEntry() {
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
+
+        assertTrue("黄卡要拿到那条可下载的底层清单", screen.contains("hlsTarget = sniff.candidates.firstOrNull { it.downloadable }"))
+        assertTrue("黄卡上的按钮必须真的触发下载", screen.contains("onDownload(hlsTarget.result)"))
+        assertTrue("文案要改口：截获到清单就不再劝退", screen.contains("R.string.browser_blob_hls_caught"))
+    }
+
     private companion object {
         const val SRC_ROOT = "src/main/java/com/hpu/browseguard"
     }
