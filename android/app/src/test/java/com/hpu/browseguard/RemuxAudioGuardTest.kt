@@ -73,6 +73,80 @@ class RemuxAudioGuardTest {
     }
 
     @Test
+    fun avToleranceGrowsWithSegmentDurationButNeverBelowFiveSeconds() {
+        assertEquals(
+            "没有分片信息时按 5 秒兜底",
+            RemuxAudioGuard.MIN_AV_TOLERANCE_US,
+            RemuxAudioGuard.avToleranceUs(segmentDurationMs = 0L),
+        )
+        assertEquals(
+            "4 秒分片按 1.5 倍算，6 秒",
+            6_000_000L,
+            RemuxAudioGuard.avToleranceUs(segmentDurationMs = 4_000L),
+        )
+        assertEquals(
+            "2 秒分片低于 5 秒下限",
+            RemuxAudioGuard.MIN_AV_TOLERANCE_US,
+            RemuxAudioGuard.avToleranceUs(segmentDurationMs = 2_000L),
+        )
+        assertEquals(
+            "8 秒分片放宽到 12 秒",
+            12_000_000L,
+            RemuxAudioGuard.avToleranceUs(segmentDurationMs = 8_000L),
+        )
+        assertEquals(
+            "缺失/异常的分片时长不能收紧容差",
+            RemuxAudioGuard.MIN_AV_TOLERANCE_US,
+            RemuxAudioGuard.avToleranceUs(segmentDurationMs = -1L),
+        )
+    }
+
+    @Test
+    fun durationMismatchRejectsSilentlyTruncatedAudio() {
+        val tolerance = RemuxAudioGuard.avToleranceUs(segmentDurationMs = 4_000L)
+        assertNull(
+            "正常片尾部差几百毫秒要放行",
+            RemuxAudioGuard.avDurationGate(
+                videoLastPtsUs = 78_919_700L,
+                audioLastPtsUs = 78_981_224L,
+                toleranceUs = tolerance,
+            ),
+        )
+        assertNull(
+            "正好等于容差仍算安全",
+            RemuxAudioGuard.avDurationGate(875_000_000L, 870_000_000L, tolerance),
+        )
+        assertEquals(
+            "875 秒视频只剩 63 秒音频——正是静默丢样本的现场",
+            RemuxAudioGuard.OUTPUT_AV_DURATION_MISMATCH,
+            RemuxAudioGuard.avDurationGate(875_000_000L, 63_000_000L, tolerance),
+        )
+        assertEquals(
+            "音频比视频长同样算不齐",
+            RemuxAudioGuard.OUTPUT_AV_DURATION_MISMATCH,
+            RemuxAudioGuard.avDurationGate(100_000_000L, 107_000_000L, tolerance),
+        )
+    }
+
+    @Test
+    fun audioGapCatchesMiddleDropsThatTailPtsWouldMiss() {
+        val tolerance = RemuxAudioGuard.avToleranceUs(segmentDurationMs = 4_000L)
+        assertNull(
+            "正常片相邻样本只差一两百毫秒",
+            RemuxAudioGuard.audioGapGate(maxGapUs = 371_534L, toleranceUs = tolerance),
+        )
+        assertNull(
+            "正好等于容差仍算安全",
+            RemuxAudioGuard.audioGapGate(maxGapUs = tolerance, toleranceUs = tolerance),
+        )
+        assertEquals(
+            "中段丢一大截、尾巴还在时靠间隔发现",
+            RemuxAudioGuard.OUTPUT_AV_DURATION_MISMATCH,
+            RemuxAudioGuard.audioGapGate(maxGapUs = 162_000_000L, toleranceUs = tolerance),
+        )
+    }
+
+    @Test
     fun allAudioReasonsRouteToTheAudioFallbackCopy() {
         assertEquals(
             setOf(
@@ -80,6 +154,7 @@ class RemuxAudioGuardTest {
                 RemuxAudioGuard.AUDIO_EMPTY,
                 RemuxAudioGuard.AAC_CSD_MISSING,
                 RemuxAudioGuard.OUTPUT_AUDIO_MISSING,
+                RemuxAudioGuard.OUTPUT_AV_DURATION_MISMATCH,
             ),
             RemuxAudioGuard.AUDIO_FALLBACK_REASONS,
         )

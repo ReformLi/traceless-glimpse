@@ -33,12 +33,26 @@ class RemuxWiringTest {
         assertTrue("找不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.trackGate"))
         assertTrue("AAC 缺解码配置必须拒绝", remuxer.contains("RemuxAudioGuard.csdGate"))
         assertTrue("音频样本为 0 必须拒绝", remuxer.contains("RemuxAudioGuard.sampleGate"))
-        assertTrue("产物要复开校验", remuxer.contains("verifyOutputAudio(target)"))
+        assertTrue("产物要复开全量扫一遍", remuxer.contains("verifyOutput(target, segmentDurationMs)"))
         assertTrue("复开读不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.outputGate"))
+        assertTrue("音视频末尾时长要对齐", remuxer.contains("RemuxAudioGuard.avDurationGate"))
+        assertTrue("中段丢样本要靠音频最大间隔发现", remuxer.contains("RemuxAudioGuard.audioGapGate"))
+        assertTrue("容差随分片时长放宽", remuxer.contains("RemuxAudioGuard.avToleranceUs(segmentDurationMs)"))
 
         val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
         assertTrue("删 .ts 前还有最后一道兜底", downloader.contains("result.audioSamples <= 0"))
         assertTrue("音轨原因的降级要可识别", downloader.contains("RemuxAudioGuard.AUDIO_FALLBACK_REASONS"))
+        assertTrue("分片时长要传进转封装器", downloader.contains("segmentDurationMs = (plan.segmentDurationSeconds * 1000).toLong()"))
+    }
+
+    @Test
+    fun thePlaylistKeepsItsTargetDurationForTheRemuxTolerance() {
+        val parser = File("$SRC_ROOT/data/backend/hls/HlsPlaylistParser.kt").readText()
+        val downloader = File("$SRC_ROOT/data/backend/hls/HlsDownloader.kt").readText()
+
+        assertTrue("清单要读 TARGETDURATION", parser.contains("\"#EXT-X-TARGETDURATION:\""))
+        assertTrue("缺失时退化为最长 EXTINF", parser.contains("if (targetDuration > 0.0) targetDuration else maxSegmentDuration"))
+        assertTrue("计划要带分片时长", downloader.contains("segmentDurationSeconds = media.targetDurationSeconds"))
     }
 
     @Test

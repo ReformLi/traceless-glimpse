@@ -349,6 +349,7 @@ class LocalDirectDownloader(
                                 source = finalFile,
                                 target = mp4Part,
                                 expectedDurationMs = plan.durationSeconds * 1000L,
+                                segmentDurationMs = (plan.segmentDurationSeconds * 1000).toLong(),
                                 isCancelled = { Cancellations.cancelled(handle) },
                             )
                         }

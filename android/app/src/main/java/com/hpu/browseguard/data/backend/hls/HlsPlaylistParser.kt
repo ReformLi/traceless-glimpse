@@ -43,6 +43,8 @@ internal data class HlsPlaylist(
     val unsupportedEncryption: Boolean,
     val endList: Boolean,
     val totalDurationSeconds: Double,
+    /** `#EXT-X-TARGETDURATION`；清单没写时退化为最长 `#EXTINF`，用于转封装容差。 */
+    val targetDurationSeconds: Double,
 ) {
     /** 有 init 段（fMP4）时产物是 `.mp4`，否则是传统 TS 拼接的 `.ts`。 */
     val outputContainer: String get() = if (initMap != null) "mp4" else "ts"
@@ -71,6 +73,8 @@ internal object HlsPlaylistParser {
         var endList = false
         var mediaSequence = 0L
         var totalDuration = 0.0
+        var targetDuration = 0.0
+        var maxSegmentDuration = 0.0
         var encrypted = false
         var unsupported = false
         var nextRangeOffset = 0L
@@ -129,8 +133,14 @@ internal object HlsPlaylistParser {
                     mediaSequence = line.substringAfter(':').trim().toLongOrNull() ?: 0L
                 }
 
+                line.startsWith("#EXT-X-TARGETDURATION:") -> {
+                    targetDuration = line.substringAfter(':').trim().toDoubleOrNull() ?: 0.0
+                }
+
                 line.startsWith("#EXTINF:") -> {
-                    totalDuration += line.substringAfter(':').substringBefore(',').trim().toDoubleOrNull() ?: 0.0
+                    val seconds = line.substringAfter(':').substringBefore(',').trim().toDoubleOrNull() ?: 0.0
+                    totalDuration += seconds
+                    if (seconds > maxSegmentDuration) maxSegmentDuration = seconds
                 }
 
                 line == "#EXT-X-ENDLIST" -> endList = true
@@ -173,6 +183,7 @@ internal object HlsPlaylistParser {
             unsupportedEncryption = unsupported,
             endList = endList,
             totalDurationSeconds = totalDuration,
+            targetDurationSeconds = if (targetDuration > 0.0) targetDuration else maxSegmentDuration,
         )
     }
 

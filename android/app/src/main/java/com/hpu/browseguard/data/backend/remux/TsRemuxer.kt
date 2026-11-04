@@ -38,6 +38,7 @@ internal class TsRemuxer {
         source: File,
         target: File,
         expectedDurationMs: Long,
+        segmentDurationMs: Long = 0L,
         isCancelled: () -> Boolean = { false },
     ): RemuxResult {
         if (!source.isFile || source.length() <= 0L) return RemuxResult.Skipped("empty_source")
@@ -138,7 +139,7 @@ internal class TsRemuxer {
             mux.release()
             muxer = null
 
-            verifyOutputAudio(target)?.let { return RemuxResult.Skipped(it) }
+            verifyOutput(target, segmentDurationMs)?.let { return RemuxResult.Skipped(it) }
 
             val durationMs = outputDurationMs(target) ?: return RemuxResult.Skipped("output_unreadable")
             if (expectedDurationMs > 0L && durationMs < expectedDurationMs * 3 / 4) {
@@ -267,27 +268,71 @@ internal class TsRemuxer {
     }
 
     /**
-     * 产物复开：`addTrack` 成功、`writeSampleData` 不报错，都不代表播放器能出声。
-     * 这里只认最终文件里「有一条音频轨且首个样本读得出来」，否则一律保留 `.ts`。
+     * 产物复检：`addTrack` 成功、`writeSampleData` 不报错，都不代表播放器能听到完整声音。
+     *
+     * `MediaMuxer` 在 PTS 大跳变时会静默丢样本——文件照常写完，音轨却只剩开头一小段。
+     * 所以这里从头读到尾，同时卡三件事：
+     * 1. 音轨存在且首个样本读得出来；
+     * 2. 音轨最后一个样本的 PTS 与视频最后一个样本相差不超过容差；
+     * 3. 相邻音频样本的 PTS 间隔不超过容差（中段整段丢失时，首尾可能都对得上）。
      */
-    private fun verifyOutputAudio(file: File): String? {
+    private fun verifyOutput(file: File, segmentDurationMs: Long): String? {
         val extractor = MediaExtractor()
         return try {
             extractor.setDataSource(file.absolutePath)
             var audioIndex = -1
+            var videoIndex = -1
             for (index in 0 until extractor.trackCount) {
                 val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
-                if (mime?.startsWith("audio/") == true) {
-                    audioIndex = index
-                    break
+                when {
+                    mime?.startsWith("audio/") == true -> audioIndex = index
+                    mime?.startsWith("video/") == true -> videoIndex = index
                 }
             }
-            var firstSampleBytes = 0
-            if (audioIndex >= 0) {
-                extractor.selectTrack(audioIndex)
-                firstSampleBytes = extractor.readSampleData(ByteBuffer.allocate(VERIFY_SAMPLE_BUFFER_BYTES), 0)
+            if (audioIndex < 0) return RemuxAudioGuard.OUTPUT_AUDIO_MISSING
+
+            extractor.selectTrack(audioIndex)
+            if (videoIndex >= 0) extractor.selectTrack(videoIndex)
+
+            var buffer = ByteBuffer.allocate(VERIFY_SAMPLE_BUFFER_BYTES)
+            var audioFirstRead = -1
+            var audioPrevPtsUs = Long.MIN_VALUE
+            var audioLastPtsUs = Long.MIN_VALUE
+            var audioMaxGapUs = 0L
+            var videoLastPtsUs = Long.MIN_VALUE
+            while (true) {
+                val index = extractor.sampleTrackIndex
+                if (index < 0) break
+                val size = extractor.sampleSize
+                if (size > buffer.capacity().toLong()) buffer = ByteBuffer.allocate(size.toInt())
+                val read = extractor.readSampleData(buffer, 0)
+                if (read < 0) break
+                val ptsUs = extractor.sampleTime
+                when (index) {
+                    audioIndex -> {
+                        if (audioFirstRead < 0) audioFirstRead = read
+                        if (audioPrevPtsUs != Long.MIN_VALUE) {
+                            val gap = ptsUs - audioPrevPtsUs
+                            if (gap > audioMaxGapUs) audioMaxGapUs = gap
+                        }
+                        audioPrevPtsUs = ptsUs
+                        if (ptsUs > audioLastPtsUs) audioLastPtsUs = ptsUs
+                    }
+
+                    videoIndex -> if (ptsUs > videoLastPtsUs) videoLastPtsUs = ptsUs
+                }
+                if (!extractor.advance()) break
             }
-            RemuxAudioGuard.outputGate(audioIndex, firstSampleBytes)
+
+            RemuxAudioGuard.outputGate(audioIndex, audioFirstRead)?.let { return it }
+            if (videoIndex < 0 || videoLastPtsUs <= 0L) return null
+            val toleranceUs = RemuxAudioGuard.avToleranceUs(segmentDurationMs)
+            RemuxAudioGuard.avDurationGate(
+                videoLastPtsUs = videoLastPtsUs,
+                audioLastPtsUs = audioLastPtsUs,
+                toleranceUs = toleranceUs,
+            )?.let { return it }
+            RemuxAudioGuard.audioGapGate(audioMaxGapUs, toleranceUs)
         } catch (e: Exception) {
             RemuxAudioGuard.OUTPUT_AUDIO_MISSING
         } finally {

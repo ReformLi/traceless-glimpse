@@ -34,6 +34,8 @@ internal data class HlsPlan(
     val encrypted: Boolean,
     val container: String,
     val durationSeconds: Int,
+    /** 清单的目标分片时长；缺失时为 0，转封装容差退化成 5 秒。 */
+    val segmentDurationSeconds: Double = 0.0,
 )
 
 internal sealed interface HlsPrepare {
@@ -104,6 +106,7 @@ internal class HlsDownloader(
                 encrypted = media.encrypted,
                 container = media.outputContainer,
                 durationSeconds = media.totalDurationSeconds.toInt(),
+                segmentDurationSeconds = media.targetDurationSeconds,
             ),
         )
     }
