@@ -2,6 +2,7 @@ package com.hpu.browseguard
 
 import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,10 +35,29 @@ class RemuxWiringTest {
         assertTrue("找不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.trackGate"))
         assertTrue("AAC 缺解码配置必须拒绝", remuxer.contains("RemuxAudioGuard.csdGate"))
         assertTrue("音频样本为 0 必须拒绝", remuxer.contains("RemuxAudioGuard.sampleGate"))
-        assertTrue("产物要复开全量扫一遍", remuxer.contains("verifyOutput(target, segmentDurationMs)"))
+        assertTrue("产物要复开全量扫一遍", remuxer.contains("verifyOutput(target, segmentDurationMs, outputAudio)"))
         assertTrue("复开读不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.outputGate"))
         assertTrue("音视频末尾时长要对齐", remuxer.contains("RemuxAudioGuard.avDurationGate"))
-        assertTrue("中段丢样本要靠音频最大间隔发现", remuxer.contains("RemuxAudioGuard.audioGapGate"))
+        assertTrue(
+            "相邻音频样本间隔审计要真的接在复检里",
+            remuxer.contains("RemuxAudioGuard.audioSampleGapGate(out.maxGapUs)"),
+        )
+        assertTrue(
+            "间隔审计排在切片审计之前：先量最直白的证据",
+            remuxer.indexOf("RemuxAudioGuard.audioSampleGapGate") <
+                remuxer.indexOf("RemuxAudioGuard.timeSliceGate"),
+        )
+        assertTrue("写源样本时就要数 ADTS 帧", remuxer.contains("sourceAudio.add(ptsUs, read, buffer)"))
+        assertTrue("复检产物也要留下一份同样的扫描", remuxer.contains("out.add(ptsUs, read, buffer)"))
+        assertTrue(
+            "内容时长比例审计要真的接在复检里",
+            remuxer.contains("RemuxAudioGuard.contentRatioGate(videoLastPtsUs - videoStartUs, out.contentUs)"),
+        )
+        assertTrue(
+            "内容审计排在切片审计之前：绝对量比分布统计更硬",
+            remuxer.indexOf("RemuxAudioGuard.contentRatioGate") <
+                remuxer.indexOf("RemuxAudioGuard.timeSliceGate(videoStartUs"),
+        )
         assertTrue("容差随分片时长放宽", remuxer.contains("RemuxAudioGuard.avToleranceUs(segmentDurationMs)"))
         assertTrue("产物要做时间窗口切片审计", remuxer.contains("RemuxAudioGuard.timeSliceGate"))
         assertTrue("音频样本要按 10 秒归格", remuxer.contains("RemuxAudioGuard.sliceWindowIndex(0L, ptsUs)"))
@@ -62,6 +82,12 @@ class RemuxWiringTest {
         assertTrue("删 .ts 前还有最后一道兜底", downloader.contains("result.audioSamples <= 0"))
         assertTrue("音轨原因的降级要可识别", downloader.contains("RemuxAudioGuard.AUDIO_FALLBACK_REASONS"))
         assertTrue("分片时长要传进转封装器", downloader.contains("segmentDurationMs = (plan.segmentDurationSeconds * 1000).toLong()"))
+        // 成功行、兜底行、降级行都要带上源/产物对照：少一处，现场就只能靠猜。
+        assertEquals(
+            "三行转封装审计都要留下源与产物的音频对照",
+            3,
+            Regex("audioAuditFields\\(result\\.sourceAudio, result\\.outputAudio\\)").findAll(downloader).count(),
+        )
     }
 
     @Test

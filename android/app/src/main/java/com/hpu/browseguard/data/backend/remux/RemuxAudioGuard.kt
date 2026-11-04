@@ -45,6 +45,30 @@ internal object RemuxAudioGuard {
     const val AUDIO_DENSITY_TOO_LOW = "audio_density_too_low"
 
     /**
+     * 相邻音频样本之间的间隔上限：5 秒。
+     *
+     * 正常 AAC 的相邻间隔在几十到几百毫秒量级（实测最长 0.37 秒），5 秒已经留了十倍以上余量；
+     * 再宽就不是「容差」，而是给整段静音发通行证了。
+     */
+    const val MAX_AUDIO_SAMPLE_GAP_US = 5_000_000L
+
+    /** 相邻音频样本的 PTS 间隔超过 5 秒：那段时间的声音没进文件。 */
+    const val AUDIO_SAMPLE_GAP_TOO_LARGE = "audio_sample_gap_too_large"
+
+    /**
+     * 注水音频：ADTS 帧数量出来的声音长度远低于视频跨度。
+     *
+     * 2611 个样本均匀铺满 862 秒时，最大间隔只有零点几秒、每 10 秒都有样本、密度和基准一致——
+     * 间隔、切片、密度三条全部被绕过，因为「铺得开」不等于「有内容」。
+     * 帧数是绝对量：一帧 AAC 固定 1024 个采样点，多少帧就是多少秒声音，
+     * moov 头部的时长和时间戳重铺都改不了它。
+     */
+    const val AUDIO_CONTENT_TOO_SHORT = "audio_content_too_short"
+
+    /** 内容时长至少要占视频跨度的 70%。实测基线：正常片 100.2%、真实站整集 101.3%、注水片 12.7%。 */
+    const val MIN_AUDIO_CONTENT_PERCENT = 70
+
+    /**
      * 音频样本的时间戳早于流的起点：整段音频被判定为「负时间」，只能整体放弃转封装。
      * 和 [PtsGate] 那两条一样，它拒的是音频时间轴，保留下来的 `.ts` 依然带声音。
      */
@@ -71,6 +95,8 @@ internal object RemuxAudioGuard {
         AUDIO_GAP_TOO_LARGE,
         AUDIO_COVERAGE_TOO_LOW,
         AUDIO_DENSITY_TOO_LOW,
+        AUDIO_SAMPLE_GAP_TOO_LARGE,
+        AUDIO_CONTENT_TOO_SHORT,
         AUDIO_PTS_NEGATIVE,
         AUDIO_TRACK_REJECTED,
         PtsGate.AUDIO_PTS_BACKWARD,
@@ -137,14 +163,34 @@ internal object RemuxAudioGuard {
         }
 
     /**
-     * 音频覆盖率：只看首尾 PTS 会漏掉「中段整段丢失、尾巴还在」的情况。
+     * 音频相邻样本间隔审计（PTS Gap Audit）：这是分布类的最后一道底线。
      *
      * 这里不用「样本数 × 1024」，因为 `MediaExtractor` 返回的样本常把多个 ADTS 帧并成一包
      * （实测 79 秒音频只有 488 个样本），按 1024 估算会把正常片全部误杀。
-     * 改为看相邻音频样本 PTS 的最大间隔：中间丢了东西，间隔必然暴露。
+     * 改为逐样本量相邻 PTS 之差：中间只要真空了 5 秒，就一定会在某个间隔上暴露。
+     *
+     * 上限固定 [MAX_AUDIO_SAMPLE_GAP_US]、不随分片时长放宽——分片时长影响的是首尾对齐的
+     * 尾部差异，跟「两段声音之间空了多久」无关；把它做成动态容差，就给了长分片的注水文件通行证。
      */
-    fun audioGapGate(maxGapUs: Long, toleranceUs: Long): String? =
-        if (maxGapUs > toleranceUs) OUTPUT_AV_DURATION_MISMATCH else null
+    fun audioSampleGapGate(maxGapUs: Long, capUs: Long = MAX_AUDIO_SAMPLE_GAP_US): String? =
+        if (maxGapUs > capUs) AUDIO_SAMPLE_GAP_TOO_LARGE else null
+
+    /**
+     * 内容时长比例门禁：ADTS 帧换算出来的声音长度，必须覆盖视频跨度的
+     * [MIN_AUDIO_CONTENT_PERCENT]%。
+     *
+     * [contentUs] 为 0 表示这一路认不出 ADTS（非 AAC，或头不规整到无法逐帧走）——
+     * 未知不能当「没有声音」，否则会误杀别的封装的正常片，此时交给前三条分布判据。
+     * 分母用视频跨度而不是 moov 时长：头部时长正是会被伪装掉的那个数。
+     */
+    fun contentRatioGate(videoSpanUs: Long, contentUs: Long): String? =
+        if (contentUs > 0L && videoSpanUs > 0L &&
+            contentUs * 100 < videoSpanUs * MIN_AUDIO_CONTENT_PERCENT
+        ) {
+            AUDIO_CONTENT_TOO_SHORT
+        } else {
+            null
+        }
 
     /** 视频总时长切成的窗口数；时长非正数就没有窗口可言。 */
     fun sliceWindowCount(durationUs: Long): Int {

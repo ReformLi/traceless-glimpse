@@ -6,6 +6,7 @@ import com.hpu.browseguard.data.NoopAuditLogger
 import com.hpu.browseguard.data.backend.hls.HlsDownloader
 import com.hpu.browseguard.data.backend.hls.HlsOutcome
 import com.hpu.browseguard.data.backend.hls.HlsPrepare
+import com.hpu.browseguard.data.backend.remux.AudioScan
 import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import com.hpu.browseguard.data.backend.remux.RemuxResult
 import com.hpu.browseguard.data.backend.remux.TsRemuxer
@@ -366,7 +367,7 @@ class LocalDirectDownloader(
                                         mapOf(
                                             "host" to hostOf(link.mediaUrl),
                                             "reason" to RemuxAudioGuard.AUDIO_EMPTY,
-                                        ),
+                                        ) + audioAuditFields(result.sourceAudio, result.outputAudio),
                                     )
                                 } else {
                                     if (mp4Final.exists()) mp4Final.delete()
@@ -382,7 +383,7 @@ class LocalDirectDownloader(
                                                 "ms" to result.durationMs.toString(),
                                                 "video" to result.videoSamples.toString(),
                                                 "audio" to result.audioSamples.toString(),
-                                            ),
+                                            ) + audioAuditFields(result.sourceAudio, result.outputAudio),
                                         )
                                     } else {
                                         mp4Part.delete()
@@ -401,7 +402,10 @@ class LocalDirectDownloader(
                                 remuxAudioFallback = result.reason in RemuxAudioGuard.AUDIO_FALLBACK_REASONS
                                 audit.log(
                                     "hls_remux_skipped",
-                                    mapOf("host" to hostOf(link.mediaUrl), "reason" to result.reason),
+                                    mapOf(
+                                        "host" to hostOf(link.mediaUrl),
+                                        "reason" to result.reason,
+                                    ) + audioAuditFields(result.sourceAudio, result.outputAudio),
                                 )
                             }
 
@@ -499,6 +503,15 @@ class LocalDirectDownloader(
     /** 查询不到就当作「不缺空间」：真正写失败时还有一次降级兜底。 */
     private fun availableBytes(dir: String): Long =
         runCatching { StatFs(dir).availableBytes }.getOrDefault(Long.MAX_VALUE)
+
+    /**
+     * 转封装审计行里的音频对照：源 `.ts` 用 `src` 前缀、产物用 `out` 前缀，没扫到的那侧整组缺席。
+     *
+     * 只有数字，没有 URL 也没有字节内容。两边并排摆出来，才能分辨「下载下来就没声音」
+     * 和「下载侧齐全、是 muxer 写丢/重铺」。
+     */
+    private fun audioAuditFields(source: AudioScan?, output: AudioScan?): Map<String, String> =
+        (source?.auditMap("src") ?: emptyMap()) + (output?.auditMap("out") ?: emptyMap())
 
     /** 发一次带 Range 的 GET；返回 `null` 表示服务端回了 416，调用方需要清断点重来。 */
     private fun exchange(link: SniffResult, from: Long): okhttp3.Response? {

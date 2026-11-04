@@ -4,6 +4,7 @@ import com.hpu.browseguard.data.backend.remux.PtsGate
 import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -130,20 +131,91 @@ class RemuxAudioGuardTest {
     }
 
     @Test
-    fun audioGapCatchesMiddleDropsThatTailPtsWouldMiss() {
-        val tolerance = RemuxAudioGuard.avToleranceUs(segmentDurationMs = 4_000L)
+    fun adjacentAudioSamplesMayNeverBeFiveSecondsApart() {
         assertNull(
             "正常片相邻样本只差一两百毫秒",
-            RemuxAudioGuard.audioGapGate(maxGapUs = 371_534L, toleranceUs = tolerance),
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 371_534L),
         )
         assertNull(
-            "正好等于容差仍算安全",
-            RemuxAudioGuard.audioGapGate(maxGapUs = tolerance, toleranceUs = tolerance),
+            "正好 5 秒不算「超过」",
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 5_000_000L),
+        )
+        assertEquals(
+            "越过 5 秒这条线就拒",
+            RemuxAudioGuard.AUDIO_SAMPLE_GAP_TOO_LARGE,
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 5_000_001L),
+        )
+        assertEquals(
+            "模拟底层注水：时间戳一次跳 10 秒",
+            RemuxAudioGuard.AUDIO_SAMPLE_GAP_TOO_LARGE,
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 10_000_000L),
         )
         assertEquals(
             "中段丢一大截、尾巴还在时靠间隔发现",
-            RemuxAudioGuard.OUTPUT_AV_DURATION_MISMATCH,
-            RemuxAudioGuard.audioGapGate(maxGapUs = 162_000_000L, toleranceUs = tolerance),
+            RemuxAudioGuard.AUDIO_SAMPLE_GAP_TOO_LARGE,
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 162_000_000L),
+        )
+    }
+
+    @Test
+    fun theSampleGapCapDoesNotStretchWithSegmentDuration() {
+        // 长分片只该放宽首尾对齐，不该放宽「两段声音之间空了多久」。
+        val tolerance = RemuxAudioGuard.avToleranceUs(segmentDurationMs = 8_000L)
+        assertTrue(
+            "8 秒分片的首尾容差是 12 秒",
+            tolerance > RemuxAudioGuard.MAX_AUDIO_SAMPLE_GAP_US,
+        )
+        assertEquals(
+            "6 秒的相邻间隔在旧口径下能过，在新口径下必须拒",
+            RemuxAudioGuard.AUDIO_SAMPLE_GAP_TOO_LARGE,
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 6_000_000L),
+        )
+    }
+
+    /**
+     * 注水片是真机复测造出来的：40 秒视频只配 5 秒声音，时间戳均匀铺满。
+     * 它的最大相邻间隔只有 0.371 秒、每格都有样本、密度和基准一致——三条老判据全是放行，
+     * 只有帧数换算的内容时长看得见真相。这里把那两个实测数字原样钉进单测。
+     */
+    @Test
+    fun uniformlyWateredDownAudioIsCaughtByTheFrameCount() {
+        assertNull(
+            "正常片：内容 78.947 秒 / 跨度 78.818 秒 = 100.2%",
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 78_818_000L, contentUs = 78_947_000L),
+        )
+        assertNull(
+            "真实站点整集：内容 2816.16 秒 / 跨度 2779.06 秒 = 101.3%",
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 2_779_057_000L, contentUs = 2_816_160_000L),
+        )
+        assertNull(
+            "正好 70% 算及格，不卡边界值",
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 100_000_000L, contentUs = 70_000_000L),
+        )
+        assertEquals(
+            "注水片：内容 5.038 秒 / 跨度 39.729 秒 = 12.7%，必须拒",
+            RemuxAudioGuard.AUDIO_CONTENT_TOO_SHORT,
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 39_729_000L, contentUs = 5_038_000L),
+        )
+        assertEquals(
+            "69% 已经算注水",
+            RemuxAudioGuard.AUDIO_CONTENT_TOO_SHORT,
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 100_000_000L, contentUs = 69_000_000L),
+        )
+        assertNull(
+            "同一份注水片的相邻间隔过不了这一条：0.371 秒远小于 5 秒",
+            RemuxAudioGuard.audioSampleGapGate(maxGapUs = 371_000L),
+        )
+    }
+
+    @Test
+    fun audioWhoseFramesCannotBeReadIsNotJudgedAsSilent() {
+        assertNull(
+            "认不出 ADTS 是未知，不能当「没有声音」——否则非 AAC 封装的正常片会被误杀",
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 60_000_000L, contentUs = 0L),
+        )
+        assertNull(
+            "视频跨度都读不出来时无比例可言，交给前面的门禁",
+            RemuxAudioGuard.contentRatioGate(videoSpanUs = 0L, contentUs = 5_000_000L),
         )
     }
 
@@ -159,6 +231,8 @@ class RemuxAudioGuardTest {
                 RemuxAudioGuard.AUDIO_GAP_TOO_LARGE,
                 RemuxAudioGuard.AUDIO_COVERAGE_TOO_LOW,
                 RemuxAudioGuard.AUDIO_DENSITY_TOO_LOW,
+                RemuxAudioGuard.AUDIO_SAMPLE_GAP_TOO_LARGE,
+                RemuxAudioGuard.AUDIO_CONTENT_TOO_SHORT,
                 RemuxAudioGuard.AUDIO_PTS_NEGATIVE,
                 RemuxAudioGuard.AUDIO_TRACK_REJECTED,
                 PtsGate.AUDIO_PTS_BACKWARD,
