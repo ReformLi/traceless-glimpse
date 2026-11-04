@@ -22,7 +22,23 @@ class RemuxWiringTest {
         assertTrue("成功要留一行", downloader.contains("\"hls_remux_done\""))
         assertTrue("降级要留一行", downloader.contains("\"hls_remux_skipped\""))
         assertTrue("降级事实要传回界面", downloader.contains("remuxFallback = remuxFallback"))
+        assertTrue("音轨降级要单独标记", downloader.contains("remuxAudioFallback = remuxAudioFallback"))
         assertTrue("源 .ts 只能在 mp4 落地后删", downloader.contains("if (mp4Part.renameTo(mp4Final))"))
+    }
+
+    @Test
+    fun theRemuxerGatesEverySilentOutputPathBeforeDone() {
+        val remuxer = File("$SRC_ROOT/data/backend/remux/TsRemuxer.kt").readText()
+
+        assertTrue("找不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.trackGate"))
+        assertTrue("AAC 缺解码配置必须拒绝", remuxer.contains("RemuxAudioGuard.csdGate"))
+        assertTrue("音频样本为 0 必须拒绝", remuxer.contains("RemuxAudioGuard.sampleGate"))
+        assertTrue("产物要复开校验", remuxer.contains("verifyOutputAudio(target)"))
+        assertTrue("复开读不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.outputGate"))
+
+        val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
+        assertTrue("删 .ts 前还有最后一道兜底", downloader.contains("result.audioSamples <= 0"))
+        assertTrue("音轨原因的降级要可识别", downloader.contains("RemuxAudioGuard.AUDIO_FALLBACK_REASONS"))
     }
 
     @Test
@@ -34,10 +50,14 @@ class RemuxWiringTest {
 
         assertTrue("转封装阶段要有提示", strings.contains("正在转封装为 MP4…"))
         assertTrue("降级文案按约定", strings.contains("转封装失败，已保留 .ts（系统播放器可能不认这个格式）"))
+        assertTrue("音轨降级文案按约定", strings.contains("转封装失败，已保留原格式（含音频）"))
         assertTrue("浏览器抽屉要认 remux 阶段", browser.contains("R.string.download_remuxing"))
         assertTrue("下载卡片也要认 remux 阶段", home.contains("R.string.download_remuxing"))
         assertTrue("完成卡要显示降级提示", browser.contains("R.string.download_remux_fallback"))
+        assertTrue("浏览器要认音轨降级文案", browser.contains("R.string.download_remux_fallback_audio"))
+        assertTrue("下载卡也要认音轨降级文案", home.contains("R.string.download_remux_fallback_audio"))
         assertTrue("终态要把降级事实带进成功卡", viewModel.contains("remuxFallback = true"))
+        assertTrue("终态要把音轨降级事实带进成功卡", viewModel.contains("remuxAudioFallback = event.remuxAudioFallback"))
     }
 
     private companion object {

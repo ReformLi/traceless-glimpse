@@ -110,6 +110,8 @@ sealed interface DownloadPhase {
         val publishWarning: String? = null,
         /** HLS 的 `.ts` 没能转成 MP4：产物还在，但是 `.ts`。 */
         val remuxFallback: Boolean = false,
+        /** 失败原因是音轨缺失/为空：文案要明确「原格式含音频」，别让用户以为没声音。 */
+        val remuxAudioFallback: Boolean = false,
     ) : DownloadPhase
     data class Cancelled(val task: Task) : DownloadPhase
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : DownloadPhase
@@ -674,7 +676,10 @@ class HomeViewModel(
                 browserDownloadActive = false
                 val terminal = event.task.toFinalPhase()
                 val phase = if (event.remuxFallback && terminal is DownloadPhase.Success) {
-                    terminal.copy(remuxFallback = true)
+                    terminal.copy(
+                        remuxFallback = true,
+                        remuxAudioFallback = event.remuxAudioFallback,
+                    )
                 } else {
                     terminal
                 }

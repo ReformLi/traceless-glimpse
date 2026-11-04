@@ -6,6 +6,7 @@ import com.hpu.browseguard.data.NoopAuditLogger
 import com.hpu.browseguard.data.backend.hls.HlsDownloader
 import com.hpu.browseguard.data.backend.hls.HlsOutcome
 import com.hpu.browseguard.data.backend.hls.HlsPrepare
+import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import com.hpu.browseguard.data.backend.remux.RemuxResult
 import com.hpu.browseguard.data.backend.remux.TsRemuxer
 import com.hpu.browseguard.shared.model.Codec
@@ -323,6 +324,7 @@ class LocalDirectDownloader(
 
                     var terminalName = productName
                     var remuxFallback = false
+                    var remuxAudioFallback = false
                     if (plan.container.equals("ts", ignoreCase = true)) {
                         val mp4Name = withContainer(productName, "mp4")
                         val mp4Part = java.io.File(target.outputDir, "$mp4Name.part")
@@ -352,34 +354,50 @@ class LocalDirectDownloader(
                         }
                         when (result) {
                             is RemuxResult.Done -> {
-                                if (mp4Final.exists()) mp4Final.delete()
-                                if (mp4Part.renameTo(mp4Final)) {
-                                    // 只有 `.mp4` 已经落地，才允许删源 `.ts`。
-                                    finalFile.delete()
-                                    terminalName = mp4Name
+                                if (result.audioSamples <= 0) {
+                                    // 转封装器已承诺 audioSamples > 0；删源之前再守一次，
+                                    // 任何一点「可能没声音」都不允许丢掉 `.ts`。
+                                    mp4Part.delete()
+                                    remuxFallback = true
+                                    remuxAudioFallback = true
                                     audit.log(
-                                        "hls_remux_done",
+                                        "hls_remux_skipped",
                                         mapOf(
                                             "host" to hostOf(link.mediaUrl),
-                                            "bytes" to result.bytes.toString(),
-                                            "ms" to result.durationMs.toString(),
-                                            "video" to result.videoSamples.toString(),
-                                            "audio" to result.audioSamples.toString(),
+                                            "reason" to RemuxAudioGuard.AUDIO_EMPTY,
                                         ),
                                     )
                                 } else {
-                                    mp4Part.delete()
-                                    remuxFallback = true
-                                    audit.log(
-                                        "hls_remux_skipped",
-                                        mapOf("host" to hostOf(link.mediaUrl), "reason" to "rename_failed"),
-                                    )
+                                    if (mp4Final.exists()) mp4Final.delete()
+                                    if (mp4Part.renameTo(mp4Final)) {
+                                        // 只有 `.mp4` 已经落地，才允许删源 `.ts`。
+                                        finalFile.delete()
+                                        terminalName = mp4Name
+                                        audit.log(
+                                            "hls_remux_done",
+                                            mapOf(
+                                                "host" to hostOf(link.mediaUrl),
+                                                "bytes" to result.bytes.toString(),
+                                                "ms" to result.durationMs.toString(),
+                                                "video" to result.videoSamples.toString(),
+                                                "audio" to result.audioSamples.toString(),
+                                            ),
+                                        )
+                                    } else {
+                                        mp4Part.delete()
+                                        remuxFallback = true
+                                        audit.log(
+                                            "hls_remux_skipped",
+                                            mapOf("host" to hostOf(link.mediaUrl), "reason" to "rename_failed"),
+                                        )
+                                    }
                                 }
                             }
 
                             is RemuxResult.Skipped -> {
                                 mp4Part.delete()
                                 remuxFallback = true
+                                remuxAudioFallback = result.reason in RemuxAudioGuard.AUDIO_FALLBACK_REASONS
                                 audit.log(
                                     "hls_remux_skipped",
                                     mapOf("host" to hostOf(link.mediaUrl), "reason" to result.reason),
@@ -417,6 +435,7 @@ class LocalDirectDownloader(
                                 TaskStatus.DONE,
                             ),
                             remuxFallback = remuxFallback,
+                            remuxAudioFallback = remuxAudioFallback,
                         ),
                     )
                 }

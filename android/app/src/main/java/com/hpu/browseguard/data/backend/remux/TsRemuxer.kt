@@ -43,7 +43,10 @@ internal class TsRemuxer {
         if (!source.isFile || source.length() <= 0L) return RemuxResult.Skipped("empty_source")
 
         val probe = try {
-            probe(source) ?: return RemuxResult.Skipped("no_tracks")
+            when (val outcome = probe(source)) {
+                is ProbeOutcome.Skipped -> return RemuxResult.Skipped(outcome.reason)
+                is ProbeOutcome.Ready -> outcome.probe
+            }
         } catch (e: Exception) {
             return RemuxResult.Skipped("extract_failed")
         }
@@ -128,10 +131,14 @@ internal class TsRemuxer {
             }
 
             if (videoSamples == 0 && audioSamples == 0) return RemuxResult.Skipped("no_samples")
+            // 视频正常但音频样本为 0，就是「只有画面」的哑巴文件——宁可保留 .ts。
+            RemuxAudioGuard.sampleGate(audioSamples)?.let { return RemuxResult.Skipped(it) }
 
             mux.stop()
             mux.release()
             muxer = null
+
+            verifyOutputAudio(target)?.let { return RemuxResult.Skipped(it) }
 
             val durationMs = outputDurationMs(target) ?: return RemuxResult.Skipped("output_unreadable")
             if (expectedDurationMs > 0L && durationMs < expectedDurationMs * 3 / 4) {
@@ -172,8 +179,18 @@ internal class TsRemuxer {
         val startUs: Long,
     )
 
-    /** 只读每条轨道的首样本：拿起始 PTS，并给缺 `csd-0` 的 AAC 合成配置。 */
-    private fun probe(source: File): Probe? {
+    private sealed class ProbeOutcome {
+        class Ready(val probe: Probe) : ProbeOutcome()
+        class Skipped(val reason: String) : ProbeOutcome()
+    }
+
+    /**
+     * 只读每条轨道的首样本：拿起始 PTS，并给缺 `csd-0` 的 AAC 合成配置。
+     *
+     * 音轨的两道源头门禁也在这里：找不到音轨、AAC 既没有可用 `csd-0` 也合成失败，
+     * 都直接拒绝转封装——后面的 mux 再正常也只会得到哑巴文件。
+     */
+    private fun probe(source: File): ProbeOutcome {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(source.absolutePath)
@@ -187,27 +204,43 @@ internal class TsRemuxer {
                     audio = index
                 }
             }
-            if (video < 0 && audio < 0) return null
+            if (video < 0 && audio < 0) return ProbeOutcome.Skipped("no_tracks")
+            RemuxAudioGuard.trackGate(audio.takeIf { it >= 0 })?.let {
+                return ProbeOutcome.Skipped(it)
+            }
 
             val videoStart = if (video >= 0) firstSample(extractor, video)?.first else null
             var csd: ByteArray? = null
             val audioStart = if (audio >= 0) {
                 val first = firstSample(extractor, audio)
                 val format = extractor.getTrackFormat(audio)
-                if (!format.containsKey("csd-0") && format.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_AUDIO_AAC) {
+                val mime = format.getString(MediaFormat.KEY_MIME)
+                val csdSize = if (format.containsKey("csd-0")) {
+                    format.getByteBuffer("csd-0")?.remaining() ?: 0
+                } else {
+                    0
+                }
+                val hasUsableCsd = csdSize > 0
+                if (!hasUsableCsd && mime == RemuxAudioGuard.AAC_MIME) {
                     csd = first?.second?.let { AdtsAudioConfig.fromAdtsHeader(it, it.size) }
+                }
+                RemuxAudioGuard.csdGate(mime, hasUsableCsd, csd)?.let {
+                    return ProbeOutcome.Skipped(it)
                 }
                 first?.first
             } else {
                 null
             }
 
-            val startUs = listOfNotNull(videoStart, audioStart).minOrNull() ?: return null
-            return Probe(
-                videoIndex = video.takeIf { it >= 0 },
-                audioIndex = audio.takeIf { it >= 0 },
-                audioCsd = csd,
-                startUs = startUs,
+            val startUs = listOfNotNull(videoStart, audioStart).minOrNull()
+                ?: return ProbeOutcome.Skipped("no_tracks")
+            return ProbeOutcome.Ready(
+                Probe(
+                    videoIndex = video.takeIf { it >= 0 },
+                    audioIndex = audio.takeIf { it >= 0 },
+                    audioCsd = csd,
+                    startUs = startUs,
+                ),
             )
         } finally {
             extractor.release()
@@ -233,6 +266,39 @@ internal class TsRemuxer {
         }
     }
 
+    /**
+     * 产物复开：`addTrack` 成功、`writeSampleData` 不报错，都不代表播放器能出声。
+     * 这里只认最终文件里「有一条音频轨且首个样本读得出来」，否则一律保留 `.ts`。
+     */
+    private fun verifyOutputAudio(file: File): String? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            var audioIndex = -1
+            for (index in 0 until extractor.trackCount) {
+                val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
+                if (mime?.startsWith("audio/") == true) {
+                    audioIndex = index
+                    break
+                }
+            }
+            var firstSampleBytes = 0
+            if (audioIndex >= 0) {
+                extractor.selectTrack(audioIndex)
+                firstSampleBytes = extractor.readSampleData(ByteBuffer.allocate(VERIFY_SAMPLE_BUFFER_BYTES), 0)
+            }
+            RemuxAudioGuard.outputGate(audioIndex, firstSampleBytes)
+        } catch (e: Exception) {
+            RemuxAudioGuard.OUTPUT_AUDIO_MISSING
+        } finally {
+            try {
+                extractor.release()
+            } catch (_: Exception) {
+                // 复检失败本身就是降级理由，释放异常不再覆盖它。
+            }
+        }
+    }
+
     private fun outputDurationMs(file: File): Long? {
         val retriever = MediaMetadataRetriever()
         return try {
@@ -254,5 +320,6 @@ internal class TsRemuxer {
     private companion object {
         const val INITIAL_BUFFER_BYTES = 1024 * 1024
         const val FIRST_SAMPLE_BUFFER_BYTES = 4 * 1024 * 1024
+        const val VERIFY_SAMPLE_BUFFER_BYTES = 1024 * 1024
     }
 }

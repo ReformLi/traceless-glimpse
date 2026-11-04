@@ -937,7 +937,13 @@ private fun BrowserSuccessContent(phase: DownloadPhase.Success) {
     }
     if (phase.remuxFallback) {
         Text(
-            text = stringResource(R.string.download_remux_fallback),
+            text = stringResource(
+                if (phase.remuxAudioFallback) {
+                    R.string.download_remux_fallback_audio
+                } else {
+                    R.string.download_remux_fallback
+                },
+            ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

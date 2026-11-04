@@ -109,10 +109,14 @@ sealed interface DownloadEvent {
      *
      * [remuxFallback] 只描述本机事实：HLS 合并出的 `.ts` 没能转成 MP4，
      * 产物仍是 `.ts`。引擎任务恒为 false，不参与协议。
+     *
+     * [remuxAudioFallback] 是它的细分：失败原因是音轨缺失/为空/配置缺失，
+     * 界面据此换成「已保留原格式（含音频）」的文案。
      */
     data class Terminal(
         val task: Task,
         val remuxFallback: Boolean = false,
+        val remuxAudioFallback: Boolean = false,
     ) : DownloadEvent
 
     data class Failed(val failure: BackendFailure) : DownloadEvent

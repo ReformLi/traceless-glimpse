@@ -1154,7 +1154,13 @@ private fun SuccessDownloadContent(
     if (phase.remuxFallback) {
         Spacer(Modifier.height(8.dp))
         Text(
-            text = stringResource(R.string.download_remux_fallback),
+            text = stringResource(
+                if (phase.remuxAudioFallback) {
+                    R.string.download_remux_fallback_audio
+                } else {
+                    R.string.download_remux_fallback
+                },
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
