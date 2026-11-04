@@ -81,7 +81,7 @@ internal class TsRemuxer {
                 val out = try {
                     mux.addTrack(format)
                 } catch (e: IllegalArgumentException) {
-                    return RemuxResult.Skipped("audio_track_rejected")
+                    return RemuxResult.Skipped(RemuxAudioGuard.AUDIO_TRACK_REJECTED)
                 }
                 outputTracks[index] = out
             }
@@ -115,7 +115,9 @@ internal class TsRemuxer {
                 val isVideo = sourceIndex == probe.videoIndex
                 val ptsUs = ex.sampleTime - probe.startUs
                 if (ptsUs < 0L) {
-                    return RemuxResult.Skipped(if (isVideo) "video_pts_negative" else "audio_pts_negative")
+                    return RemuxResult.Skipped(
+                        if (isVideo) "video_pts_negative" else RemuxAudioGuard.AUDIO_PTS_NEGATIVE,
+                    )
                 }
                 val verdict = if (isVideo) gate.checkVideo(ptsUs) else gate.checkAudio(ptsUs)
                 if (verdict is PtsVerdict.Reject) return RemuxResult.Skipped(verdict.reason)

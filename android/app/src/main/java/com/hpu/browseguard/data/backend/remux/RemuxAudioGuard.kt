@@ -45,10 +45,22 @@ internal object RemuxAudioGuard {
     const val AUDIO_DENSITY_TOO_LOW = "audio_density_too_low"
 
     /**
+     * 音频样本的时间戳早于流的起点：整段音频被判定为「负时间」，只能整体放弃转封装。
+     * 和 [PtsGate] 那两条一样，它拒的是音频时间轴，保留下来的 `.ts` 依然带声音。
+     */
+    const val AUDIO_PTS_NEGATIVE = "audio_pts_negative"
+
+    /** `MediaMuxer.addTrack` 直接拒绝音频轨：容器不认识这种解码配置，产物必然是哑巴。 */
+    const val AUDIO_TRACK_REJECTED = "audio_track_rejected"
+
+    /**
      * 这些原因都意味着「转出来的文件会没声音/不完整」，UI 统一换成更准确的降级文案。
      *
      * 含 [PtsGate] 的两条音轨时间戳判据：它们拒的也是「音频时间轴接不上」的片子，
      * 保留下来的 `.ts` 依然带音频，不该走「系统播放器可能不认这个格式」那种通用说法。
+     *
+     * 登记口径：凡是带 `audio_` 前缀、且失败后 `.ts` 仍带音频的理由都在这里——
+     * `TsRemuxer` 里以字面量出现的 `video_*` 不在，因为它们拒的是画面，文案不该说「含音频」。
      */
     val AUDIO_FALLBACK_REASONS: Set<String> = setOf(
         NO_AUDIO_TRACK,
@@ -59,6 +71,8 @@ internal object RemuxAudioGuard {
         AUDIO_GAP_TOO_LARGE,
         AUDIO_COVERAGE_TOO_LOW,
         AUDIO_DENSITY_TOO_LOW,
+        AUDIO_PTS_NEGATIVE,
+        AUDIO_TRACK_REJECTED,
         PtsGate.AUDIO_PTS_BACKWARD,
         PtsGate.AUDIO_PTS_GAP,
     )

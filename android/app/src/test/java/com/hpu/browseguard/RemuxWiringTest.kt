@@ -1,5 +1,6 @@
 package com.hpu.browseguard
 
+import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,6 +55,8 @@ class RemuxWiringTest {
             remuxer.indexOf("RemuxAudioGuard.timeSliceGate") <
                 remuxer.indexOf("RemuxAudioGuard.avDurationGate("),
         )
+        assertTrue("muxer 拒收音频轨要走登记过的理由", remuxer.contains("RemuxAudioGuard.AUDIO_TRACK_REJECTED"))
+        assertTrue("音频时间戳为负要走登记过的理由", remuxer.contains("RemuxAudioGuard.AUDIO_PTS_NEGATIVE"))
 
         val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
         assertTrue("删 .ts 前还有最后一道兜底", downloader.contains("result.audioSamples <= 0"))
@@ -88,6 +91,28 @@ class RemuxWiringTest {
         assertTrue("下载卡也要认音轨降级文案", home.contains("R.string.download_remux_fallback_audio"))
         assertTrue("终态要把降级事实带进成功卡", viewModel.contains("remuxFallback = true"))
         assertTrue("终态要把音轨降级事实带进成功卡", viewModel.contains("remuxAudioFallback = event.remuxAudioFallback"))
+    }
+
+    /**
+     * 全枚举钉子：转封装里每一个带 `audio` 的理由字面量都必须登记进 `AUDIO_FALLBACK_REASONS`。
+     *
+     * 少登记一条，用户看到的就是「系统播放器可能不认这个格式」——实际上格式没问题、
+     * 音频也没丢，只是 MP4 会没声音。这种文案会直接把人引向错误的结论，所以写成自动检查：
+     * 以后新增音频类拒绝理由，忘了登记就红。
+     */
+    @Test
+    fun everyAudioReasonInTheRemuxerIsRegisteredForTheAudioFallbackCopy() {
+        val sources = File("$SRC_ROOT/data/backend/remux")
+            .listFiles { file -> file.extension == "kt" }!!
+            .joinToString("\n") { it.readText() }
+        val reasons = Regex("\"[a-z_]*audio[a-z_]*\"")
+            .findAll(sources)
+            .map { it.value.removeSurrounding("\"") }
+            .toSet()
+
+        assertTrue("扫描不到任何音频类理由，说明这条钉子指错了目录", reasons.isNotEmpty())
+        val unregistered = reasons - RemuxAudioGuard.AUDIO_FALLBACK_REASONS
+        assertTrue("未登记到音频降级文案的理由：$unregistered", unregistered.isEmpty())
     }
 
     private companion object {

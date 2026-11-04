@@ -159,6 +159,8 @@ class RemuxAudioGuardTest {
                 RemuxAudioGuard.AUDIO_GAP_TOO_LARGE,
                 RemuxAudioGuard.AUDIO_COVERAGE_TOO_LOW,
                 RemuxAudioGuard.AUDIO_DENSITY_TOO_LOW,
+                RemuxAudioGuard.AUDIO_PTS_NEGATIVE,
+                RemuxAudioGuard.AUDIO_TRACK_REJECTED,
                 PtsGate.AUDIO_PTS_BACKWARD,
                 PtsGate.AUDIO_PTS_GAP,
             ),
