@@ -38,6 +38,22 @@ class RemuxWiringTest {
         assertTrue("音视频末尾时长要对齐", remuxer.contains("RemuxAudioGuard.avDurationGate"))
         assertTrue("中段丢样本要靠音频最大间隔发现", remuxer.contains("RemuxAudioGuard.audioGapGate"))
         assertTrue("容差随分片时长放宽", remuxer.contains("RemuxAudioGuard.avToleranceUs(segmentDurationMs)"))
+        assertTrue("产物要做时间窗口切片审计", remuxer.contains("RemuxAudioGuard.timeSliceGate"))
+        assertTrue("音频样本要按 10 秒归格", remuxer.contains("RemuxAudioGuard.sliceWindowIndex(0L, ptsUs)"))
+        assertTrue("视频起点要参与切片平移", remuxer.contains("videoFirstPtsUs"))
+        assertTrue(
+            "每个窗口要累加样本数，密度门禁才有依据",
+            remuxer.contains("audioWindowCounts[window] = (audioWindowCounts[window] ?: 0) + 1"),
+        )
+        assertTrue(
+            "切片审计要把逐窗计数而不是窗口集合交给门禁",
+            remuxer.contains("RemuxAudioGuard.timeSliceGate(videoStartUs, videoLastPtsUs, audioWindowCounts)"),
+        )
+        assertTrue(
+            "切片审计排在首尾对齐之前：moov 头部时长会被伪装，分布不会",
+            remuxer.indexOf("RemuxAudioGuard.timeSliceGate") <
+                remuxer.indexOf("RemuxAudioGuard.avDurationGate("),
+        )
 
         val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
         assertTrue("删 .ts 前还有最后一道兜底", downloader.contains("result.audioSamples <= 0"))

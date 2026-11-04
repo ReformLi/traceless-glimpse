@@ -28,17 +28,61 @@ internal object RemuxAudioGuard {
      */
     const val OUTPUT_AV_DURATION_MISMATCH = "output_av_duration_mismatch"
 
-    /** 这五个原因都意味着「转出来的文件会没声音/不完整」，UI 要换成更准确的降级文案。 */
+    /**
+     * 时间窗口切片审计的判据：`MediaMuxer` 能把 moov 头部时长写成完整值，
+     * 也能把剩下的音频样本重新铺开，但它变不出样本——按 10 秒一格统计音频的**分布**，
+     * 空洞就会暴露。首尾 PTS 对齐和最大间隔都能被「头部伪装 + 样本重铺」绕过，这一条不会。
+     */
+    const val AUDIO_GAP_TOO_LARGE = "audio_gap_too_large"
+
+    /** 空窗口占比超过 30%：整片大面积没声音。 */
+    const val AUDIO_COVERAGE_TOO_LOW = "audio_coverage_too_low"
+
+    /**
+     * 音频样本密度低于基准：底层把剩下的样本均匀重铺到整条时间轴时，
+     * 每格「都有」样本，空格判据就瞎了——但每格的样本数会明显低于开头的基准。
+     */
+    const val AUDIO_DENSITY_TOO_LOW = "audio_density_too_low"
+
+    /**
+     * 这些原因都意味着「转出来的文件会没声音/不完整」，UI 统一换成更准确的降级文案。
+     *
+     * 含 [PtsGate] 的两条音轨时间戳判据：它们拒的也是「音频时间轴接不上」的片子，
+     * 保留下来的 `.ts` 依然带音频，不该走「系统播放器可能不认这个格式」那种通用说法。
+     */
     val AUDIO_FALLBACK_REASONS: Set<String> = setOf(
         NO_AUDIO_TRACK,
         AUDIO_EMPTY,
         AAC_CSD_MISSING,
         OUTPUT_AUDIO_MISSING,
         OUTPUT_AV_DURATION_MISMATCH,
+        AUDIO_GAP_TOO_LARGE,
+        AUDIO_COVERAGE_TOO_LOW,
+        AUDIO_DENSITY_TOO_LOW,
+        PtsGate.AUDIO_PTS_BACKWARD,
+        PtsGate.AUDIO_PTS_GAP,
     )
 
-    /** 音视频末尾至少允许差 5 秒：分片边界、编码器尾部补齐都在这个量级。 */
+    /** 音视频末尾至少允许差 5 秒：分片边界、编码器尾部补齐在这个量级。 */
     const val MIN_AV_TOLERANCE_US = 5_000_000L
+
+    /** 切片宽度：10 秒。478 秒的片子就是 48 格。 */
+    const val SLICE_WINDOW_US = 10_000_000L
+
+    /** 连续 3 格没有任何音频样本，就是 30 秒的哑巴段。 */
+    const val MAX_CONSECUTIVE_EMPTY_WINDOWS = 3
+
+    /** 空格占比的上限：严格超过 30% 才算覆盖率过低。 */
+    const val MAX_EMPTY_WINDOW_PERCENT = 30
+
+    /** 不足 3 格（约 30 秒）不做切片判定：比例统计在这种长度上没有意义。 */
+    const val MIN_SLICE_WINDOWS = 3
+
+    /** 密度基准取开头几个有声窗口：片子开头的音频总是最完整的。 */
+    const val DENSITY_BASELINE_WINDOWS = 3
+
+    /** 后续窗口低于基准密度的 20%（即允许 80% 波动）就判被稀释。 */
+    const val DENSITY_MIN_RATIO_PERCENT = 20
 
     /** [audioIndex] 为 null 表示 extractor 没找到音频轨。 */
     fun trackGate(audioIndex: Int?): String? =
@@ -87,4 +131,103 @@ internal object RemuxAudioGuard {
      */
     fun audioGapGate(maxGapUs: Long, toleranceUs: Long): String? =
         if (maxGapUs > toleranceUs) OUTPUT_AV_DURATION_MISMATCH else null
+
+    /** 视频总时长切成的窗口数；时长非正数就没有窗口可言。 */
+    fun sliceWindowCount(durationUs: Long): Int {
+        if (durationUs <= 0L) return 0
+        val windows = (durationUs + SLICE_WINDOW_US - 1) / SLICE_WINDOW_US
+        return if (windows > Int.MAX_VALUE) Int.MAX_VALUE else windows.toInt()
+    }
+
+    /** 一个 PTS 落在哪一格；早于起点的样本算第 0 格，不放过也没关系。 */
+    fun sliceWindowIndex(startUs: Long, ptsUs: Long): Int {
+        val offset = ptsUs - startUs
+        if (offset <= 0L) return 0
+        val index = offset / SLICE_WINDOW_US
+        return if (index > Int.MAX_VALUE) Int.MAX_VALUE else index.toInt()
+    }
+
+    /** 最长的一段连续空格：中间断了多久，看这个就知道。 */
+    fun maxConsecutiveEmptyWindows(windowCount: Int, occupied: Set<Int>): Int {
+        var run = 0
+        var best = 0
+        for (window in 0 until windowCount) {
+            if (occupied.contains(window)) {
+                if (run > best) best = run
+                run = 0
+            } else {
+                run++
+            }
+        }
+        if (run > best) best = run
+        return best
+    }
+
+    /** 空格数量，供覆盖率判定用；超出视频范围的格子不参与统计。 */
+    fun emptyWindowCount(windowCount: Int, occupied: Set<Int>): Int =
+        (0 until windowCount).count { it !in occupied }
+
+    /**
+     * 时间窗口切片审计：把视频时长切成 10 秒一格，数每格里有多少个音频样本。
+     *
+     * - 连续 [MAX_CONSECUTIVE_EMPTY_WINDOWS] 格全空 → [AUDIO_GAP_TOO_LARGE]；
+     * - 空格占比严格超过 [MAX_EMPTY_WINDOW_PERCENT]% → [AUDIO_COVERAGE_TOO_LOW]；
+     * - 基准之后的格子低于基准密度的 [DENSITY_MIN_RATIO_PERCENT]% → [AUDIO_DENSITY_TOO_LOW]。
+     *
+     * 视频起点未必是 0（`MediaMuxer` 有时会留个偏移），所以先把绝对窗口号平移回相对号，
+     * 再只保留落在视频范围内的那些；不足 [MIN_SLICE_WINDOWS] 格直接放行，交给前面的门禁。
+     */
+    fun timeSliceGate(videoStartUs: Long, videoEndUs: Long, audioWindowCounts: Map<Int, Int>): String? {
+        val windowCount = sliceWindowCount(videoEndUs - videoStartUs)
+        if (windowCount < MIN_SLICE_WINDOWS) return null
+        val baseWindow = if (videoStartUs <= 0L) 0 else (videoStartUs / SLICE_WINDOW_US).toInt()
+        val counts = normalizeWindowCounts(audioWindowCounts, baseWindow, windowCount)
+        val occupied = counts.keys
+        if (maxConsecutiveEmptyWindows(windowCount, occupied) >= MAX_CONSECUTIVE_EMPTY_WINDOWS) {
+            return AUDIO_GAP_TOO_LARGE
+        }
+        if (emptyWindowCount(windowCount, occupied) * 100 > windowCount * MAX_EMPTY_WINDOW_PERCENT) {
+            return AUDIO_COVERAGE_TOO_LOW
+        }
+        return densityGate(windowCount, counts)
+    }
+
+    /** 把绝对窗口号平移成相对号，丢掉范围外的和计数为 0 的格子（同格多次会累加）。 */
+    fun normalizeWindowCounts(
+        audioWindowCounts: Map<Int, Int>,
+        baseWindow: Int,
+        windowCount: Int,
+    ): Map<Int, Int> {
+        val shifted = HashMap<Int, Int>(audioWindowCounts.size)
+        audioWindowCounts.forEach { (window, samples) ->
+            val relative = window - baseWindow
+            if (relative in 0 until windowCount && samples > 0) {
+                shifted[relative] = (shifted[relative] ?: 0) + samples
+            }
+        }
+        return shifted
+    }
+
+    /**
+     * 密度审计：专门堵「每格都有样本、但每格都很薄」的重铺伪装。
+     *
+     * 基准取开头 [DENSITY_BASELINE_WINDOWS] 个有声窗口——片子开头的音频总是最完整的；
+     * 空格由断层与覆盖率两条分支负责，这里只看有样本却明显偏薄的格子。
+     * 最后一格通常不满 10 秒（音频往往先于视频收尾），不参与判定，否则正常片会被误杀。
+     */
+    fun densityGate(windowCount: Int, counts: Map<Int, Int>): String? {
+        val baseline = (0 until windowCount)
+            .filter { (counts[it] ?: 0) > 0 }
+            .take(DENSITY_BASELINE_WINDOWS)
+        if (baseline.size < DENSITY_BASELINE_WINDOWS) return null
+        val baseTotal = baseline.sumOf { counts[it] ?: 0 }
+        for (window in baseline.last() + 1 until windowCount - 1) {
+            val samples = counts[window] ?: 0
+            if (samples == 0) continue
+            if (samples * DENSITY_BASELINE_WINDOWS * 100 < baseTotal * DENSITY_MIN_RATIO_PERCENT) {
+                return AUDIO_DENSITY_TOO_LOW
+            }
+        }
+        return null
+    }
 }

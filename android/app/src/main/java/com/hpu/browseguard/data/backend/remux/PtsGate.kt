@@ -26,8 +26,8 @@ internal class PtsGate(
     fun checkVideo(ptsUs: Long): PtsVerdict {
         val max = videoMaxUs
         if (max != null) {
-            if (ptsUs < max - videoBackwardToleranceUs) return PtsVerdict.Reject("video_pts_backward")
-            if (ptsUs > max + forwardGapToleranceUs) return PtsVerdict.Reject("video_pts_gap")
+            if (ptsUs < max - videoBackwardToleranceUs) return PtsVerdict.Reject(VIDEO_PTS_BACKWARD)
+            if (ptsUs > max + forwardGapToleranceUs) return PtsVerdict.Reject(VIDEO_PTS_GAP)
         }
         videoMaxUs = if (max == null) ptsUs else maxOf(max, ptsUs)
         return PtsVerdict.Ok
@@ -36,10 +36,17 @@ internal class PtsGate(
     fun checkAudio(ptsUs: Long): PtsVerdict {
         val max = audioMaxUs
         if (max != null) {
-            if (ptsUs < max - audioBackwardToleranceUs) return PtsVerdict.Reject("audio_pts_backward")
-            if (ptsUs > max + forwardGapToleranceUs) return PtsVerdict.Reject("audio_pts_gap")
+            if (ptsUs < max - audioBackwardToleranceUs) return PtsVerdict.Reject(AUDIO_PTS_BACKWARD)
+            if (ptsUs > max + forwardGapToleranceUs) return PtsVerdict.Reject(AUDIO_PTS_GAP)
         }
         audioMaxUs = if (max == null) ptsUs else maxOf(max, ptsUs)
         return PtsVerdict.Ok
+    }
+
+    companion object {
+        const val VIDEO_PTS_BACKWARD = "video_pts_backward"
+        const val VIDEO_PTS_GAP = "video_pts_gap"
+        const val AUDIO_PTS_BACKWARD = "audio_pts_backward"
+        const val AUDIO_PTS_GAP = "audio_pts_gap"
     }
 }
