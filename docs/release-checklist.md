@@ -15,7 +15,7 @@
 | 3 | **归档 mapping（不可跳过）** | 见 §2 | `release-artifacts/mapping-v<versionName>-code<versionCode>.txt.gz` 存在且 §2 的往返校验通过 |
 | 4 | 记 APK 尺寸与 sha256 | `sha256sum android/app/build/outputs/apk/release/app-release.apk` | 写进 §3 台账；下次发版对比尺寸异常增减 |
 | 5 | 签名校验 | `"D:/Android/AndroidSDK/build-tools/36.0.0/apksigner.bat" verify --verbose --print-certs <apk>` | 首行必须是 `Verifies`；`Number of signers: 1`；v3=true |
-| 6 | 装 Release 包跑设备腿 | 卸载 debug → `adb install -r` → 三 Tab + 引擎/本机两条主流程 + 取消 + 历史 + 设置 | `adb logcat -d` 里 `JsonDecodingException` / `SerializationException` **0 命中** |
+| 6 | 装 Release 包跑设备腿 | 卸载 debug → `adb install -r` → 三 Tab + 引擎/本机两条主流程 + 取消 + 历史 + 设置；音频链路另按 §6 | `adb logcat -d` 里 `JsonDecodingException` / `SerializationException` **0 命中**；§6 的 `hls_remux_done` 与 ffprobe 读数达标 |
 | 7 | 台账补一行 | 本文件 §3 + 当轮验收报告 | 版本号、APK sha256、mapping 文件名、设备腿结论 |
 
 第 6 步不能省的原因：R8 的行为只能跑起来才知道。`:android:app` 在 AGP 9.1 下**根本不生成
@@ -112,7 +112,7 @@ Caused by: java.lang.NullPointerException
 | 1.0 / 1（2026-11-03 09:02，M6-6 测试签名） | `d486c26851138b865dededee6811fd5bb2d2e7bb550a68fa2b42975486f5ad68` | 3,206,651 | 旧 mapping（sha256 `7922724d…`，已被下行取代） | MuMu SM-S9080 / Android 15 十四腿全过，反序列化异常 0 命中 | [acceptance-m6-6.md](acceptance-m6-6.md) |
 | 1.0 / 1（2026-11-03 10:33，定名「无痕掠影」重建，**未签名**） | 待签名后补 | 3,194,363（`app-release-unsigned.apk`） | `release-artifacts/mapping-v1.0-code1.txt.gz`（原 36,442,414 B，sha256 `7f6ae9fc519ed91d2c7e590261ea032cee1b4ab7d92e439e48cf1bbc7de2959e`） | 未跑设备腿（本机无签名口令，未出可安装包） | 本文件 §3 备注 |
 
-三条备注（2026-11-03 定名重建）：
+三条备注（2026-11-03 定名重建；**这份台账的有效性问题见 §7，下次发版先读 §7**）：
 
 - **mapping 只保留一份**，已按定名后的源码重建并覆盖旧档。09:02 那份 APK 从未分发，所以覆盖它
   不会让任何在外的崩栈失去对照；反过来说，**下次改代码再出包，必须回来重走第 3 步**，否则这条
@@ -132,8 +132,14 @@ Caused by: java.lang.NullPointerException
   口令不要只留在本机一个明文文件里。
 - 签名方案实测：`enableV2Signing=true` 在 minSdk 29 下**不会**产出 v2 pair（apksigner CLI 重签同样不出），
   落地的是 v3。Android 10+ 装包与校验都不受影响；若将来为兼容 API 24–27 下调 minSdk，这条必须重新验。
-- `network_security_config.xml` 只放行 `127.0.0.1` 与 `localhost`，`AndroidManifest.xml` 是
-  `allowBackup="false"`。这两条是隐私承诺的落地点，任何"为了方便先放开一下"的改动都要先过这里。
+- **明文 HTTP 现在是全局放行的**（M7 `03ee3f9` 改的，不是回环白名单）：内置浏览器要打开用户自己输入的
+  任意站点，而不少视频站与媒体 CDN 仍是 HTTP，只放行回环会让「纯手机模式」第一步就失败。
+  当前落地形态是 `<base-config cleartextTrafficPermitted="true">` + 系统信任锚，配置文件顶部那段注释
+  写明了代价与边界（地址栏对 `http://` 显示「不安全」、电脑引擎仍由 `EngineSettings` 校验非回环默认 HTTPS、
+  下载器只访问用户点选的那条 URL）。**发版前确认的是这三条边界仍然成立**，而不是确认白名单还在——
+  旧版本这条写的「只放行 `127.0.0.1` 与 `localhost`」已经不成立，照它核对会得出假的通过结论。
+- `AndroidManifest.xml` 是 `allowBackup="false"`，这条没变，仍是隐私承诺的落地点；
+  任何"为了方便先放开一下"的改动都要先过这里。
 
 ## 5. 回归基线（发版前跑，数字对不上就是有问题）
 
@@ -143,6 +149,62 @@ GRADLE_USER_HOME=D:/Android/GradleUserHome ./gradlew.bat \
 cd engine && ./.venv/Scripts/python.exe -m pytest -q
 ```
 
-JVM 侧 245 tests（app 183 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误；
+JVM 侧 **345 tests**（app 283 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过；
 引擎桩套件 235 passed。注意 `:shared` 是 KMP 模块，任务名是 `jvmTest` 不是 `testDebugUnitTest`。
 引擎 `-m real` 套件不要与桩套件并发跑，也不要在重启引擎时跑，否则会出现假失败。
+
+上面这组数字是 **2026-11-05（M9 收官）现场复跑**的结果。上一版基线是 245 项（app 183，记于 M6-6），
+app 从 183 涨到 283 主要来自 M8 的音频门禁链与 M9 的 AU 拆分测试。
+其中一次口径变化要留意：M9 撤除临时诊断层时，测试数从 290 掉到 283，掉的 7 项是**被删除的取证层自身的**
+形状测试，判定链覆盖一项未少——数字对不上时先分清是「删了」还是「弱了」。
+
+## 6. 音频链路的发版判据（M8/M9 新增，Release 前必须复跑）
+
+转封装坏掉的表现是**无声或半截报错的 MP4**，R8 之后单测覆盖不到（本文件 §1 第 6 步的理由），
+所以设备腿必须专门带一条音频判据：
+
+1. 同一条 HLS 链接跑到底，`adb logcat -d` 里应出现 `hls_remux_done`，且
+   `outSamples == srcFrames`、`outAdtsStartSamples=0`、`outMaxGapMs` 在几十毫秒量级、源与产物 `ContentMs` 一致。
+   出现 `hls_remux_skipped` 不算失败——**`.ts` 还在原地且文案点名了原因**就是正确行为。
+2. 拉回电脑用 `ffprobe` / `ffmpeg` 复核。**下面四条命令都在本机 2026-11-05 实测跑通过**
+   （`ffmpeg`/`ffprobe` 在 `D:/ffmpeg/bin`，用宿主机的即可——项目本身不依赖它），输出形状也一并记在这儿：
+
+   ```bash
+   # ① 最长的音频包：合规产物应该是 1024（= 一个 AU）。并帧的历史形态是 2048…16384
+   ffprobe -v error -select_streams a -show_entries packet=duration -of csv=p=0 artifact.mp4 \
+       | tr -d ',' | sort -n | tail -1
+
+   # ② 音频包总数：应与审计行的 outSamples / srcFrames 相等
+   ffprobe -v error -select_streams a -show_entries packet=duration -of csv=p=0 artifact.mp4 | wc -l
+
+   # ③ 时长分布：看清「绝大多数 1024 + 末尾一个残包」，别只看有没有 1024
+   ffprobe -v error -select_streams a -show_entries packet=duration -of csv=p=0 artifact.mp4 \
+       | tr -d ',' | sort -n | uniq -c
+
+   # ④ 实际能解出多少 PCM 点、有没有能量（无声文件会在这里现形）
+   ffmpeg -hide_banner -i artifact.mp4 -map 0:a -af volumedetect -f null - 2>&1 \
+       | grep -E "n_samples|mean_volume|max_volume"
+   ```
+
+   实测对照（本机现造的 3.01s 合规参考片）：① 出 `1024`；② 出 `131`；③ 出 `1 204 / 130 1024`；
+   ④ 出 `n_samples: 133120`（=130×1024）、`mean_volume: -21.1 dB`、`max_volume: -17.7 dB`。
+
+   三条读数细节，都是复跑时才发现的：
+
+   - **①/③ 前面必须 `tr -d ','`**：`-of csv=p=0` 会把首包输出成 `1024,`，不抹掉逗号的话
+     `sort -u` 会给出 `1024`、`1024,` 两个值——照着「只应该看到一个值 1024」判，好文件也会被读成坏的。
+   - **③ 末尾那个残包是预期**（本例 204 tick），编码器 priming 也会算在这里；
+     判据是「不存在 > 1024 的包」，不是「所有包等长」。
+   - **④ 会先出一行 `n_samples: 0`**（输入侧那个 filter 实例），要看的是非零那一行。
+
+3. 严格播放器侧再用 VLC / 系统相册各开一次——Android 自带解码器容忍不合规的 `mp4a`，
+   只听本机声音会把「相册打不开」这类问题留在外面。
+
+## 7. 当前台账缺口（登记，别在发版时假装没有）
+
+- **mapping 归档与当前源码对不上**：`release-artifacts/mapping-v1.0-code1.txt.gz` 是 2026-11-03 M6-6 出的，
+  之后 M7/M8/M9 改了 60+ 个文件的源码。按本文件 §1 第 3 步的规矩，**下次出 Release 必须先重归档**，
+  否则拿这份 mapping 还原新崩栈会安静地给出另一个函数的名字（比没有 mapping 更糟）。
+- **文件名与 `versionName` 已不逐字一致**：归档叫 `v1.0-code1`，而 `versionName` 在 `89b19fc` 改成了 `1.0.0`。
+  §1 第 1 步要求「两个数字与归档文件名逐字一致」，这条现在不成立——重归档时一并纠正命名。
+- **可安装包只到 M6-6 那一版**：M8/M9 的真机验收跑的是 debug 包，R8 下的音频链路尚未跑过设备腿。

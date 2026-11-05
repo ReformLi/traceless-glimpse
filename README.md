@@ -8,7 +8,7 @@
 ## 三端架构
 
 1. **桌面本地引擎**（主力）：本地 HTTP 服务，监听 `127.0.0.1:8730`，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
-2. **Android App**：`com.hpu.browseguard`，客户端与轻量入口，连接本机引擎（USB / 局域网 TLS）或使用内置轻量下载能力。
+2. **Android App**：`com.hpu.browseguard`，既是引擎客户端，也能完全离线自足——内置浏览器嗅探 + 本机直连下载 + TS→MP4 转封装（见下节）。
 3. **CLI / MCP Server**：`bgv` 命令与 MCP 工具，供技术用户与 AI 客户端调用。
 
 三端通过 `docs/PROTOCOL.md` 定义的 HTTP/JSON 协议通信；协议模型在 `shared/`（Kotlin Multiplatform）单一来源实现。
@@ -17,7 +17,7 @@
 
 | 目录 | 职责 |
 |---|---|
-| `android/` | Android 客户端骨架（M3 接入构建，见 `android/README.md`） |
+| `android/` | Android 客户端（Compose + 内置浏览器 + 本机下载/转封装，见 `android/README.md`） |
 | `engine/` | 本地引擎（Python 3.11+ / FastAPI / Pydantic v2） |
 | `shared/` | KMP 协议模型（kotlinx.serialization），Android / CLI / MCP 共用 |
 | `cli/` | `bgv` 命令行工具（Kotlin/JVM，复用 `:shared` 与 `:engine-client`） |
@@ -31,8 +31,12 @@
 依赖：JDK 17+、Gradle wrapper 9.3.1（自带）、Python 3.11+。
 
 ```powershell
-# Gradle 项目结构（应列出 :shared）
+# Gradle 项目结构（应列出 :shared / :android:app / :engine-client / :cli / :mcp）
 .\gradlew.bat projects
+
+# Android：出 debug 包 + 跑本模块 JVM 单测（283 项，不需要设备）
+.\gradlew.bat :android:app:assembleDebug
+.\gradlew.bat :android:app:testDebugUnitTest --rerun
 
 # Python 引擎（阶段 3 起可用；venv 固定 engine/.venv，已 gitignore）
 cd engine
@@ -54,7 +58,7 @@ python scripts/check_schema.py
 .\cli\build\install\bgv\bin\bgv.bat download-url https://example.com/watch --format=max_height=720
 ```
 
-`--json` 模式下 stdout 只有协议 JSON，提示与进度全部走 stderr，可直接接入管道（如 `bgv sniff ... --json | jq '.formats'`）。退出码：`0` 成功、`2` 输入错误、`3` 安全拒绝、`4` 内容不可用、`5` 引擎不可达、`6` 存储错误、`7` 内部错误、`8` 用户主动取消。
+`--json` 模式下 stdout 只有协议 JSON，提示与进度全部走 stderr，可直接接入管道（如 `bgv sniff ... --json | jq '.formats'`）。退出码：`0` 成功、`2` 输入错误、`3` 安全拒绝、`4` 内容不可用、`5` 引擎不可达、`6` 存储错误、`7` 内部错误、`8` 用户主动取消（**客户端本地语义，不占用协议错误码**）。
 
 Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文仍显示为乱码，先执行 `chcp 65001` 切到 UTF-8 代码页。
 
@@ -74,7 +78,7 @@ Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文�
       "command": "cmd",
       "args": [
         "/c",
-        "E:\\code\\android\\BrowseGuardVid\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
+        "E:\\code\\android\\TracelessGlimpse\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
       ],
       "env": { "BGV_ENGINE_URL": "http://127.0.0.1:8730" }
     }
@@ -84,6 +88,27 @@ Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文�
 
 工具：`sniff`（嗅探并返回格式）、`probe`（查格式表）、`download`（下发并轮询到终态，支持 `timeoutSeconds`）、`status`、`cancel`。从零验收步骤见 `docs/MCP_USER_GUIDE.md`，工具细节见 `mcp/README.md`。
 
+
+## 本机直连下载：不连引擎也能出可播文件
+
+设置页把下载执行者在「引擎」与「本机」之间切换。切到本机后，发现、下载、封装全在设备内完成，
+**代码路径上不出现引擎地址**（`TaskNeverGoesOnTheWireTest` 扫源码钉住），也不需要 yt-dlp 或 FFmpeg：
+
+- **HLS**：`HlsPlaylistParser` 解析清单，`HlsDownloader` 固定 4 个并发槽位按清单顺序拼出 `.ts`，
+  段级重试（401/403/404/405/410 不重试），密钥按 URI 缓存并串行化获取。
+- **TS→MP4**：平台 `MediaExtractor` + `MediaMuxer` 做纯拷贝容器转换——不合并、不重编码、
+  **不引入任何第三方 native 库**，APK 体积不因此增大。
+- **音频按访问单元重封**：TS 里的 AAC 常见「一个样本并十几个 AU 还带着 ADTS 头」，
+  直接抄进 MP4 就是不合规的 `mp4a`，Android 解得开而相册/网页/电视盒子解不开（听感即「没声音」）。
+  本机端逐样本剥头、一帧一个样本、PTS 按 1024/采样率匀铺，产出对严格播放器合规的音轨。
+- **音频完整性门禁**：探测阶段两道前置拒绝（探不到音轨、AAC 无可用解码配置），
+  复检六道——样本非空、产物音轨落地、相邻样本无注水间隔、可播内容够长、切片密度不塌、音视频总时长对得上，
+  拆分音频时再加第七道「产物样本数 == 源 AU 数」三方对账。
+  **任何一道不过就保留 `.ts` 并在完成卡如实说明原因**——宁可给一个系统播放器不认的 `.ts`，
+  也绝不产出一个看着成功、点开来哑巴或播到一半报错的 `.mp4`。只有 `.mp4` 落地成功才允许删源。
+
+降级理由是一个可枚举集合，新增理由忘记登记会让 JVM 门禁测试直接转红；每条理由对应一句不误导的文案。
+逐轮取证见 `docs/smoke-report.md` §27–§29，需求条目见 `docs/PRD.md` §6.9，实现细节见 `android/README.md`。
 
 ## 隐私：Cookie 只留在手机
 

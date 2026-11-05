@@ -50,7 +50,7 @@ Claude Desktop / Cursor 的 MCP 配置示例（`command` 指向安装目录下�
       "command": "cmd",
       "args": [
         "/c",
-        "E:\\code\\android\\BrowseGuardVid\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
+        "E:\\code\\android\\TracelessGlimpse\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
       ],
       "env": { "BGV_ENGINE_URL": "http://127.0.0.1:8730" }
     }

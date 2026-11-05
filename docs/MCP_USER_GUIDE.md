@@ -1,6 +1,6 @@
 # MCP 真客户端验收指南（Claude Desktop / Cursor）
 
-这份指南按「从零到第一次真实下载」的顺序写，命令均可直接复制。路径以本机仓库 `E:\code\android\BrowseGuardVid` 为准；换机器时只替换仓库根目录。
+这份指南按「从零到第一次真实下载」的顺序写，命令均可直接复制。路径以本机仓库 `E:\code\android\TracelessGlimpse` 为准；换机器时只替换仓库根目录。
 
 验收需要两个进程同时存活：
 
@@ -16,7 +16,7 @@
 打开 **PowerShell**，先跑一遍：
 
 ```powershell
-cd E:\code\android\BrowseGuardVid
+cd E:\code\android\TracelessGlimpse
 
 # 1) Java 17+（MCP 进程依赖）
 java -version
@@ -44,7 +44,7 @@ cd engine
 如果这是第一次在本机运行，补两步：
 
 ```powershell
-cd E:\code\android\BrowseGuardVid\engine
+cd E:\code\android\TracelessGlimpse\engine
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements-lock.txt
 .\.venv\Scripts\python.exe -m playwright install chromium
@@ -59,7 +59,7 @@ python -m venv .venv
 ### 1.1 构建 MCP（只需一次，代码更新后重跑）
 
 ```powershell
-cd E:\code\android\BrowseGuardVid
+cd E:\code\android\TracelessGlimpse
 .\gradlew.bat :mcp:installDist
 ```
 
@@ -68,7 +68,7 @@ cd E:\code\android\BrowseGuardVid
 **新开一个 PowerShell 窗口**，保持它一直开着：
 
 ```powershell
-cd E:\code\android\BrowseGuardVid\engine
+cd E:\code\android\TracelessGlimpse\engine
 
 # 关键：必须在启动进程之前设置，改在别的窗口无效
 $env:BGV_ENGINE_MODE = "real"
@@ -111,20 +111,20 @@ Invoke-RestMethod http://127.0.0.1:8730/v1/privacy/selfcheck | ConvertTo-Json -D
 构建产物固定在这个绝对路径：
 
 ```
-E:\code\android\BrowseGuardVid\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat
+E:\code\android\TracelessGlimpse\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat
 ```
 
 确认文件存在：
 
 ```powershell
-Test-Path "E:\code\android\BrowseGuardVid\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat"
+Test-Path "E:\code\android\TracelessGlimpse\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat"
 ```
 
 手动握手自检（不经过 AI 客户端，验证 MCP 进程本身能启动、stdout 只有 JSON-RPC）：
 
 ```powershell
 $init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"manual","version":"1.0"}}}'
-$init | cmd /c "E:\code\android\BrowseGuardVid\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat"
+$init | cmd /c "E:\code\android\TracelessGlimpse\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat"
 ```
 
 期望只输出一行合法 JSON，包含 `"serverInfo":{"name":"traceless-glimpse"...}`，进程退出码 0。出现任何提示词、空行、日志横幅都视为异常。
@@ -157,7 +157,7 @@ notepad "$env:APPDATA\Claude\claude_desktop_config.json"
       "command": "cmd",
       "args": [
         "/c",
-        "E:\\code\\android\\BrowseGuardVid\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
+        "E:\\code\\android\\TracelessGlimpse\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
       ],
       "env": {
         "BGV_ENGINE_URL": "http://127.0.0.1:8730",
@@ -249,7 +249,7 @@ Get-ChildItem "E:\Videos\BGV" |
 引擎窗口本身会打印 INFO 审计行，例如 `sniff_context_open`、`download_attempt`、`download_done`。要留文件，启动时改成：
 
 ```powershell
-cd E:\code\android\BrowseGuardVid\engine
+cd E:\code\android\TracelessGlimpse\engine
 $env:BGV_ENGINE_MODE = "real"
 $env:BGV_OUTPUT_DIR_ALLOWLIST = "E:\Videos\BGV"
 .\.venv\Scripts\python.exe main.py 2>&1 | Tee-Object -FilePath ..\build\engine-real.log
@@ -258,7 +258,7 @@ $env:BGV_OUTPUT_DIR_ALLOWLIST = "E:\Videos\BGV"
 另开窗口跟踪：
 
 ```powershell
-Get-Content E:\code\android\BrowseGuardVid\build\engine-real.log -Tail 100 -Wait
+Get-Content E:\code\android\TracelessGlimpse\build\engine-real.log -Tail 100 -Wait
 ```
 
 ### 5.3 Claude Desktop 的 MCP 日志
@@ -294,7 +294,7 @@ Get-ChildItem "$env:APPDATA\Cursor\logs" -Recurse -Filter "*.log" -ErrorAction S
 MCP Server 按设计只把 JSON-RPC 写 stdout，不把每一帧复制到 stderr；客户端日志记录的是连接生命周期与服务端 stderr，不保证逐帧留痕。要复现原始握手，用第 2 节的手动命令；要复现完整工具调用与 stdout 纯净性断言，跑进程级集成测试：
 
 ```powershell
-cd E:\code\android\BrowseGuardVid
+cd E:\code\android\TracelessGlimpse
 .\gradlew.bat :mcp:test --tests "*McpStdioProcessTest*"
 ```
 

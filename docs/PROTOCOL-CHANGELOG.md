@@ -114,8 +114,8 @@
 
 **兼容性硬约束（收尾②复核新发现，必须先定这一条再谈 schema）**：双端对未知字段都是**严格拒绝**——
 引擎侧 `StrictModel` = `extra="forbid"`（`engine/models.py:22`），客户端 `BgvJson` =
-`ignoreUnknownKeys = false`（[shared/.../BgvJson.kt:14](file:///E:/code/android/BrowseGuardVid/shared/src/commonMain/kotlin/com/hpu/browseguard/shared/BgvJson.kt#L14)），
-而客户端**所有**响应解码都走这一份（[android/.../EngineClient.kt:82](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineClient.kt#L82)）。
+`ignoreUnknownKeys = false`（[shared/.../BgvJson.kt:14](file:///E:/code/android/TracelessGlimpse/shared/src/commonMain/kotlin/com/hpu/browseguard/shared/BgvJson.kt#L14)），
+而客户端**所有**响应解码都走这一份（[android/.../EngineClient.kt:82](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/EngineClient.kt#L82)）。
 因此「新增可选响应字段」在 v0.1 的严格性下**不是向后兼容动作**：引擎一开始在 `Task` 里发 `warnings`，
 已安装的旧客户端解 `GET /v1/tasks/{id}` 会直接抛错，表现是「任务查不到」而不是「少一条提示」。
 §8-5 那句「增可选 `warnings` 是唯一向后兼容的做法」要带这个前提才成立。三条出路，M4 评审选一条：
@@ -132,10 +132,10 @@
 
 | code | 现有审计行 | 现日志级别 | 触发场景 |
 |---|---|---|---|
-| `selector_degraded` | `selector_degraded task_id=… reason=incomplete_metadata requested=…`（[engine/main.py:317](file:///E:/code/android/BrowseGuardVid/engine/main.py#L317)） | WARNING | `max_height` 上限判不了 → 降级 `best` 跑完 |
-| `output_ext_corrected` | [engine/services/downloader.py:154](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L154) | INFO | 正文是真音频，扩展名由 mp4 改 m4a（产物名与用户预期不同） |
-| `resume_unsupported` | [engine/services/downloader.py:275](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L275) | INFO | 服务器不支持 Range，续传降级为全新下载 |
-| `resume_missed` | [engine/services/downloader.py:237](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L237) | INFO | `.part` 名命不中，按全新下载走（§12.8 裁决②） |
+| `selector_degraded` | `selector_degraded task_id=… reason=incomplete_metadata requested=…`（[engine/main.py:317](file:///E:/code/android/TracelessGlimpse/engine/main.py#L317)） | WARNING | `max_height` 上限判不了 → 降级 `best` 跑完 |
+| `output_ext_corrected` | [engine/services/downloader.py:154](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py#L154) | INFO | 正文是真音频，扩展名由 mp4 改 m4a（产物名与用户预期不同） |
+| `resume_unsupported` | [engine/services/downloader.py:275](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py#L275) | INFO | 服务器不支持 Range，续传降级为全新下载 |
+| `resume_missed` | [engine/services/downloader.py:237](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py#L237) | INFO | `.part` 名命不中，按全新下载走（§12.8 裁决②） |
 
 `detail` 沿用 §1.7 脱敏口径：不含 Cookie、token、完整 URL query；`resume_missed` 的 `expected` / `found`
 只给文件名，不给路径。
@@ -167,12 +167,12 @@ download_rejected task_id=<id> stage=<entry|state|drm|selector> code=<§5 既有
 
 | stage | 拒绝 | 位置 |
 |---|---|---|
-| `state` | 404 `NOT_FOUND`（`_get_record_or_404`） | [engine/main.py:935](file:///E:/code/android/BrowseGuardVid/engine/main.py#L935) |
-| `state` | 409 `TASK_STATE_CONFLICT`：终态重下 / 下载中换 selector / 非 `awaiting_selection` | [engine/main.py:937-944](file:///E:/code/android/BrowseGuardVid/engine/main.py#L937) |
-| `drm` | 422 `DRM_PROTECTED` | [engine/main.py:946](file:///E:/code/android/BrowseGuardVid/engine/main.py#L946) |
-| `selector` | 422 `FORMAT_UNAVAILABLE`（exact 不可用 / 判得出上限但无匹配，real 模式） | [engine/main.py:951-966](file:///E:/code/android/BrowseGuardVid/engine/main.py#L951) |
+| `state` | 404 `NOT_FOUND`（`_get_record_or_404`） | [engine/main.py:935](file:///E:/code/android/TracelessGlimpse/engine/main.py#L935) |
+| `state` | 409 `TASK_STATE_CONFLICT`：终态重下 / 下载中换 selector / 非 `awaiting_selection` | [engine/main.py:937-944](file:///E:/code/android/TracelessGlimpse/engine/main.py#L937) |
+| `drm` | 422 `DRM_PROTECTED` | [engine/main.py:946](file:///E:/code/android/TracelessGlimpse/engine/main.py#L946) |
+| `selector` | 422 `FORMAT_UNAVAILABLE`（exact 不可用 / 判得出上限但无匹配，real 模式） | [engine/main.py:951-966](file:///E:/code/android/TracelessGlimpse/engine/main.py#L951) |
 
-引擎自动领取那一条入口（[engine/main.py:543-550](file:///E:/code/android/BrowseGuardVid/engine/main.py#L543)）
+引擎自动领取那一条入口（[engine/main.py:543-550](file:///E:/code/android/TracelessGlimpse/engine/main.py#L543)）
 也打 attempt，但当前不存在拒绝分支（DRM 走 `awaiting_selection`，不算拒绝）；M4 实施时若那条路径新增拒绝，
 必须同样打 `download_rejected`，否则两条入口的账对不平。
 
@@ -185,3 +185,18 @@ download_rejected task_id=<id> stage=<entry|state|drm|selector> code=<§5 既有
 
 **待办**：v0.2 决定是否把 `download_rejected` 写进 §10 的审计语义清单；M4 实施时同步调整取证脚本 grep 口径，
 并关闭 §8-6。
+
+## M6–M9（2026-11-02 → 2026-11-05）：**无协议增量**
+
+这三段做了大量工作，但没有一处动到三端合同，本文件因此没有新条目。写这一节是为了让「文档这里没更新」
+不被读成「项目在这里没进展」，并把「不需要改协议」这个判断本身留下依据：
+
+| 变化 | 为什么不构成协议增量 |
+|---|---|
+| M6 Android 完整功能（Room 历史、SAF 输出目录、Cookie 按域授权、R8 发布资产） | 全在设备内；`Task`/`SniffResult`/`FormatInfo`/`ErrorPayload` 字段与枚举一字未动，CI Schema 校验口径不变 |
+| M7 内置浏览器与本机 HLS 逐段下载 | 本机执行者**不发协议请求**：`data/backend/` 里禁止出现 `EngineClient` / `encode(`，由 `TaskNeverGoesOnTheWireTest` 扫源码钉住 |
+| M8 TS→MP4 转封装 + 音频完整性门禁链 | 引擎侧 PostAction 白名单里那行 `remux` 是 PC 引擎的能力，与 App 内转封装同名不同路径；本机的降级理由码（`audio_content_too_short` 等）是**本地归因**，不进 §5 错误码表——本地失败不借用引擎协议码 |
+| M9 按 AU 拆分重封 | 纯容器写入层，产物字节形态变了但协议里没有任何字段描述音频包的 AU 结构 |
+
+Cookie 相关同样没有增量：`headersHint` 白名单仍只有 `referer` / `user-agent`，协议层依旧没有承载 Cookie 的字段。
+后续若要把 `remux` 语义（比如「容器转换必须保持音轨完整」）写进 §3.7 或 §10，那才需要开新版本并按 §「字段增删需三端确认」走。

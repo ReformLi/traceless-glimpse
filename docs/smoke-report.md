@@ -1,4 +1,4 @@
-# 无痕掠影 (Traceless Glimpse) M0 冒烟报告（协议 §9 联调合同）
+# 无痕掠影 (Traceless Glimpse) 逐轮取证与遗留登记（M0 冒烟 → M9 收官）
 
 | 项 | 值 |
 |---|---|
@@ -8,6 +8,12 @@
 | 脚本 | `scripts/smoke.sh`（Git Bash + `curl.exe`，JSON 取值用 `engine/.venv`，不依赖 jq） |
 | 执行命令 | `ENGINE_LOG=<engine 控制台日志> bash scripts/smoke.sh` |
 | 结果 | **54 项断言全绿，退出码 0**（`RESULT: ALL GREEN`） |
+
+> 本文件从 M0 冒烟单一路写成了项目的逐轮取证与遗留登记日志：§1–§17 是 M0–M3，§18–§26 是 M4，
+> §27–§29 是 M7–M9，§30 是文档回写。M5（CLI/MCP）与 M6（Android 完整功能六轮）当轮写在
+> `MCP_USER_GUIDE.md` 与 `acceptance-m6-*.md` 里，没有回填本文件。
+> 下面这张表只描述 §1–§6 那一轮（M0 桩引擎），后面的轮次各有自己的前提块。
+> 里程碑对应关系见 `PRD.md` §15；Android 端当前实现形态见 `../android/README.md`。
 
 复现前置条件（smoke 依赖 venv 内的 python 取 JSON，不依赖 jq）：
 
@@ -160,7 +166,7 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
    属文档/双端改动，M3 收尾时连同 `x-nullable` 一起讨论。
 4. **`unitTests.isReturnDefaultValues = true` 是权宜**：只为 `android.util.Log.*` 不抛「not mocked」
    （`FormatSelection.selectorFor` 的 `video_only` 分支要打 warning），约束已写在
-   [app/build.gradle.kts](file:///E:/code/android/BrowseGuardVid/android/app/build.gradle.kts) 的
+   [app/build.gradle.kts](file:///E:/code/android/TracelessGlimpse/android/app/build.gradle.kts) 的
    `testOptions` 注释里：依赖 Android API 行为的单测必须显式 mock（或走 androidTest），
    不得把这里的默认返回值当断言依据。M3 收尾评估 mockk / Robolectric 替代。
 5. **4b-2 的「detail 记 warning」落不到任务对象上**：协议 v0.1 的 `Task` 只有 `error`，没有 warning 槽位，
@@ -171,7 +177,7 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
    **给 `Task` 增可选 `warnings` 字段是唯一向后兼容的做法**（新增必填字段或改 `error` 语义都会打断既有客户端）；
    届时先开 `docs/PROTOCOL-CHANGELOG.md` 条目再动双端 schema，M3 收尾讨论。
    **收尾② 处置（2026-11-01）：已作为提案 A 入档
-   [docs/PROTOCOL-CHANGELOG.md](file:///E:/code/android/BrowseGuardVid/docs/PROTOCOL-CHANGELOG.md)「M3 收尾裁决」，
+   [docs/PROTOCOL-CHANGELOG.md](file:///E:/code/android/TracelessGlimpse/docs/PROTOCOL-CHANGELOG.md)「M3 收尾裁决」，
    M3 不实现。入档时复核出一处前提要修正：双端对未知字段都严格拒绝（`BgvJson.ignoreUnknownKeys = false` +
    Pydantic `extra="forbid"`），所以「新增可选**响应**字段」在 v0.1 严格性下并不向后兼容——引擎先发该字段
    会让旧客户端解 `GET /v1/tasks/{id}` 直接抛错。上面那句裁决要带提案 A 里的三条出路（发布顺序 /
@@ -182,7 +188,7 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
    `download_rejected`（保留 attempt 的「收到请求」含义、把「真的开始写字节」分出来），
    属文档 + 引擎日志两处改动，需与既有取证脚本的 grep 口径一并调整。
    **收尾② 处置（2026-11-01）：已作为提案 B 入档
-   [docs/PROTOCOL-CHANGELOG.md](file:///E:/code/android/BrowseGuardVid/docs/PROTOCOL-CHANGELOG.md)「M3 收尾裁决」，
+   [docs/PROTOCOL-CHANGELOG.md](file:///E:/code/android/TracelessGlimpse/docs/PROTOCOL-CHANGELOG.md)「M3 收尾裁决」，
    M3 不实现。提案把四条拒绝路径（404 / 409 / 422 DRM / 422 FORMAT_UNAVAILABLE）与两条 attempt 入口
    （HTTP 端点 `main.py:934`、引擎自动领取 `main.py:548`）都列全，并钉住两条边界：`download_attempt`
    一字不动（§10「DRM 零下载」靠它）、`202` 幂等重放不打 `download_rejected`。
@@ -214,14 +220,14 @@ PASS  该任务 download_attempt 审计行数（引擎自动领取 1 次） 1
     是因为那批路由从不回 401/403，现场没触发回补——缺的是现场，不是代码。三条敞口按裁决处置：
     - **① yt-dlp 真进程（留 M4）**：惰性重试**仅 `fake_ydl` 证接线，real 未取证**——`cookiefile`
       从无到有、副本清理、原文件 mtime 不变都由 fake 证明，真进程对真 403 抛出的错误文本能否命中
-      `_looks_like_rejection`（[engine/services/downloader.py:402](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L402)）
+      `_looks_like_rejection`（[engine/services/downloader.py:402](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py#L402)）
       没有现场。M4 做「受保护 HLS 真链路」时一并补。
     - **② 嗅探第二个信号（留 M4）**：`sniffer.py:165` 的「页面 200 但页内媒体请求被拒 → 整页重载」
       **real 未覆盖**——`tests_real/test_lazy_cookie_sniff.py` 四条走的全是导航响应那一支
       （`/protected.html` 直接 403）。代码在、语义对，缺的是现场。
     - **③ 模糊拒绝不回补（设计意图，已入码）**：「302 跳登录页」「200 但正文是登录墙」两条路径都不
       触发 Cookie 回补。复核认定为刻意的**凭据最小化**（只在明确的 401/403 拒绝信号下回补，不对登录
-      页猜测性回补），按裁决写进 [engine/services/cookies.py](file:///E:/code/android/BrowseGuardVid/engine/services/cookies.py)
+      页猜测性回补），按裁决写进 [engine/services/cookies.py](file:///E:/code/android/TracelessGlimpse/engine/services/cookies.py)
       模块 docstring，不只留在汇报里；M4 若要改判定条件，应先立证据再改这段口径。
 11. **审计状态：收尾③（UI 文案同源）挖出的 P0 已修 + 三条文案层敞口按裁决入列**（2026-11-01，详见 §14.3）。
     - **已关闭：嗅探失败路径引用不存在的 `ErrorCode.INTERNAL_ERROR`**（改前 `engine/main.py:536`）——
@@ -406,7 +412,7 @@ REQ /media/hls/master.m3u8 client=browser ua=Mozilla/5.0 (Windows NT 10.0; Win64
 
 #### 9.9.1 四条映射规则的落地
 
-映射改成四条（[FormatSelection.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/FormatSelection.kt)），判定顺序固定：
+映射改成四条（[FormatSelection.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/FormatSelection.kt)），判定顺序固定：
 先认「两个编码都是 `none`」，再认 `hasVideo && hasAudio`，再认「显式有音 + 显式无画」，剩下才是不一致的兜底。
 
 | 条件 | 映射 |
@@ -417,7 +423,7 @@ REQ /media/hls/master.m3u8 client=browser ua=Mozilla/5.0 (Windows NT 10.0; Win64
 | 其余（仅 `hasVideo`，含元数据自相矛盾） | `best` + `Log.w selector_degraded` |
 
 引擎把 yt-dlp 的 `null` / `"none"` 统一序列化成 `"none"`、未知画质序列化成 `0`
-（[services/formats.py:251](file:///E:/code/android/BrowseGuardVid/engine/services/formats.py#L251)），
+（[services/formats.py:251](file:///E:/code/android/TracelessGlimpse/engine/services/formats.py#L251)），
 所以「未知」在客户端就是 `video=="none" && audio=="none"`。
 
 单测：`FormatSelectionTest` 9 → 13 条（四种组合各一条 + fixture 场景 `formatId="0"`、
@@ -454,7 +460,7 @@ C:\Users\19564\Videos\BGV\master.mp4   61659 B   sha256(前16)=ef61c22dba4e19ec
 ```
 
 真机 UI 同步显示「下载完成 / 输出目录 C:\Users\19564\Videos\BGV / 已下载 60.2 KB」
-（截图 [.screenshots/m4b-1-done.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4b-1-done.png)）。
+（截图 [.screenshots/m4b-1-done.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4b-1-done.png)）。
 
 下载阶段媒体请求全部由引擎进程发出、不带 Cookie（该页不写 Cookie 且未设 `BGV_COOKIE_FILE`）：
 
@@ -471,13 +477,13 @@ media_req t=11:29:39.678 path=/media/hls/seg0.ts     client=browser cookie_prese
 裁决口径：文案按**映射结果**显示，不按 `hasVideo` 推断；列表文案与点击后的行为必须同源。
 
 代码落点：
-- [FormatSelection.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/FormatSelection.kt)
+- [FormatSelection.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/FormatSelection.kt)
   新增 `enum class Kind { UNKNOWN_METADATA, VIDEO_AND_AUDIO, AUDIO_ONLY, VIDEO_ONLY }` 与 `kindOf(format)`；
   `selectorFor` 改为按 `kindOf` 分支（判定逻辑与修好的四条规则等价），另出 `preferCodecLabel()`
   把 `PreferCodec` 映射成与协议线名一致的展示串（`h264` / `h265` / `av1` / `vp9`）。
-- [HomeScreen.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt)
+- [HomeScreen.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt)
   的 `formatKindLabel` / `formatSummary` 都改成接收同一个 `kind`，界面不再自行从 `hasVideo` 推断。
-- [strings.xml](file:///E:/code/android/BrowseGuardVid/android/app/src/main/res/values/strings.xml)
+- [strings.xml](file:///E:/code/android/TracelessGlimpse/android/app/src/main/res/values/strings.xml)
   增「最佳可用（画质未标注）」/「视频（无音轨）」/「画质与编码待引擎解析」，删掉已无引用的 `format_audio_label`。
 
 四条文案与行为对照：
@@ -514,7 +520,7 @@ INFO:     127.0.0.1:6256 - "POST /v1/tasks/01a19532-3a1f-7b4f-a243-88f0ad9697bf/
 2026-11-01 11:41:30,289 bgv.engine INFO download_complete task_id=01a19532-3a1f-7b4f-a243-88f0ad9697bf bytes=61659
 ```
 
-截图 [.screenshots/m4b-2-labels.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4b-2-labels.png)：
+截图 [.screenshots/m4b-2-labels.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4b-2-labels.png)：
 新文案 + 状态「下载完成」+ 输出目录与已下载字节。
 
 **边界声明**：本轮只取证了 `UNKNOWN_METADATA` 一条文案。真机跑不出带画质的变体是本机 fixture 的限制
@@ -548,13 +554,13 @@ counterfactual: DownloadError ERROR: [generic] master: Requested format is not a
 
 ### 10.2 代码：两条路径
 
-- [services/formats.py](file:///E:/code/android/BrowseGuardVid/engine/services/formats.py)
+- [services/formats.py](file:///E:/code/android/TracelessGlimpse/engine/services/formats.py)
   - `resolve_format_expression(selector, formats) -> ResolvedFormat(expression, degraded_reason)`：
     只处理 `max_height`，其余策略原样返回；表里任一 `height<=0` 或整表缺失 → `("best", "incomplete_metadata")`；
     全部已知且 `min(heights) > N` → 抛 `FormatNoMatchError`；否则原表达式下发。
   - `FormatNoMatchError(requested, available).detail` = `{reason: no_height_within_cap, requested, available}`，
     直接进错误信封的 `detail`。
-- [main.py](file:///E:/code/android/BrowseGuardVid/engine/main.py)
+- [main.py](file:///E:/code/android/TracelessGlimpse/engine/main.py)
   - `_download_real`：降级分支打 `logger.warning("selector_degraded task_id=%s reason=%s requested=%s")`
     后继续跑（任务不失败）；`FormatNoMatchError` → `_fail_task(FORMAT_UNAVAILABLE, _format_no_match_detail(exc))`。
   - `POST /v1/tasks/{id}/download`（real 模式预校验）：`FormatNoMatchError` → 422，同样的 detail。
@@ -816,7 +822,7 @@ App 一次下载流程会产生两个任务：嗅探任务（`mode=sniff`，下�
 **裁决①（只扫 `.ytdl`、不扫 `.part`）+ 补的防御**：续传偏移取磁盘 size 之后，
 新增一道 Content-Type 门禁 —— 有 `.part` 残留时，先看终点声明的是不是媒体，
 不是就拒绝续传，记 `resume_rejected task_id=... reason=unexpected_content_type`。
-落点 [engine/services/downloader.py](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py)
+落点 [engine/services/downloader.py](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py)
 的 `_is_media_content_type` / `_bare_media_type`（`download_direct` 开头引用），
 规则写进 `download_direct` 的 docstring。
 白名单而非黑名单：`video/*`、`audio/*`、`application/{octet-stream,mp4,mpegurl,x-mpegurl,dash+xml}`
@@ -1028,7 +1034,7 @@ $ ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 audi
 
 ### 13.2 代码落点
 
-[engine/services/redirect.py](file:///E:/code/android/BrowseGuardVid/engine/services/redirect.py)：
+[engine/services/redirect.py](file:///E:/code/android/TracelessGlimpse/engine/services/redirect.py)：
 
 - `PROBE_MAX_BYTES = 1024`——探测要的是头，正文一个字节都用不上；
 - 每一跳改用 `with client.stream("GET", current, headers={"Range": "bytes=0-0"})`，
@@ -1047,9 +1053,9 @@ $ ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 audi
 
 | 调用点 | 处理 |
 |---|---|
-| [engine/services/downloader.py:190](file:///E:/code/android/BrowseGuardVid/engine/services/downloader.py#L190) | 传入 `task_id=task_id`（下载任务上下文里本来就有） |
-| [engine/services/formats.py:166-175](file:///E:/code/android/BrowseGuardVid/engine/services/formats.py#L166) | `fetch_manifest_text` 增加同名可选形参并透传，避免嗅探路径的审计行全成 `unknown` |
-| [engine/main.py:595](file:///E:/code/android/BrowseGuardVid/engine/main.py#L595) | 嗅探 DRM 判定处传 `task_id=task.id` |
+| [engine/services/downloader.py:190](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py#L190) | 传入 `task_id=task_id`（下载任务上下文里本来就有） |
+| [engine/services/formats.py:166-175](file:///E:/code/android/TracelessGlimpse/engine/services/formats.py#L166) | `fetch_manifest_text` 增加同名可选形参并透传，避免嗅探路径的审计行全成 `unknown` |
+| [engine/main.py:595](file:///E:/code/android/TracelessGlimpse/engine/main.py#L595) | 嗅探 DRM 判定处传 `task_id=task.id` |
 | `tests_real/test_stage3_units.py` 4 处直接调用 | 只读 `url` / `content_type`；新参数带默认值，不改位置参数 → 无需改动，现场复跑通过 |
 | `tests_real/test_download_resume.py` | 经 `download_direct` 间接调用；`_handler_for` / `_probe_transport` 用 `content=b""` 构造探测应答，命中上面的 `is_stream_consumed` 分支 |
 
@@ -1736,8 +1742,8 @@ queued→sniffing 屏显修复后取到两帧、地址保存触发重连有行�
 ### 18.3 第 1 步产出物清单（审计本体）
 
 **范围**：六个非终态 `queued` / `sniffing` / `awaiting_selection` / `downloading` / `merging` / `post_processing`
-（合法后继见 [engine/main.py:112-144](file:///E:/code/android/BrowseGuardVid/engine/main.py#L112) 的转移表，
-失败出口唯一写入点是 [`_fail_task`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L379)，
+（合法后继见 [engine/main.py:112-144](file:///E:/code/android/TracelessGlimpse/engine/main.py#L112) 的转移表，
+失败出口唯一写入点是 [`_fail_task`](file:///E:/code/android/TracelessGlimpse/engine/main.py#L379)，
 终态优先不覆盖已在那条函数里处理了取消/失败竞态）。
 
 **原则**（驱动这一整步的是收尾③ 的 P0）：每个非终态都必须有错误出口，不能「既不失败也不完成」。
@@ -1762,7 +1768,7 @@ queued→sniffing 屏显修复后取到两帧、地址保存触发重连有行�
    > 教训写进 §19.6：**按一种写法统计码的生产者，等于统计错**。
 3. **缺口清单**：矩阵里每一条 `应补` 落成一条待办，带 P 级。
    P0 判定口径沿用本轮：**能导致任务停在非终态既不失败也不完成**的，一律 P0，不排队直接修。
-4. **静态守卫升级**（延续 [engine/test_error_codes.py](file:///E:/code/android/BrowseGuardVid/engine/test_error_codes.py) 的形状扫描）：
+4. **静态守卫升级**（延续 [engine/test_error_codes.py](file:///E:/code/android/TracelessGlimpse/engine/test_error_codes.py) 的形状扫描）：
    - 现有：全量 `ErrorCode.X` 引用必须是枚举真实成员（收尾③ 加的，防的正是那次 `INTERNAL_ERROR` 笔误）；
    - 新增：每个非终态至少有一个 `_fail_task` 出口可达——**这条能否纯静态判定要先做可行性判断**，
      若调用点与状态的归属靠 AST 推断不成立，降级为「矩阵文档 + 每条出口一条 real 用例」，
@@ -1813,8 +1819,8 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
 ### 19.1 方法与可判定性结论
 
 范围＝六个非终态；失败出口唯一定义为「`Task.error` 被写入且状态转到 `failed`」，
-入口是 [`_fail_task`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L379)，合法后继表在
-[main.py:111](file:///E:/code/android/BrowseGuardVid/engine/main.py#L111)。
+入口是 [`_fail_task`](file:///E:/code/android/TracelessGlimpse/engine/main.py#L379)，合法后继表在
+[main.py:111](file:///E:/code/android/TracelessGlimpse/engine/main.py#L111)。
 
 **§18.3 产出物 4 的判定结论：per-state 的「该状态有没有可达失败出口」用 AST 判不出来**，理由是三条具体的：
 ① 同一个 `_fail_task` 调用点服务的状态由运行时分支决定（`_download_real` 里的 6 个出口全在 `downloading`，
@@ -1822,7 +1828,7 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
 ③ 部分失败根本不落 `Task.error`（API 层 4xx）。硬凑一个「按状态扫调用点」的守卫只会给出假绿。
 
 所以按裁决降级为**矩阵 + 每条出口一条断言终态的用例**，并把静态守卫收缩到**两条真能判定的不变式**
-（[engine/test_nonterminal_exit_guards.py](file:///E:/code/android/BrowseGuardVid/engine/test_nonterminal_exit_guards.py)）：
+（[engine/test_nonterminal_exit_guards.py](file:///E:/code/android/TracelessGlimpse/engine/test_nonterminal_exit_guards.py)）：
 转移表里每个非终态必须把 `FAILED` 列为合法后继；`_advance` / `_download_real` 两个驱动函数不得存在
 绕过兜底包装的裸调用。第三条守卫检查兜底包装本身是否真的调用 `_fail_task`（只 log 不置状态＝假兜底）。
 
@@ -1830,9 +1836,9 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
 
 | 状态 | 已有出口（§5 码 ← 调用点） | 判定 |
 | --- | --- | --- |
-| `queued` | 无任务态出口 | **不适用（有理由）**：该状态的全部拒绝都在创建期以 4xx 返回（`INVALID_URL` / `UNSUPPORTED_SCHEME` / `SSRF_BLOCKED` / `INVALID_OUTPUT_DIR` / `OUTPUT_DIR_REJECTED` / `VALIDATION_ERROR`，见 [create_task](file:///E:/code/android/BrowseGuardVid/engine/main.py#L874)），任务对象根本不存在；创建成功后 `queued` 的唯一出路是被领取。停滞风险由 GET 侧兜底 [`_submit_if_queued`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L920) 覆盖 |
-| `sniffing` | `EXTRACTOR_FAILED`、`NO_MEDIA_FOUND` ← [main.py:566](file:///E:/code/android/BrowseGuardVid/engine/main.py#L566)（`detail.reason=sniff_failed`，码由 [`_sniff_real`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L601) 返回）；`UNKNOWN` ← [main.py:401](file:///E:/code/android/BrowseGuardVid/engine/main.py#L401)（`advance_crashed`，本轮新增） | **本轮修复前不完整**：`_sniff_real` 只捕 `SniffError`，嗅探器抛其它异常、或 `MediaStreamType(kind)` 构造失败，都会逃逸到 worker 的 `except` 里**只记日志不置状态** → 永久 `sniffing`。已复现（§19.4） |
-| `awaiting_selection` | `UNKNOWN` ← [main.py:729](file:///E:/code/android/BrowseGuardVid/engine/main.py#L729)（24h 超时扫描，`detail.reason=awaiting_selection_timeout`） | **有出口，但语义错位**：超时借 `UNKNOWN` 表达是保守做法（不新增码，符合裁决）；真正的缺口是空格式表（见 §19.3 缺口 3） |
+| `queued` | 无任务态出口 | **不适用（有理由）**：该状态的全部拒绝都在创建期以 4xx 返回（`INVALID_URL` / `UNSUPPORTED_SCHEME` / `SSRF_BLOCKED` / `INVALID_OUTPUT_DIR` / `OUTPUT_DIR_REJECTED` / `VALIDATION_ERROR`，见 [create_task](file:///E:/code/android/TracelessGlimpse/engine/main.py#L874)），任务对象根本不存在；创建成功后 `queued` 的唯一出路是被领取。停滞风险由 GET 侧兜底 [`_submit_if_queued`](file:///E:/code/android/TracelessGlimpse/engine/main.py#L920) 覆盖 |
+| `sniffing` | `EXTRACTOR_FAILED`、`NO_MEDIA_FOUND` ← [main.py:566](file:///E:/code/android/TracelessGlimpse/engine/main.py#L566)（`detail.reason=sniff_failed`，码由 [`_sniff_real`](file:///E:/code/android/TracelessGlimpse/engine/main.py#L601) 返回）；`UNKNOWN` ← [main.py:401](file:///E:/code/android/TracelessGlimpse/engine/main.py#L401)（`advance_crashed`，本轮新增） | **本轮修复前不完整**：`_sniff_real` 只捕 `SniffError`，嗅探器抛其它异常、或 `MediaStreamType(kind)` 构造失败，都会逃逸到 worker 的 `except` 里**只记日志不置状态** → 永久 `sniffing`。已复现（§19.4） |
+| `awaiting_selection` | `UNKNOWN` ← [main.py:729](file:///E:/code/android/TracelessGlimpse/engine/main.py#L729)（24h 超时扫描，`detail.reason=awaiting_selection_timeout`） | **有出口，但语义错位**：超时借 `UNKNOWN` 表达是保守做法（不新增码，符合裁决）；真正的缺口是空格式表（见 §19.3 缺口 3） |
 | `downloading` | `NO_MEDIA_FOUND` ← :301；`FORMAT_UNAVAILABLE` ← :306 / :313；`SecurityError` 动态码 ← :354（`SSRF_BLOCKED` / `OUTPUT_DIR_REJECTED` 等）；`PARTIAL_DOWNLOAD` ← :358；`UNKNOWN` ← :362(`download_failed`) / :685(`missing_sniff`) / :416(`download_crashed`，本轮新增) | **出口最全，但归因丢失**：八个网络/磁盘类码全部被 :362 的 catch-all 收成 `UNKNOWN`（见 §19.3 缺口 2） |
 | `merging` | **无** | **应补，且更早的问题是「进不来」**：全仓没有任何一处转移到 `merging`（见 §19.3 缺口 1） |
 | `post_processing` | **无** | 同上 |
@@ -1849,9 +1855,9 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
 **P1（本轮裁决：三条全修。①已升 P0 并落地＝§19.7；②已落地＝§19.8；③见 §19.9）**：
 
 1. **`postActions` 被静默丢弃**（**已修**：按裁决升为 P0，见 §19.7）。`merging` / `post_processing` 无入口，
-   [services/merger.py](file:///E:/code/android/BrowseGuardVid/engine/services/merger.py) 有实现、有自己的单测，
+   [services/merger.py](file:///E:/code/android/TracelessGlimpse/engine/services/merger.py) 有实现、有自己的单测，
    但 `main.py` 与 `services/downloader.py` **都不调用它**（grep 全仓：`merge_streams` 只出现在 `tests_real/test_merger_*`）。
-   后果链：客户端「合并音视频」开关 → [HomeViewModel.kt:273](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L273)
+   后果链：客户端「合并音视频」开关 → [HomeViewModel.kt:273](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L273)
    发出 `postActions=[merge]` → 引擎收下、持久化、回显 → 从不执行 → 任务报 `done`，产物其实没合并。
    **按 §5 标准这是「静默降级且无审计行」**，与 4b-2 那条 `selector_degraded` 的裁决同源；
    `MERGE_FAILED` / `TRANSCODE_FAILED` 因此永远零生产者，而客户端 `ProtocolCopy.kt:14-15`
@@ -1864,22 +1870,22 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
    重试按钮的 `retryable` 也跟着失真（`UNKNOWN` 不可重试，而这几个里有一半是 `retryable=true`）。
    缺的是一张「downloader 异常类型 → §5 码」映射表；这直接决定 M4 第 2 步 `DownloadBackend` 事件流能不能表达失败。
 3. **空格式表落在客户端补契约**（**已按裁决修客户端侧＝§19.9**；协议仍不可分的那半句留在 §19.9 遗留 1）：real 模式下 `record.formats` 为 `[]` 时任务照样进 `awaiting_selection`，
-   `GET /formats` 返回 200 空列表，由客户端 [HomeViewModel.kt:225](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L225)
+   `GET /formats` 返回 200 空列表，由客户端 [HomeViewModel.kt:225](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L225)
    自己造 `FORMAT_UNAVAILABLE` 文案。引擎侧「有格式表可给」与「给不出」两种情况在协议上不可分。
 
 **P2（记录，不排队）**：
 
 4. `_sniff_real` 把 yt-dlp 解析失败静默收成 `record.formats = []`（只 warn），失败被推迟到下载阶段才显形。
-5. `start_download` 的 API 预检（[main.py:986](file:///E:/code/android/BrowseGuardVid/engine/main.py#L986)）
+5. `start_download` 的 API 预检（[main.py:986](file:///E:/code/android/TracelessGlimpse/engine/main.py#L986)）
    只捕两种契约异常，其它异常 → 500，任务停在 `awaiting_selection` 等 24h 扫描（有出口，但请求面难看）。
 6. 码表注释与实际条数不符（Kotlin 写 29、实为 30）——**本轮已顺手改**，见 §19.6。
 
 ### 19.4 本轮 P0 修复与取证
 
-改动（[engine/main.py](file:///E:/code/android/BrowseGuardVid/engine/main.py)）：
+改动（[engine/main.py](file:///E:/code/android/TracelessGlimpse/engine/main.py)）：
 
-- 新增 [`_advance_safely`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L388) /
-  [`_download_safely`](file:///E:/code/android/BrowseGuardVid/engine/main.py#L404)：捕获逃逸异常 →
+- 新增 [`_advance_safely`](file:///E:/code/android/TracelessGlimpse/engine/main.py#L388) /
+  [`_download_safely`](file:///E:/code/android/TracelessGlimpse/engine/main.py#L404)：捕获逃逸异常 →
   `logger.exception` 留可 grep 的审计行（`advance_crashed` / `download_crashed` + task_id + 异常类型）→
   `_fail_task(UNKNOWN)`。兜底放在**驱动入口**这一层，不在每个调用点补 try。
 - 四个调用点全部改走包装：`_process_task` 的两条、`get_task` 的同步兜底、`start_download` 的 worker 未启动分支、
@@ -1888,7 +1894,7 @@ split APK 69.7 MB、首启再解包 ~55 MB；**硬阻塞 #369**（ffmpeg 载荷�
   也会执行，连字节数一起写死成 fixture 的 524288000。现按 `ENGINE_MODE == "stub"` 收窄，
   real 侧改为 `advance_skipped_downloading` 审计行——下载状态归 `_download_real` 所有。
 
-取证（现场复跑，[engine/tests_real/test_nonterminal_exits.py](file:///E:/code/android/BrowseGuardVid/engine/tests_real/test_nonterminal_exits.py) 五条，全部打真实崩溃点）：
+取证（现场复跑，[engine/tests_real/test_nonterminal_exits.py](file:///E:/code/android/TracelessGlimpse/engine/tests_real/test_nonterminal_exits.py) 五条，全部打真实崩溃点）：
 
 | 用例 | 崩溃点 | 修复前实测 | 修复后 |
 | --- | --- | --- | --- |
@@ -1987,7 +1993,7 @@ sealed interface DownloadEvent {
 ```
 
 两个实现各归各的位置：`RemoteSniffer` 与 `HttpDownloadBackend` 复用现
-[EngineClient](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineClient.kt)
+[EngineClient](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/EngineClient.kt)
 的九个端点；`LocalWebViewSniffer` 只实现 `SniffBackend`，`capabilities.drmDetection = false`、
 `hls = false`（blob/MSE 抓不到切片清单时发 `Refused(NO_DIRECT_LINK)`），并且**不实现 `DownloadBackend`**——
 这正是 §18.5 放弃本地内嵌后接口应有的形状。
@@ -1995,7 +2001,7 @@ sealed interface DownloadEvent {
 三条本次要一起认领的迁移影响（不是新需求，是接口挪动的连带账）：
 
 1. 三个轮询环（`awaitTerminal` / `awaitAwaitingSelection` / `awaitDownloadTerminal`）搬进
-   `HttpDownloadBackend` / `RemoteSniffer` 内部后，[PollLoopStateWritebackTest](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt)
+   `HttpDownloadBackend` / `RemoteSniffer` 内部后，[PollLoopStateWritebackTest](file:///E:/code/android/TracelessGlimpse/android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt)
    的「恰好扫到三个 await 环」会失去锚点——守卫必须跟着搬到新东家，且搬完要用同一个变异体
    （删掉回写块）复跑一次，不能只改文件名当作搬完了。
 2. `LocalTimeouts` 的三个 `withTimeout` 归后端所有（超时发 `Failed(Local(TIMEOUT))`），
@@ -2029,7 +2035,7 @@ sealed interface DownloadEvent {
    产物确实是单文件，但那一次 FFmpeg 调用对引擎不可见，§3.7 的 `merge` 动作与 §4 的
    `downloading → merging` 转移就永远没有落点。且 yt-dlp **没有** `--no-merge` 这类 compat 开关（实测）。
    所以改成两次「单格式单轨」下载（`bestvideo` + `bestaudio`），每次都无可合，合并才真的归
-   [services/merger.py](file:///E:/code/android/BrowseGuardVid/engine/services/merger.py) 执行
+   [services/merger.py](file:///E:/code/android/TracelessGlimpse/engine/services/merger.py) 执行
    （`services/downloader.py` 的 `download_tracks`）。
 2. **可拆性判定发生在下载之前，用元数据格式表判定**，不靠捕获下载异常猜。`bestvideo`/`bestaudio`
    是「仅单轨」选择器，在只有 muxed 流的源上直接抛 `Requested format is not available`——
@@ -2039,7 +2045,7 @@ sealed interface DownloadEvent {
    `security.validate_output_target` 要求产物**直接**位于输出目录。合并产物名由视频轨名去掉标签段得到，
    `drop_track_files` 只认带标签的名字，不认识的文件绝不动手。
 
-落点（[engine/main.py](file:///E:/code/android/BrowseGuardVid/engine/main.py)）：
+落点（[engine/main.py](file:///E:/code/android/TracelessGlimpse/engine/main.py)）：
 
 - `main.py:324 _merge_plan`：要不要拆轨，三个跳过理由各留一行
   `post_action_noop … reason=single_file_source / selector_not_splittable / no_separate_tracks`；
@@ -2092,7 +2098,7 @@ Gradle 未复跑——`ProtocolCopy.kt` 那两条屏显文案从此理论上取�
 
 四条设计决定：
 
-1. **归因表独立成模块**（[services/failures.py](file:///E:/code/android/BrowseGuardVid/engine/services/failures.py)），
+1. **归因表独立成模块**（[services/failures.py](file:///E:/code/android/TracelessGlimpse/engine/services/failures.py)），
    不写在 `except` 里。理由：同一条表要被两处 `except`（完整性 / 兜底）和桩、real 两套用例共用，
    贴在 `main.py` 里就只能是第二份真相。
 2. **证据优先级＝异常类型 → 机制文本 → HTTP 状态**，且机制描述**压过**状态码：
@@ -2105,7 +2111,7 @@ Gradle 未复跑——`ProtocolCopy.kt` 那两条屏显文案从此理论上取�
    `test_detail_never_carries_the_exception_text`（桩，令牌表 `://` / host / `cookie` / `referer` / `.m3u8`）、
    `test_attribution_does_not_leak_the_url_into_logs_or_detail`（real，`caplog` 全文扫）。
 
-落点：[`classify_download_failure`](file:///E:/code/android/BrowseGuardVid/engine/services/failures.py#L156)
+落点：[`classify_download_failure`](file:///E:/code/android/TracelessGlimpse/engine/services/failures.py#L156)
 （`main.py:479` 与 `main.py:491` 两处 `except` 各调一次，审计行由 `type=异常类名` 换成同时带 `code=…`，
 这样屏上的码和日志能对上）。
 
@@ -2126,8 +2132,8 @@ Gradle 未复跑——`ProtocolCopy.kt` 那两条屏显文案从此理论上取�
 而它当时同样零生产者（全仓 grep 只有 `models.py` 的枚举与码表两处）。本轮状态 Pass 把它补上了，
 按实说，不算 P1② 认领的范围，只是留痕。
 
-取证（现场复跑，[engine/test_failure_attribution.py](file:///E:/code/android/BrowseGuardVid/engine/test_failure_attribution.py)
-42 条 + [engine/tests_real/test_failure_attribution_real.py](file:///E:/code/android/BrowseGuardVid/engine/tests_real/test_failure_attribution_real.py) 16 条）：
+取证（现场复跑，[engine/test_failure_attribution.py](file:///E:/code/android/TracelessGlimpse/engine/test_failure_attribution.py)
+42 条 + [engine/tests_real/test_failure_attribution_real.py](file:///E:/code/android/TracelessGlimpse/engine/tests_real/test_failure_attribution_real.py) 16 条）：
 
 | 用例族 | 断言 | 结果 |
 | --- | --- | --- |
@@ -2179,15 +2185,15 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
 不是扩范围，是同一处缺陷的两个实例。
 
 引擎侧真相（复核过，不是猜）：`_sniff_real` 无媒体时发 `NO_MEDIA_FOUND`、`_download_real` 解析不出
-表达式时发 `FORMAT_UNAVAILABLE`（[main.py:407](file:///E:/code/android/BrowseGuardVid/engine/main.py#L407) /
-[:414](file:///E:/code/android/BrowseGuardVid/engine/main.py#L414)），也就是说**引擎真的这么说的时候
+表达式时发 `FORMAT_UNAVAILABLE`（[main.py:407](file:///E:/code/android/TracelessGlimpse/engine/main.py#L407) /
+[:414](file:///E:/code/android/TracelessGlimpse/engine/main.py#L414)），也就是说**引擎真的这么说的时候
 走的是 `error.code` 那条正常链路**；而客户端这两处分支是「引擎 200 + 空数组 + 任务态还是
 `done` / `awaiting_selection`」——引擎在这个组合里一个字都没说，屏上却出现了一个只有引擎
 配得上发的码。三个后果与 §19.4 那条同源：用户误读、审计行查无此码、`retryable` 借来自证不了自己。
 
-改动（[android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt)）：
+改动（[android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt)）：
 
-- 新增 [`internal object LocalRefusals`](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L413)，
+- 新增 [`internal object LocalRefusals`](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L413)，
   与 `LocalTimeouts` 同形：`code = null`、文案自带「客户端本地判定」。两条分支各指过去
   （`HomeViewModel.kt:171` 嗅探空结果、`:218` 空格式表）。
 - `retryable = true` 是**本地决定**，不是从 `FORMAT_UNAVAILABLE` 继承：客户端不知道引擎为什么给空表
@@ -2196,12 +2202,12 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
 - `ErrorCode` import 随之从 ViewModel 移除（该文件不再需要协议码）。
 
 **与 §14.3 的关系（不修饰）**：§14.3 那轮「UI 文案与协议同源」把这两处的文案、码、`retryable`
-三件套一起换成了枚举原文（表在 [docs/smoke-report.md:1247](file:///E:/code/android/BrowseGuardVid/docs/smoke-report.md#L1247)）。
+三件套一起换成了枚举原文（表在 [docs/smoke-report.md:1247](file:///E:/code/android/TracelessGlimpse/docs/smoke-report.md#L1247)）。
 文案同源是对的，**码与 `retryable` 跟着搬错了**：那是枚举的身份字段，只配描述引擎响应。
 本轮只拆身份字段，同源原则保留——`HomeScreen.kt:422` 的 `ErrorCode.DRM_PROTECTED.message`
 （引擎在数据里给了 `drmDetected` 这个事实，界面转述它的措辞）不动。§14.3 的表已加指向本节的脚注。
 
-守卫（新增 [android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt)）：
+守卫（新增 [android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt)）：
 
 | 用例 | 断言 | 结果 |
 | --- | --- | --- |
@@ -2229,7 +2235,7 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
    本轮没动，因为裁决给的是客户端本地提示这条路线。要真分得开需要协议级改动（`GET /formats`
    的空数组带语义，或 `awaiting_selection` 入口自检），归 PROTOCOL 变更提案，等裁决再动。
 2. **分支没有行为级覆盖**：`LocalRefusals` 的两条产出有单测，但「ViewModel 收到空数组 → 落到这条产出」
-   仍是静态守卫 + 单例断言，没有跑真的 ViewModel。§18.2 第 3 步（[smoke-report.md:1728](file:///E:/code/android/BrowseGuardVid/docs/smoke-report.md#L1728)）
+   仍是静态守卫 + 单例断言，没有跑真的 ViewModel。§18.2 第 3 步（[smoke-report.md:1728](file:///E:/code/android/TracelessGlimpse/docs/smoke-report.md#L1728)）
    的 `FakeBackend` 到位后，这类「200 + 空数组」响应才可能在 JVM 里被演出来——本轮把它挂进那条待办，
    不另开一套假件。
 3. 设备截图未复拍：这两条分支在 MuMu 上取不到值（引擎不发空数组），本来就属于「需要假引擎才能演」
@@ -2250,14 +2256,14 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
 
 | 文件 | 职责 | 关键点 |
 | --- | --- | --- |
-| [BackendFailure.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt) | 失败的二元归属 | `Protocol`(:16) 带 `code`；`Local`(:24) **类型里没有码字段**；`LocalReason`(:32) |
-| [LocalFailures.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt) | 本地判定的措辞与窗口 | 5 个常量 + 6 个产出，文案与原 `LocalTimeouts`/`LocalRefusals` 逐字一致 |
-| [EngineFailures.kt:13](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/EngineFailures.kt#L13) | `EngineFailure → BackendFailure` | 全仓**唯一** `BackendFailure.Protocol(` 构造点 |
-| [SniffBackend.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/SniffBackend.kt) | 接口 + `SniffRequest` + `SniffEvent` | `TERMINAL_STATUSES` 也归后端 |
-| [HttpSniffer.kt:30](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpSniffer.kt#L30) | 原 `awaitTerminal` | 轮询发 `Status`(:47)，超时发 `Failed(Local)`(:51) |
-| [DownloadBackend.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt) | 接口 + `PrepareRequest`/`StartRequest` + `DownloadEvent` | `prepare` / `start` / `cancel` 三方法 |
-| [HttpDownloader.kt:29](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L29) | 原 `awaitAwaitingSelection` / `awaitDownloadTerminal` | `Preparing`(:46)、`Started`(:82)、`Progress`(:89) |
-| [HomeViewModel.kt:173](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L173) / [:218](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L218) | `applySniffEvent` / `applyDownloadEvent` | ViewModel 只剩「事件 → sealed 镜像」这一段映射 |
+| [BackendFailure.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt) | 失败的二元归属 | `Protocol`(:16) 带 `code`；`Local`(:24) **类型里没有码字段**；`LocalReason`(:32) |
+| [LocalFailures.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt) | 本地判定的措辞与窗口 | 5 个常量 + 6 个产出，文案与原 `LocalTimeouts`/`LocalRefusals` 逐字一致 |
+| [EngineFailures.kt:13](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/EngineFailures.kt#L13) | `EngineFailure → BackendFailure` | 全仓**唯一** `BackendFailure.Protocol(` 构造点 |
+| [SniffBackend.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/SniffBackend.kt) | 接口 + `SniffRequest` + `SniffEvent` | `TERMINAL_STATUSES` 也归后端 |
+| [HttpSniffer.kt:30](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpSniffer.kt#L30) | 原 `awaitTerminal` | 轮询发 `Status`(:47)，超时发 `Failed(Local)`(:51) |
+| [DownloadBackend.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt) | 接口 + `PrepareRequest`/`StartRequest` + `DownloadEvent` | `prepare` / `start` / `cancel` 三方法 |
+| [HttpDownloader.kt:29](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L29) | 原 `awaitAwaitingSelection` / `awaitDownloadTerminal` | `Preparing`(:46)、`Started`(:82)、`Progress`(:89) |
+| [HomeViewModel.kt:173](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L173) / [:218](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L218) | `applySniffEvent` / `applyDownloadEvent` | ViewModel 只剩「事件 → sealed 镜像」这一段映射 |
 
 `baseUrl` 计数（现场复跑，口径＝含该词的行数）：改造前 `git show 3242ac6:...HomeViewModel.kt`
 **22 行**，现在 **8 行**。剩下 8 行里没有一行是「每次引擎调用手工带地址」——
@@ -2296,9 +2302,9 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
 
 | 账 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | `PollLoopStateWritebackTest` 失去 `await*` 锚点 | **已搬**：锚点表改成「文件 + 函数 + 发状态那行的字面量」，[全仓 `client.task(` 恰好 3 处](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt#L93)且都被纳管 |
-| 2 | 三个 `withTimeout` 归后端，`LocalTimeoutTest` 改指后端产出 | **已搬**：断言指向 [LocalFailures](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt)，扫描集加进 `HttpSniffer.kt`/`HttpDownloader.kt` |
-| 3 | 禁止客户端手工构造 `BackendFailure.Protocol` | **已加**：[protocolFailuresAreConstructedAtASingleSite](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt#L69) |
+| 1 | `PollLoopStateWritebackTest` 失去 `await*` 锚点 | **已搬**：锚点表改成「文件 + 函数 + 发状态那行的字面量」，[全仓 `client.task(` 恰好 3 处](file:///E:/code/android/TracelessGlimpse/android/app/src/test/java/com/hpu/browseguard/PollLoopStateWritebackTest.kt#L93)且都被纳管 |
+| 2 | 三个 `withTimeout` 归后端，`LocalTimeoutTest` 改指后端产出 | **已搬**：断言指向 [LocalFailures](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt)，扫描集加进 `HttpSniffer.kt`/`HttpDownloader.kt` |
+| 3 | 禁止客户端手工构造 `BackendFailure.Protocol` | **已加**：[protocolFailuresAreConstructedAtASingleSite](file:///E:/code/android/TracelessGlimpse/android/app/src/test/java/com/hpu/browseguard/LocalRefusalTest.kt#L69) |
 
 ### 20.5 取证（现场复跑）
 
@@ -2321,7 +2327,7 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
    4 组变异体」，不是 MuMu 上的观察。真正能证明中间态（`sniffing` / `format_preparing`）
    的还是 §18.2 第 3 步的 FakeBackend 行为单测 + 重拍截图。
 2. **`connect()` 未后端化**：`health`/`selfcheck` 仍直用 `EngineClient`，是 `baseUrl` 残留
-   的唯一实质来源（[:299](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L299)）。
+   的唯一实质来源（[:299](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L299)）。
    草图里没有 `InfoBackend` 这个位置，且今天没有第二个实现需要它，故不提前抽。
 3. **后端每次点击 `new`**：`HttpSniffer(config.baseUrl, client)` 在动作里现场构造。
    好处是改引擎地址立即生效（与原实现一致），代价是「后端实例」不是一个可持有的对象，
@@ -2336,24 +2342,24 @@ Android 侧未改代码。数量核对（三条都实测，不是做算术）：
 
 | # | 裁决 | 落地位置 |
 | --- | --- | --- |
-| 1 | 开关放**设置里全局切换** | [EngineConfig.kt:47](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineConfig.kt#L47) `downloadExecutor`（SharedPreferences 持久化，默认 `ENGINE`）+ [HomeScreen.kt:240](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L240) 引擎卡片里两颗按钮 |
+| 1 | 开关放**设置里全局切换** | [EngineConfig.kt:47](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/EngineConfig.kt#L47) `downloadExecutor`（SharedPreferences 持久化，默认 `ENGINE`）+ [HomeScreen.kt:240](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L240) 引擎卡片里两颗按钮 |
 | 2 | **只切下载执行者**，嗅探固定走引擎 | `sniff()` 仍然 `HttpSniffer(...)` 一条路；`LocalWebViewSniffer` 本轮不接线 |
-| 3 | 本地模式**仍经画质表一屏** | [LocalDirectDownloader.kt:38](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L38) `prepare()` 由嗅探结果合成一行表 |
-| 4 | 进度与终态用**合成 `Task` 快照**承载 + **不回传守卫** | [LocalTaskSnapshot.kt:24](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L24) + [TaskNeverGoesOnTheWireTest.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/TaskNeverGoesOnTheWireTest.kt) |
+| 3 | 本地模式**仍经画质表一屏** | [LocalDirectDownloader.kt:38](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L38) `prepare()` 由嗅探结果合成一行表 |
+| 4 | 进度与终态用**合成 `Task` 快照**承载 + **不回传守卫** | [LocalTaskSnapshot.kt:24](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L24) + [TaskNeverGoesOnTheWireTest.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/test/java/com/hpu/browseguard/TaskNeverGoesOnTheWireTest.kt) |
 
 ### 21.1 落地形态
 
 | 文件 | 职责 | 关键点 |
 | --- | --- | --- |
-| [DownloadBackend.kt:17](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L17) | `DownloadExecutor` 枚举 | `ENGINE` / `LOCAL_DIRECT`，注释写死「只切下载这一段」 |
-| [:63](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L63) | `sealed interface StartRequest` | `ViaEngine`(:66) 带 `formatSelector/namingTemplate/postActions`；`ViaLocal`(:74) 只带 `link + outputDir` |
-| [:56](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L56) | `PrepareRequest.sniffResults` | 默认 `emptyList()`——引擎实现不读它，本地实现靠它合表（§6.3 画质表属于另一个任务，本地没有那个任务） |
-| [LocalDirectDownloader.kt:34](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L34) | 第三个 `DownloadBackend` | 纯 OkHttp + `RandomAccessFile`，`.part` 续传；416 清断点重下一轮；不碰 yt-dlp、不碰 FFmpeg |
-| [:188](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L188) / [:272](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L272) | 协作式取消 | `cancel()` 只登记标志返回 `null`；`internal object Cancellations` 进程级，按 `localTaskId(mediaUrl)` 对齐 |
-| [:259](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L259) | `FORBIDDEN_HEADERS` | `cookie / authorization / proxy-authorization / set-cookie` 二次过滤 `headersHint`——协议脱敏是引擎侧的约定，本机不白拿 |
-| [LocalTaskSnapshot.kt:24](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L24) | 界面镜像 `Task` | `id = "local-" + …`(:48)、`progress.phase = "local_direct"`(:52 起)、`error` 恒 `null`、`postActions = emptyList()`、`cookiePolicy = NONE` |
-| [LocalFailures.kt:41](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L41) | 三条本地新判定 | `unsupportedLink`(:41) / `linkUnloadable`(:44) / `disk`(:50)，措辞一律自证「客户端本地判定」 |
-| [HomeViewModel.kt:245](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L245) | 按执行者选后端 | `downloadBackend()`；[:157](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L157) `selectDownloadExecutor()` 落盘 + 取消在跑的 `downloadJob` + 回 `Idle`；[:304](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L304) 本地支按 `localTaskId` 找回直链，找不回就写失败阶段，不让按钮变哑 |
+| [DownloadBackend.kt:17](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L17) | `DownloadExecutor` 枚举 | `ENGINE` / `LOCAL_DIRECT`，注释写死「只切下载这一段」 |
+| [:63](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L63) | `sealed interface StartRequest` | `ViaEngine`(:66) 带 `formatSelector/namingTemplate/postActions`；`ViaLocal`(:74) 只带 `link + outputDir` |
+| [:56](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L56) | `PrepareRequest.sniffResults` | 默认 `emptyList()`——引擎实现不读它，本地实现靠它合表（§6.3 画质表属于另一个任务，本地没有那个任务） |
+| [LocalDirectDownloader.kt:34](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L34) | 第三个 `DownloadBackend` | 纯 OkHttp + `RandomAccessFile`，`.part` 续传；416 清断点重下一轮；不碰 yt-dlp、不碰 FFmpeg |
+| [:188](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L188) / [:272](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L272) | 协作式取消 | `cancel()` 只登记标志返回 `null`；`internal object Cancellations` 进程级，按 `localTaskId(mediaUrl)` 对齐 |
+| [:259](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L259) | `FORBIDDEN_HEADERS` | `cookie / authorization / proxy-authorization / set-cookie` 二次过滤 `headersHint`——协议脱敏是引擎侧的约定，本机不白拿 |
+| [LocalTaskSnapshot.kt:24](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L24) | 界面镜像 `Task` | `id = "local-" + …`(:48)、`progress.phase = "local_direct"`(:52 起)、`error` 恒 `null`、`postActions = emptyList()`、`cookiePolicy = NONE` |
+| [LocalFailures.kt:41](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L41) | 三条本地新判定 | `unsupportedLink`(:41) / `linkUnloadable`(:44) / `disk`(:50)，措辞一律自证「客户端本地判定」 |
+| [HomeViewModel.kt:245](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L245) | 按执行者选后端 | `downloadBackend()`；[:157](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L157) `selectDownloadExecutor()` 落盘 + 取消在跑的 `downloadJob` + 回 `Idle`；[:304](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L304) 本地支按 `localTaskId` 找回直链，找不回就写失败阶段，不让按钮变哑 |
 
 ### 21.2 三条设计决定
 
@@ -2411,7 +2417,7 @@ Range 续传（`bytes=40-`）且断点计入已下、服务端不理 Range 时�
 ### 21.5 遗留（登记，不掩饰）
 
 1. **本地模式下「合并音视频」复选框是空操作**（P1）。`FormatCard` 的合并行不分执行者一直显示
-   （[HomeScreen.kt:535](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L535)），
+   （[HomeScreen.kt:535](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L535)），
    而 `ViaLocal` 不收 `postActions`，用户勾与不勾结果一样。裁决 1–4 没授权我改那一屏的控件，
    所以本轮只登记。可选的一行修法是「本地模式下该行不渲染」，另一条是「渲染但禁用 + 说明」——
    要哪条请指。
@@ -2419,7 +2425,7 @@ Range 续传（`bytes=40-`）且断点计入已下、服务端不理 Range 时�
    3 组变异体 + assembleDebug」。真机上「切到本地直链 → 嗅探 → 画质表 → 下载 → `.part` 续传」
    的链路，以及 `outputDir` 落在 selfcheck 白名单目录时的真实写盘权限，都还没演过。
 3. **本地链路不校验 `outputDir`**。目录取自引擎 `selfcheck.outputDirAllowlist` 的第一项
-   （快照 getter [HomeViewModel.kt:87](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L87)，
+   （快照 getter [HomeViewModel.kt:87](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L87)，
    嗅探 :181、画质表 :223 同源），本机没再做一次「这个目录还在不在白名单里」的复核。
    引擎换过地址或自检结果过期时，写盘会失败成
    `Local(DISK)`——失败可辨，但那是兜底而不是约束。
@@ -2439,17 +2445,17 @@ JVM 单测看不见的 P0（嗅探 `Range` 被回放成「1 字节即完成」�
 
 | # | 裁决 | 落地 | 关键点 |
 | --- | --- | --- | --- |
-| 1 | 有任务在跑时切换不能打断/丢状态 | [HomeViewModel.kt:188](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L188) `selectDownloadExecutor()` 先看 `downloadInFlight`（:100，`Preparing \|\| Running`），为真直接 `return`；[HomeScreen.kt:279](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L279)/[:285](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L285) 两颗按钮 `enabled = !state.downloadInFlight`；[:295](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L295) 换用 [strings.xml:24](file:///E:/code/android/BrowseGuardVid/android/app/src/main/res/values/strings.xml#L24)「有任务正在进行：等它结束或取消后才能切换执行者」并用错误色 | 选「拒绝切换」而不是「排队到任务结束」：排队会让开关显示的目标与实际执行者不一致；拒绝时当前任务、进度、`.part` 全部原样 |
-| 2 | 本地句柄必须 `local_` 前缀，HTTP 入口硬拒 | [LocalTaskSnapshot.kt:54](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L54) `LOCAL_TASK_PREFIX = "local_"`、[:57](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L57) `localTaskId()`、[:61](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L61) `isLocalTaskId()`；[HttpDownloader.kt:77](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L77) `start` 与 [:109](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L109) `cancel` 入口调 `requireRemoteTaskId()`（[:122](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L122) 定义，`require` 抛 `IllegalArgumentException`，**先于任何网络调用**） | 用 `require` 而不是返回 `BackendFailure`：拿错句柄是编程错误，不是运行时可恢复的失败，不能被 UI 吞成一行错误文案 |
-| 3 | 只有一个直链时自动选中 | [HomeViewModel.kt:304](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L304) `selectedFormatId = event.formats.singleOrNull()?.formatId` | 多行仍保持「未选中」让用户点；只有恰好一行时按钮直接可点 |
-| 4 | 缺口①：本地不许假装合并 | UI：[HomeViewModel.kt:104](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L104) `mergeAvailable = executor == ENGINE`；[:331](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L331) `toggleMerge` 第二道门；[:372](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L372) 本地支若勾选则记 `merge_ignored executor=local_direct reason=no_ffmpeg` 后忽略；[HomeScreen.kt:540](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L540) 起整行 `clickable/Checkbox` 置灰 + [:563](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L563) 提示 [strings.xml:57](file:///E:/code/android/BrowseGuardVid/android/app/src/main/res/values/strings.xml#L57)「本地模式不支持合并，请连接引擎」。后端：[DownloadBackend.kt:80](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L80) `ViaLocal` **类型上没有** `postActions` 字段，组错请求编译期就红；引擎后端收到 `ViaLocal` 在 [HttpDownloader.kt:74](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L74) `error()` 炸出 | 「禁用 + 说明」而不是隐藏：隐藏会让用户以为功能消失；置灰能说明「为什么这里不能勾」。审计行只在真的勾着切过去时出现，切到本地模式时 `mergeSelected` 已被清掉，正常路径不刷日志 |
-| 5 | 缺口②：任何写盘先过沙箱，不允许 `DISK` 兜底 | [LocalOutputSandbox.kt:21](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalOutputSandbox.kt#L21) 用 `canonicalFile` 做包含判定（`..`、软链都会被解析）；[LocalDirectDownloader.kt:81](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L81) 在 `openForWrite` 之前调用；不通过 → [BackendFailure.kt:55](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt#L55) 新增 `OUTPUT_DIR_REJECTED`（[LocalFailures.kt:55](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L55)），**一个字节都不写**；白名单根由 [DownloadBackend.kt:83](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L83) `ViaLocal.allowedRoots` 传入，[HomeViewModel.kt:353](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L353) 从 `localSandboxRoot` 取值 | 空白名单、白名单根不存在、目标逃出根，三种都拒。`DISK` 仍保留，但只表示「沙箱已通过、真写时 IO 失败」，不再承担「目录不对」 |
+| 1 | 有任务在跑时切换不能打断/丢状态 | [HomeViewModel.kt:188](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L188) `selectDownloadExecutor()` 先看 `downloadInFlight`（:100，`Preparing \|\| Running`），为真直接 `return`；[HomeScreen.kt:279](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L279)/[:285](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L285) 两颗按钮 `enabled = !state.downloadInFlight`；[:295](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L295) 换用 [strings.xml:24](file:///E:/code/android/TracelessGlimpse/android/app/src/main/res/values/strings.xml#L24)「有任务正在进行：等它结束或取消后才能切换执行者」并用错误色 | 选「拒绝切换」而不是「排队到任务结束」：排队会让开关显示的目标与实际执行者不一致；拒绝时当前任务、进度、`.part` 全部原样 |
+| 2 | 本地句柄必须 `local_` 前缀，HTTP 入口硬拒 | [LocalTaskSnapshot.kt:54](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L54) `LOCAL_TASK_PREFIX = "local_"`、[:57](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L57) `localTaskId()`、[:61](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L61) `isLocalTaskId()`；[HttpDownloader.kt:77](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L77) `start` 与 [:109](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L109) `cancel` 入口调 `requireRemoteTaskId()`（[:122](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L122) 定义，`require` 抛 `IllegalArgumentException`，**先于任何网络调用**） | 用 `require` 而不是返回 `BackendFailure`：拿错句柄是编程错误，不是运行时可恢复的失败，不能被 UI 吞成一行错误文案 |
+| 3 | 只有一个直链时自动选中 | [HomeViewModel.kt:304](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L304) `selectedFormatId = event.formats.singleOrNull()?.formatId` | 多行仍保持「未选中」让用户点；只有恰好一行时按钮直接可点 |
+| 4 | 缺口①：本地不许假装合并 | UI：[HomeViewModel.kt:104](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L104) `mergeAvailable = executor == ENGINE`；[:331](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L331) `toggleMerge` 第二道门；[:372](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L372) 本地支若勾选则记 `merge_ignored executor=local_direct reason=no_ffmpeg` 后忽略；[HomeScreen.kt:540](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L540) 起整行 `clickable/Checkbox` 置灰 + [:563](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L563) 提示 [strings.xml:57](file:///E:/code/android/TracelessGlimpse/android/app/src/main/res/values/strings.xml#L57)「本地模式不支持合并，请连接引擎」。后端：[DownloadBackend.kt:80](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L80) `ViaLocal` **类型上没有** `postActions` 字段，组错请求编译期就红；引擎后端收到 `ViaLocal` 在 [HttpDownloader.kt:74](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/HttpDownloader.kt#L74) `error()` 炸出 | 「禁用 + 说明」而不是隐藏：隐藏会让用户以为功能消失；置灰能说明「为什么这里不能勾」。审计行只在真的勾着切过去时出现，切到本地模式时 `mergeSelected` 已被清掉，正常路径不刷日志 |
+| 5 | 缺口②：任何写盘先过沙箱，不允许 `DISK` 兜底 | [LocalOutputSandbox.kt:21](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalOutputSandbox.kt#L21) 用 `canonicalFile` 做包含判定（`..`、软链都会被解析）；[LocalDirectDownloader.kt:81](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L81) 在 `openForWrite` 之前调用；不通过 → [BackendFailure.kt:55](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt#L55) 新增 `OUTPUT_DIR_REJECTED`（[LocalFailures.kt:55](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L55)），**一个字节都不写**；白名单根由 [DownloadBackend.kt:83](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/DownloadBackend.kt#L83) `ViaLocal.allowedRoots` 传入，[HomeViewModel.kt:353](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L353) 从 `localSandboxRoot` 取值 | 空白名单、白名单根不存在、目标逃出根，三种都拒。`DISK` 仍保留，但只表示「沙箱已通过、真写时 IO 失败」，不再承担「目录不对」 |
 
 **必须点名的一处语义偏差（请确认）**：裁决原文要求「先过 `BGV_OUTPUT_DIR_ALLOWLIST` 的沙箱校验」。
 该环境变量由**引擎进程**解析（`engine/main.py` 的 `_load_output_dir_allowlist`，默认 `%USERPROFILE%\Videos\BGV`），
 是一串**电脑侧**路径；Android 上既不存在这些目录，也不应把电脑路径当手机写盘授权。
 因此本轮把它落地为**手机侧等价物**：由界面层声明应用专属外部存储的 Download 目录
-（[HomeViewModel.kt:138](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L138)，
+（[HomeViewModel.kt:138](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L138)，
 `getExternalFilesDir(DIRECTORY_DOWNLOADS)`，不需要任何存储权限），下载器只接受落在该根之内的路径。
 如果你要的是「复用它字面上的那份环境变量」，这在 Android 上无法成立；如果你要的是「写盘必须有白名单约束」，
 本轮的实现满足，且比「拿引擎白名单第一项直接当写盘根」（§21 的做法）更严——那份列表被手机忽略之后，
@@ -2464,13 +2470,13 @@ JVM 单测看不见的 P0（嗅探 `Range` 被回放成「1 字节即完成」�
 
 | # | 动作 | 现场观察 | 截图 |
 | --- | --- | --- | --- |
-| 1 | 设置区切「本地直链下载」 | 选中态落在本地按钮，合并行立即置灰并出现「本地模式不支持合并，请连接引擎」 | [m4c-1-local-mode.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-1-local-mode.png) |
-| 2 | 输入 `page-bulk.html` → 嗅探 | 引擎返回单条 MP4；画质表**只有一行且自动选中**，合并复选框未勾且不可点 | [m4c-2-single-format-merge-off.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-2-single-format-merge-off.png) |
-| 3 | 点下载 | 进度跳动：「1.1 MB / 4.0 MB · 212.9 KB/s · 剩余 13s」 | [m4c-3-progress.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-3-progress.png) |
-| 4 | 中途取消 | 卡片转「已取消」；`ls -l` 两次（间隔 3s）`.part` 均为 **2,498,560 字节**，字节数冻结 | [m4c-4-cancelled.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-4-cancelled.png) |
-| 5 | 再点下载 | 服务端日志出现 `range=bytes=2498560-`（与 `.part` 一致），不是整段重下 | [m4c-5-resume-start.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-5-resume-start.png) |
-| 6 | 跑完 | 产物 4,218,400 字节，`md5 796c7026e90862595a340eedbd153883` 与 fixture 相同；`.part` 已消失 | [m4c-6-done.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-6-done.png) |
-| 7 | 下载中切执行者 | 两颗执行者按钮同时置灰，提示换成「有任务正在进行：等它结束或取消后才能切换执行者」，当前进度不动 | [m4c-7-switch-busy.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-7-switch-busy.png) |
+| 1 | 设置区切「本地直链下载」 | 选中态落在本地按钮，合并行立即置灰并出现「本地模式不支持合并，请连接引擎」 | [m4c-1-local-mode.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-1-local-mode.png) |
+| 2 | 输入 `page-bulk.html` → 嗅探 | 引擎返回单条 MP4；画质表**只有一行且自动选中**，合并复选框未勾且不可点 | [m4c-2-single-format-merge-off.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-2-single-format-merge-off.png) |
+| 3 | 点下载 | 进度跳动：「1.1 MB / 4.0 MB · 212.9 KB/s · 剩余 13s」 | [m4c-3-progress.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-3-progress.png) |
+| 4 | 中途取消 | 卡片转「已取消」；`ls -l` 两次（间隔 3s）`.part` 均为 **2,498,560 字节**，字节数冻结 | [m4c-4-cancelled.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-4-cancelled.png) |
+| 5 | 再点下载 | 服务端日志出现 `range=bytes=2498560-`（与 `.part` 一致），不是整段重下 | [m4c-5-resume-start.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-5-resume-start.png) |
+| 6 | 跑完 | 产物 4,218,400 字节，`md5 796c7026e90862595a340eedbd153883` 与 fixture 相同；`.part` 已消失 | [m4c-6-done.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-6-done.png) |
+| 7 | 下载中切执行者 | 两颗执行者按钮同时置灰，提示换成「有任务正在进行：等它结束或取消后才能切换执行者」，当前进度不动 | [m4c-7-switch-busy.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-7-switch-busy.png) |
 
 落盘路径（scoped storage 的直接证据）：`/storage/emulated/0/Android/data/com.hpu.browseguard/files/Download/bulk.mp4`，
 `adb shell` 可见（`-rw-rw---- u0_a4 ext_data_rw 4218400`）；`run-as` 列该目录得到 **Permission denied**——
@@ -2492,7 +2498,7 @@ MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
 ### 22.3 设备暴露的新 P0：嗅探 `Range` 被回放成「1 字节即完成」
 
 **现象**：第一次本地下载，界面显示「下载完成 已下载 1 B」，沙箱里的 `bulk.mp4` 只有 **1 字节**。
-证据：[m4c-0-range-bug-1byte.png](file:///E:/code/android/BrowseGuardVid/.screenshots/m4c-0-range-bug-1byte.png)
+证据：[m4c-0-range-bug-1byte.png](file:///E:/code/android/TracelessGlimpse/.screenshots/m4c-0-range-bug-1byte.png)
 与上面服务端 `12:47:15 range=bytes=0-0`。
 
 **根因**：引擎嗅探时 Playwright 会先发 `Range: bytes=0-0` 探测（服务端日志里同一轮还有
@@ -2500,9 +2506,9 @@ MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
 `headersHint` 的全部非黑名单头，服务端如实回 `206 + 1 字节`，下载器又按 206 的长度收尾——
 **协议上完全合法，语义上是错的**。JVM 单测里 fixture 的 `headersHint` 没带 Range，所以看不见。
 
-**修法**：[LocalDirectDownloader.kt:268](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L268)
+**修法**：[LocalDirectDownloader.kt:268](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalDirectDownloader.kt#L268)
 把 `range` / `if-range` 加进 `FORBIDDEN_HEADERS`，Range 只能由下载器按 `.part` 自己的字节数生成。
-回归测试 [LocalDirectDownloaderTest.kt:347](file:///E:/code/android/BrowseGuardVid/android/app/src/test/java/com/hpu/browseguard/LocalDirectDownloaderTest.kt#L347)
+回归测试 [LocalDirectDownloaderTest.kt:347](file:///E:/code/android/TracelessGlimpse/android/app/src/test/java/com/hpu/browseguard/LocalDirectDownloaderTest.kt#L347)
 `sniffedRangeHintIsNotReplayedAsTheDownloadRequest`：hint 里塞 `range`/`if-range`，断言录制到的请求两个头都为 `null`
 且落盘是完整 100 字节。修复后设备复跑即 `12:49:28 range=-`。
 
@@ -2526,7 +2532,7 @@ MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
 
 | # | §21 原文 | 现状 | 原因 |
 | --- | --- | --- | --- |
-| 1 | `LocalTaskSnapshot` 的 `id = "local-" + …`（:48） | `local_` 前缀，[LocalTaskSnapshot.kt:54](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L54) | 裁决 2 明确要求 `local_`；下划线也让前缀判定不会与 UUID 混淆 |
+| 1 | `LocalTaskSnapshot` 的 `id = "local-" + …`（:48） | `local_` 前缀，[LocalTaskSnapshot.kt:54](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalTaskSnapshot.kt#L54) | 裁决 2 明确要求 `local_`；下划线也让前缀判定不会与 UUID 混淆 |
 | 2 | `FORBIDDEN_HEADERS` 只有 `cookie / authorization / proxy-authorization / set-cookie`（:259） | 6 项，增加 `range / if-range`（:268） | §22.3 设备 P0 |
 | 3 | `selectDownloadExecutor()`「落盘 + 取消在跑的 `downloadJob` + 回 `Idle`」（:157） | 有任务在跑时**拒绝切换**，不取消、不回 Idle（:188–:191） | 裁决 1；取消会丢当前任务状态，按钮置灰 + 提示是用户要的「不许瞬断」 |
 | 4 | `ViaLocal` 只带 `link + outputDir`（:74） | 多一个 `allowedRoots`（:80–:83） | 缺口②：写盘根必须显式声明并被校验 |
@@ -2555,13 +2561,13 @@ MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
 
 | 文件 | 职责 | 关键点 |
 | --- | --- | --- |
-| [EngineConfig.kt:28](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/EngineConfig.kt#L28) | `EngineSettings` 接口 | 只暴露 `baseUrl` / `save` / `downloadExecutor`；`EngineConfig` 实现它。§15.3 早就指出 ViewModel 层单测的门槛是 `Application` + `SharedPreferences`，这一步先把设置这道门拆掉，第 ② 小步的 FakeBackend 行为单测才不用拖 Android 运行时 |
-| [BackendProvider.kt:9](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendProvider.kt#L9) | `SniffExecutor` 枚举 | `ENGINE` / `LOCAL_WEBVIEW`。**不持久化、无界面选项**：裁决 2 说嗅探固定引擎，这里只留注入接缝，避免在细节 4 定案前造出一个半截设置 |
-| [:20](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendProvider.kt#L20) | `BackendProvider` 接口 | 三个出口：`localSandboxRoot`、`sniff(executor)`、`download(executor)`。界面只依赖它，不 import 任何实现 |
-| [AppContainer.kt:21](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/AppContainer.kt#L21) | 组装根 | 全仓唯一 new 具体后端的地方；持有 `settings`、共享 `EngineClient`、沙箱根。`sniff()`(:35) 按执行者选 `HttpSniffer` / `LocalWebViewSniffer`，`download()`(:40) 选 `HttpDownloader` / `LocalDirectDownloader` |
-| [LocalWebViewSniffer.kt](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalWebViewSniffer.kt) | WebView 嗅探空壳 | 被选中时只发一条 `SniffEvent.Failed(Local(WEBVIEW_UNAVAILABLE))`；`WEBVIEW_UNAVAILABLE` 在 [BackendFailure.kt:58](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt#L58) 首次有了生产者，文案见 [LocalFailures.kt:58](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L58)「请连接电脑」 |
-| [HomeViewModel.kt:135](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L135) | 纯 `ViewModel` | 构造只收 `EngineSettings` + `BackendProvider`；不再继承 `AndroidViewModel`。嗅探走 [:230](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L230) `backends.sniff(SniffExecutor.ENGINE)`；下载走 [:268](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L268)/[:375](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L375)/[:386](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L386) `backends.download(...)`；装配口在 [:419](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L419) |
-| [MainActivity.kt:13](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/MainActivity.kt#L13) | 组装根的宿主 | `by lazy { AppContainer(applicationContext) }`；[HomeScreen.kt:70](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L70) `HomeRoute(container)` 用工厂取 ViewModel |
+| [EngineConfig.kt:28](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/EngineConfig.kt#L28) | `EngineSettings` 接口 | 只暴露 `baseUrl` / `save` / `downloadExecutor`；`EngineConfig` 实现它。§15.3 早就指出 ViewModel 层单测的门槛是 `Application` + `SharedPreferences`，这一步先把设置这道门拆掉，第 ② 小步的 FakeBackend 行为单测才不用拖 Android 运行时 |
+| [BackendProvider.kt:9](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendProvider.kt#L9) | `SniffExecutor` 枚举 | `ENGINE` / `LOCAL_WEBVIEW`。**不持久化、无界面选项**：裁决 2 说嗅探固定引擎，这里只留注入接缝，避免在细节 4 定案前造出一个半截设置 |
+| [:20](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendProvider.kt#L20) | `BackendProvider` 接口 | 三个出口：`localSandboxRoot`、`sniff(executor)`、`download(executor)`。界面只依赖它，不 import 任何实现 |
+| [AppContainer.kt:21](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/AppContainer.kt#L21) | 组装根 | 全仓唯一 new 具体后端的地方；持有 `settings`、共享 `EngineClient`、沙箱根。`sniff()`(:35) 按执行者选 `HttpSniffer` / `LocalWebViewSniffer`，`download()`(:40) 选 `HttpDownloader` / `LocalDirectDownloader` |
+| [LocalWebViewSniffer.kt](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalWebViewSniffer.kt) | WebView 嗅探空壳 | 被选中时只发一条 `SniffEvent.Failed(Local(WEBVIEW_UNAVAILABLE))`；`WEBVIEW_UNAVAILABLE` 在 [BackendFailure.kt:58](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/BackendFailure.kt#L58) 首次有了生产者，文案见 [LocalFailures.kt:58](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/data/backend/LocalFailures.kt#L58)「请连接电脑」 |
+| [HomeViewModel.kt:135](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L135) | 纯 `ViewModel` | 构造只收 `EngineSettings` + `BackendProvider`；不再继承 `AndroidViewModel`。嗅探走 [:230](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L230) `backends.sniff(SniffExecutor.ENGINE)`；下载走 [:268](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L268)/[:375](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L375)/[:386](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L386) `backends.download(...)`；装配口在 [:419](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L419) |
+| [MainActivity.kt:13](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/MainActivity.kt#L13) | 组装根的宿主 | `by lazy { AppContainer(applicationContext) }`；[HomeScreen.kt:70](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeScreen.kt#L70) `HomeRoute(container)` 用工厂取 ViewModel |
 
 三条设计决定：
 
@@ -2574,7 +2580,7 @@ MuMu 上 uiautomator 退出时的已知噪声，不对应本应用进程。
    `BackendProvider.sniff(LOCAL_WEBVIEW)` 被选中并有单测钉住失败形状；
    第 ③ 小步只需要换实现体，不用再动装配结构。
 
-**仍未解开的门**：`sniff()` 开头仍要求 `Connection.Connected`（[HomeViewModel.kt:215](file:///E:/code/android/BrowseGuardVid/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L215)），
+**仍未解开的门**：`sniff()` 开头仍要求 `Connection.Connected`（[HomeViewModel.kt:215](file:///E:/code/android/TracelessGlimpse/android/app/src/main/java/com/hpu/browseguard/ui/HomeViewModel.kt#L215)），
 因为 `SniffRequest.outputDir` 取的是引擎自检白名单。所以今天 UI 走不到 `LOCAL_WEBVIEW`；
 全本地模式的嗅探入口属于第 ③ 小步 + 细节 4 的 UI 裁决。
 
@@ -2887,3 +2893,199 @@ device_download_with_cookie=done bytes=61456 name=protected.mp4
 - media_server：按命令行核对 PID 14196（`python -m testsupport.media_server --port 8731`）后终止，`8731` 监听已消失。
 - `adb reverse --remove tcp:8731` 已执行，reverse 列表为空。
 - 未启动引擎进程；App 与测试 APK 保留在 MuMu 上，便于下一轮复验。
+
+---
+
+## 27. M7：内置浏览器 + 本机 HLS 逐段下载（2026-11-03）
+
+对应提交 `03ee3f9`。这一轮把「纯手机模式」从"能下直链"推到"能自己啃下真实站点的 HLS"，
+并把第一轮真机验收暴露的四条缺陷一次修掉。
+
+### 27.1 落地形态
+
+| 件 | 落点 | 语义 |
+| --- | --- | --- |
+| 三段式浏览器界面 | `ui/BrowserScreen.kt` | 地址栏 + WebView + 嗅探抽屉 |
+| 两条发现路汇一个控制器 | `assets/bgv_browser_hook.js`、`data/browser/` | JS Hook 与 `shouldInterceptRequest` 都写进 `BrowserSniffController`；候选去重键是去掉 fragment 的完整 URL，查询串保留（签名直链靠它） |
+| HLS 解析与逐段下载 | `data/backend/hls/HlsPlaylistParser.kt`、`HlsDownloader.kt` | master/media 清单、EXTINF、密钥 URI；逐段直连下载拼出 `.ts` |
+| Cookie 审计 | `data/backend/CookieProvider.kt` | 按域名抑制 + 两条汇总行（见 §27.3） |
+| 本机不上行协议 | 沿用 §21 的 `TaskNeverGoesOnTheWireTest` | 本机侧不出现 `EngineClient` / `encode(` |
+
+### 27.2 第一轮真机暴露的四条缺陷
+
+| # | 现象 | 根因 | 修法 | 钉住它的测试 |
+| --- | --- | --- | --- | --- |
+| 1 | 点第一张卡下错集 | 内联配置里 `url` 是本集、`url_next` 是下一集，同域名同画质只差几毫秒；按发现时间倒序会把下一集顶到前面 | 排序改 HLS 优先 → 画质高在前 → 同画质按发现先后（`BROWSER_CANDIDATE_ORDER`） | `BrowserCandidateOrderTest` |
+| 2 | 抽屉挡住播放器 | 自动展开吃满屏 | 自动展开只留 220dp（刚好露第一张卡），把手 60–480dp 自由拖拽，点把手在收起与默认高度间切换 | 只能真机钉 |
+| 3 | 广告劫持主框架 | WebView 跟站外导航走 | 新增 `NavigationPolicy`：站外一律丢弃，站内要求用户手势（同站重定向放行），静默吞掉时留一行 `navigation_blocked url=…` | `BrowserNavigationPolicyTest` |
+| 4 | Cookie 日志暴击 | 一条 HLS 要读 703 次 Cookie，逐次打行把 logcat 环形缓冲冲干净，挤掉同一轮里别的证据 | 按域名抑制：`cookie_blocked` 每域名一行，`cookie_read` 只在「有没有值」翻转时留行，总数交给收尾汇总 | `CookieAuditStormTest` |
+
+### 27.3 汇总行按会话归属分名字
+
+下载结束（含失败与取消，挂在 `Flow.onCompletion`）写 `cookie_audit_summary blocked=N injected=M`；
+浏览器会话关闭写 `browser_close_summary`。排查「这一站的 Cookie 为什么没注入」时，
+`blocked>0` 是读了但被门槛拦下，**这一行整个缺失**才是根本没读（这一站没探出清单）。
+审计行只出现域名与 `present|absent`，Cookie 值不进 `headersHint`、不上行引擎，未授权连本机 CookieStore 都不读。
+
+### 27.4 真机取证（当轮记录）
+
+`bjjdsgjg.com` 全链路：703 段 TS 与 CDN 原段**字节级一致**、设备与电脑 MD5 相同、全片解码通过；
+`browser_close_summary blocked=4 injected=0`。JVM 回归当轮记为 209 项全绿。
+WebView 与抽屉那几条只能在真机钉的接线，用 `BrowserWiringTest` 扫源码 + 真机复跑双向兜住。
+
+### 27.5 遗留
+
+1. **TS→MP4 本轮不做**（VLC 能放 `.ts`），当轮把它列为「后续接入 FFmpeg 转封装的首发任务」——
+   M8 最终以平台 `MediaExtractor`/`MediaMuxer` 实现，**没有引入 FFmpeg**（见 §28）。
+2. blob/MSE 只提示不可下载，M8 补「截获到底层 HLS 清单即给强行下载入口」。
+
+---
+
+## 28. M8：HLS 并发分片 + TS→MP4 纯拷贝转封装 + 音频完整性门禁（2026-11-04）
+
+对应提交 `0c36f23` → `5b1bb75` → `97f4088` → `83b1c97` → `376a0a8` → `2e76f87` → `b2639fe`。
+触发点是真机报「转出来的 MP4 没声音」，一轮加门禁接着被打脸一轮，直到 §28.5 露出测量边界。
+
+### 28.1 落地形态
+
+| 件 | 语义 |
+| --- | --- |
+| `HlsDownloader` 并发 | 固定 4 个槽位、按清单顺序落盘，内存峰值钉在 4 段以内；每段 1 次正常 + 2 次退避重试，401/403/404/405/410 不重试；密钥按 URI 缓存并串行化获取，避免并发重复打同一个密钥 URL。`HlsConcurrentDownloadTest` |
+| `TsRemuxer` | `MediaExtractor` + `MediaMuxer` **纯拷贝**：不合并、不重编码。PTS 全局归零后按轨单调夹紧（`PtsGate`）——B 帧重排放行，跳变超阈值立即止损 |
+| AAC 解码配置 | 容器不给 csd 时从 ADTS 头合成 `AudioSpecificConfig`（`AdtsAudioConfig`） |
+| 时长复核 | 产物时长按清单 EXTINF 合计复核，偏短/偏长/不可读一律降级保留 `.ts` |
+| 删除纪律 | **只有 `.mp4` 已经落地，才允许删源 `.ts`**；失败/取消清理半成品；磁盘余量不足直接跳过转封装 |
+| 降级出口 | 只在完成卡留一行小字，不弹框：`download_remux_fallback`（通用）/ `download_remux_fallback_audio`（音频类，明说「已保留原格式（含音频）」） |
+| 审计行 | `hls_download_done`（段数/字节/重试）+ `hls_remux_done` / `hls_remux_skipped` |
+
+### 28.2 门禁链与每条的设计意图
+
+探测阶段两条不过就不写：`trackGate`（探不到音频轨 → `no_audio_track`）、`csdGate`（AAC 无可用 csd 且合成失败 → `aac_csd_missing`）。
+写入与复检阶段的六道：
+
+| 门禁 | 判据 | 为什么要这一条 / 为什么阈值不许动态 |
+| --- | --- | --- |
+| `sampleGate` | 写出的音频样本数为 0 → `audio_empty` | 视频正常但音频 0 样本，就是「只有画面」的哑巴文件 |
+| `outputGate` | 复开产物没有音轨，或首样本 0 字节 → `output_audio_missing` | 只看写入计数会漏掉 muxer 静默丢弃 |
+| `avDurationGate` | 音视频末帧 PTS 差超容差 → `output_av_duration_mismatch` | 容差**按分片时长缩放**（`avToleranceUs(segmentDurationMs)`）而非固定 5s：TS 末帧天然按分片对齐，固定值会误杀短流 |
+| `timeSliceGate` + `densityGate` | 10s 窗口：≥3 个连续空窗 / >30% 空窗 / 密度低于前三窗基准 20% → `audio_coverage_too_low`、`audio_density_too_low` 等 | 抓「整段丢音但时间戳还在」的唯一手段——静默丢帧不会让总时长变短 |
+| `audioSampleGapGate` | 相邻样本间隔 > 5,000,000µs → `audio_sample_gap_too_large` | 上限**固定**，不随 `#EXT-X-TARGETDURATION` 放宽：动态容差等于给长分片注水文件发通行证 |
+| `contentRatioGate` | 按 ADTS 头逐帧数出真实内容时长，不足视频 PTS 跨度 70% → `audio_content_too_short` | 分母取视频跨度而非 moov 时长，因为被改写的正是后者；帧头读不出（`contentUs=0`）时**放行**——「认不出」不等于「没有声音」 |
+
+`b2639fe` 的关键取证：**只靠时间戳抓不住注水**。真机注水流把稀疏音频均匀重铺（最大间隔 0.371s、
+每个 10s 窗口都有样本、密度贴合基准），间隔/切片/密度三条全过——所以必须测内容时长。
+
+### 28.3 降级理由全枚举登记（`2e76f87`）
+
+漏登记的 `audio_track_rejected`、`audio_pts_negative` 会走「系统播放器可能不认这个格式」，
+而实际丢的只是 MP4 的音频、`.ts` 完好带声——**文案引起误判就是正确性缺陷**。
+两条理由常量化并纳入 `AUDIO_FALLBACK_REASONS`，另加一条 JVM 钉子扫 `data/backend/remux/` 里的
+`"...audio..."` 字面量：以后新增音频类拒绝理由忘记登记，测试直接转红。
+
+### 28.4 真机双向取证
+
+- **拦截侧**：一条 456 段的哑巴流被门禁拦下，`.ts` 保留、给出含音频文案。
+  合成注水流（40.2s 视频 / 5.04s 音频）输出 `reason=audio_content_too_short srcFrames=217 srcContentMs=5038 srcSpanMs=39729`，
+  MP4 删除、`.ts` 保留 3,421,976B、提示「转封装失败，已保留原格式（含音频）」。
+- **不误杀侧**：同期干净片 `srcContentMs=78947 srcSpanMs=78818`（100.2%）照常 `hls_remux_done`；正常流仍秒转带声 MP4。
+- 当轮 JVM 265 项全绿（含 PTS 跳 10s 必拦、70% 边界、注水流被内容门禁拦下）。
+
+### 28.5 遗留：六道门禁全绿，用户仍报无声
+
+门禁量的是「样本在不在、时间戳对不对、密度塌不塌」，**量不出「一个样本里并了几帧、载荷还带着 ADTS 头」**。
+这不是门禁的 bug，是测量边界：要回答它，得先能数出 AU。→ §29。
+
+---
+
+## 29. M9：按 AU 拆分重封，`mp4a` 合规结案（2026-11-05）
+
+对应提交 `97d254e`（本体）与 `27ed609`（真机验收通过 + 撤除取证层）。项目到此收官。
+
+### 29.1 病灶定位（真机 862s 流取证定案）
+
+源音频**完全真实**：40411 个 AU、内容 862.08s、PCM 峰值 32768。问题在封装形状——
+`MediaExtractor` 读 AAC-in-TS 时**每个样本并了 15.47 个 AU 且载荷仍带 ADTS 头**，原样抄进 MP4
+就是不合规的 `mp4a`：Android 自带解码器容忍（每输入解出 15864 点 PCM），
+严格按「一样本一 AU、不带 ADTS 头」走的解码器（相册 / 网页 / 电视盒子 / 剪映）只解出每样本第一帧，
+862s 只剩 55.7s，听感即「没声音」。此时时间戳无损、密度均匀、首尾对齐 → §28.2 六道门禁全绿。
+
+### 29.2 修法与六条设计决定
+
+1. `AudioUnitWriter` 逐样本剥 ADTS 头（7/9 字节按 `protection_absent` 判），**一帧一个样本**写入 muxer。
+2. **时间戳不跟源样本 PTS 走**，而从第一个音频样本的起点按 AU 序号匀铺（1024/采样率）。
+   为什么：并包数量在 15/16 之间抖动，跟源走必然出现时间戳倒退，会把正常流误判成坏流；
+   匀铺让单调性由构造保证，音频总时长等于「AU 数 × 1024/采样率」这个绝对量。
+   真有几十秒空洞的流会因此提前收尾，由末尾对齐门禁拦下；注水则由内容比例门禁拦下。
+3. 仅在「AAC + 采样率确定 + 首样本确为 ADTS」时启用拆分（`splitsAudioUnits`），条件不满足维持原样搬运。
+   复检对拆分产物声明「一样本一 AU」（`countOneAuPerSample`），否则裸载荷数出 0 帧会被内容比例与密度两条门禁误杀。
+4. 容器把**整串 ADTS 头当 `csd-0`** 交回来时（同一病灶的另一张脸）换成重新合成的裸 `AudioSpecificConfig`——
+   样本剥了头而配置还留着 ADTS，同样是混合封装（`replacesDecoderConfig`）。
+5. `csdBytesOf` 改为 `duplicate()` 后读取：`MediaFormat` 给回来的就是它自己那只缓冲，
+   就地 `get` 会把 position 顶到末尾，随后 `mux.addTrack(同一个 format)` 读到 remaining=0，
+   MPEG4Writer 报「Missing codec specific data / 0 frames to dump timeStamps in Audio track」，整条音轨一帧都不写。
+   上一轮真机把带声 `.ts` 判成降级即由此而来。
+6. 每帧另开一只 `slice` 视图：position/limit 只能各用一次，复用同一只会在第二帧
+   `newPosition(47) > limit(40)` 当场炸掉——真机每个样本并十几帧，第一帧之后就是这条路径。
+   这条是 JVM 复现的，也正是「只有真机才会暴露」那类 bug；把写入器做成 `sink` 回调式，就是为了让它能在 JVM 里逐帧断言。
+
+### 29.3 第七道门禁
+
+`auCountGate`：源 ADTS 帧数 == 写入器拆出的 AU 数 == 产物复开样本数，**三方对账**——
+这是唯一能直接看见「有声音被吃掉」的判据。任一样本剥不出整帧则整条放弃（`audio_au_split_failed`），
+绝不留半拆半不拆的混合封装。两条新理由都登记进音频降级全枚举。
+
+### 29.4 真机验收（同一条 862s 链接，MuMu）
+
+`hls_remux_done` 触发：`outSamples == srcFrames == 40411`、`outMaxGapMs=21`、`outAdtsStartSamples=0`，
+源与产物的 `ContentMs` 逐毫秒一致。并包 `mp4a` 已变成严格合规的「一样本一 AU、不带 ADTS 头」。
+
+### 29.5 临时诊断层整块撤除（−559/+24 行）
+
+为定位而加、验收通过即撤：`AudioDecodeProbe` 与 `hls_audio_probe` 逐帧解码探针、
+`hls_remux_shape` 形状审计行、`AudioScan` 的 `shapeMap`/`seedConfig` 与全部形状字段、
+`AdtsFrameScanner.scanShape`/`Shape`/`TINY_FRAME_BYTES`、只服务于取证的十六进制工具。
+
+保留的仍是判定链：`countFrames` 自己按 `frameAt` 走帧（与拆分共用同一套边界，
+由 `theWalkUsedForCountingIsTheSameOneUsedForSplitting` 钉住）；`src*`/`out*` 对照字段照旧进
+`hls_remux_done` / `hls_remux_skipped`；`countOneAuPerSample` 保留——它不是诊断，
+而是拆分产物过内容比例与密度两条门禁的前提。
+**反向加一条钉子**：生产代码里再出现 `logAudioDiagnostics` 或 `hls_remux_shape`，测试直接转红。
+
+### 29.6 测试数口径（避免下一轮把「变少」读成「变弱」）
+
+290 → 283：减少的 7 项正是被删除的取证层**自身的**形状测试，判定链与拆分逻辑的覆盖一项未少。
+
+现场复跑（2026-11-05，`--rerun-tasks`）：`:android:app` 283 / `:shared` 11 / `:engine-client` 12 / `:cli` 26 / `:mcp` 13，
+**合计 345 项，failures=0 errors=0 skipped=0**；引擎桩套件 235 passed。
+`assembleDebug` 通过，APK 由 34,713,172B 缩到 34,613,525B（−99,647B），全程未引入任何第三方库。
+
+### 29.7 收官时仍登记的缺口
+
+1. **带 CRC 的 ADTS 头**（每帧多 2 字节）在逐帧走查时长度少算 9 字节；真机素材未遇到，且失败路径走降级保留 `.ts`，不会产出坏文件。
+2. **HE-AAC/SBR**（2048 样本/AU）不单独识别，按 LC 的 1024 步进会给成两倍时长 → 由时长与内容比例门禁拦下并降级。
+3. 严格播放器的复核口径是用户侧 VLC/相册的实际行为；本机 `ffprobe` 的「每个音频包 duration == 1024 tick」是等价代理判据，未做设备外播放器矩阵。
+4. APK 体积对比来自增量构建产物，**没有 clean rebuild 的同口径基线**。
+5. 本地转录（FR-DL-06）从未落地，见 PRD §16。
+6. **取证截图丢失**：`.screenshots/` 的 56 个 PNG 在 `b3727c6`「删除无用文件」里整目录删除，
+   本文件 29 个 `*.png` 引用与其中 10 条绝对链接现在指不到东西；
+   `.gitignore:111` 那条注释仍然写着「验收截图不在此列——`.screenshots/` 是证据，要入」。
+   文件可从 `b3727c6^` 恢复，是否恢复由维护者决定（本文只登记，不擅自回滚别人的删除）。
+
+---
+
+## 30. 文档回写（2026-11-05）
+
+代码推到 M9 收官时，文档还封在 11-03 的 M6-6。本轮逐份盘过后按下面口径回写，
+只改「与已交付实现矛盾」和「链接指不到东西」两类，历史验收记录（`acceptance-m2`、`acceptance-m6-*`）**不改写**——
+它们描述的是当轮事实，改掉就失去了证据价值。
+
+| 文件 | 改了什么 | 为什么这条必须改 |
+| --- | --- | --- |
+| `PRD.md` | 版本升到 v0.3；新增 §6.9 本机执行者（FR-LOC-01..08）、§18 v0.3 验收增量；§13.2 路径 B 定位重写；§15 里程碑表补 M6–M9 并加状态列；§16 三条开放问题改为收敛结论；结尾重复的「开放问题」块换成指针 | §13.2 原文写「发现后通过 `POST /tasks` 提交给引擎做解析与下载」——这条已经反了：本机执行者自己下载并转封装。产品定位级的错位留着，读者会按它评估依赖面 |
+| `android/README.md` | 整篇重写 | 原文断言「未接入 Gradle 构建」「模板为 Views 栈」「M3 待办：minSdk 24→29」，三条都已是反事实 |
+| `docs/smoke-report.md` | 标题改为逐轮取证日志、§1 头部加轮次地图、补 §27–§30 | 文件早已不是 M0 冒烟单；M7/M8/M9 三轮的取证与遗留不写下来，下一次改音频链路就只能靠猜 |
+| `README.md` | 新增「本机直连下载：不连引擎也能出可播文件」一节 | 「或使用内置轻量下载能力」把转封装、音频门禁链、无 FFmpeg 三项承诺全部藏掉了 |
+| `docs/release-checklist.md` | §5 回归基线用现场复跑数字（245 → 345，引擎 235 未变）；§3 台账登记 mapping 归档与当前源码/版本名的两处不一致 | 基线数字是「对不上就是有问题」的判据，写旧数字等于把判据废掉 |
+| 全仓 127 处绝对路径 | `E:\code\android\BrowseGuardVid\…` → `TracelessGlimpse` | 11-03 改名遗留：每条链接、每条可复制命令都指到不存在的目录 |
+| `docs/PROTOCOL.md` | **不改** | 里面那行 `remux` 是引擎侧 PostAction 白名单；App 本机转封装不经协议，改它反而制造「协议里能找到本机行为」的错觉 |
+

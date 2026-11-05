@@ -140,22 +140,34 @@ INFO:     Uvicorn running on http://127.0.0.1:8730 (Press CTRL+C to quit)
 
 #### 第三关：Android 的“明文网络”安全拦截（App 专属坑）
 
-如果你**手机浏览器能打开**那个网址，但 **App 里死活连不上**，那是因为 Android 9+ 默认禁止 HTTP 明文请求，而你的 App 只放行了 `127.0.0.1`。
+**这一关现在通常不需要你动手**——包里已经放开了明文：内置浏览器要打开你自己输入的任意站点，
+而不少视频站与媒体 CDN 仍是 HTTP。所以先看一眼现场，别急着改代码。
 
-**解决方法**：让 AI（或者你自己）改一下代码：  
-找到 `android/app/src/main/res/xml/network_security_config.xml`。  
-把它改成：
+```powershell
+# 看仓库里实际打出来的配置（应该是 cleartextTrafficPermitted="true"）
+Get-Content E:\code\android\TracelessGlimpse\android\app\src\main\res\xml\network_security_config.xml
+```
 
-xml
+- **读出来是 `true`** → 不用改任何东西。这时 App 还连不上，问题在地址本身：
+  按下面的「额外提醒」检查 `http://` 前缀与局域网 IP，再回第二关确认电脑端监听的是 `0.0.0.0`。
+- **读出来是白名单形态**（只有 `127.0.0.1` / `localhost`，说明你手里是很旧的包）→ 才需要放开：
 
-<?xml version="1.0" encoding="utf-8"?>
+  ```xml
+  <?xml version="1.0" encoding="utf-8"?>
+  <network-security-config>
+      <base-config cleartextTrafficPermitted="true">
+          <trust-anchors>
+              <certificates src="system" />
+          </trust-anchors>
+      </base-config>
+  </network-security-config>
+  ```
 
-<network-security-config>
-    <!-- 允许所有明文 HTTP 请求（仅限你自己用的私人测试工具） -->
-    <base-config cleartextTrafficPermitted="true" />
-</network-security-config>
+  **`<trust-anchors>` 那段别删**：只留 `cleartextTrafficPermitted="true"` 会把系统信任锚一起改掉，
+  结果是 HTTPS 请求不再认正规证书，连局域网 TLS 引擎也一起连不上。改完**重新打包安装一次 APK**。
 
-改完记得**重新打包安装一次 APK**。
+这条放开的代价与边界都写在配置文件顶部的注释里（地址栏对 `http://` 页面显示「不安全」、
+下载器只访问你点选的那条 URL），发版前照 `release-checklist.md` §4 复核这三条边界是否仍成立。
 
 * * *
 

@@ -53,3 +53,18 @@ M1 中的五类行为差异。协议字段、错误码与状态机对两者一�
 - real 模式 API 级端到端（真实站点嗅探→下载→合并）未纳入自动验收，M2 补齐；M1 用可注入的 sniffer/downloader 验证接线。
 - `namingTemplate`、`postActions`、`progress` 不落库；重启后 `progress` 为空，由后续状态推进重算。
 - 单 worker 顺序消费；并发下载排队执行，不引入 `ENGINE_BUSY` 限流。
+
+## 6. 本文范围（M9 收官时补记）
+
+本文只回答**引擎**的 `BGV_ENGINE_MODE=stub|real` 差异，写于 M1，M6–M9 未改其内容——那三段结论仍然成立。
+项目现在实际上有三个执行者，第三个不在本文的坐标系里：
+
+| 执行者 | 由什么切换 | 是否走协议 | 说明 |
+|---|---|---|---|
+| 引擎 stub | `BGV_ENGINE_MODE` | 是 | 推进状态与计数器，无网络 IO |
+| 引擎 real | `BGV_ENGINE_MODE` | 是 | Playwright 嗅探 + yt-dlp 下载 + FFmpeg 合并/转封装 |
+| **Android 本机** | App 设置页的执行者开关 | **否** | 内置浏览器发现 + OkHttp 直连 + HLS 并发分片 + 平台 `MediaExtractor`/`MediaMuxer` 纯拷贝转封装；不引入 FFmpeg，失败归因用本地码，不借用 §5 协议码 |
+
+所以「stub 还是 real」这个问题在 Android 本机路径上无意义：它不是桩，也不是引擎的另一副面孔，
+而是第三条代码路径。它的行为差异表（并发槽位、段级重试、音频完整性门禁链、降级保留 `.ts`）写在
+`android/README.md`，逐轮取证在 `docs/smoke-report.md` §27–§29，需求条目在 `docs/PRD.md` §6.9。
