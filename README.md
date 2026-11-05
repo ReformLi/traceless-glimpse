@@ -47,6 +47,8 @@ python -m venv .venv
 python scripts/check_schema.py
 ```
 
+从零配置引擎、手机连接电脑的排障步骤见 `docs/ENGINE_USER_GUIDE.md`。
+
 ### 命令行（bgv）
 
 ```powershell

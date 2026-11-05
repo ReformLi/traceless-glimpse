@@ -171,7 +171,6 @@
     <string name="browser_address_invalid">请输入一个 http:// 或 https:// 网址</string>
     <string name="browser_insecure">此页面使用 HTTP 明文连接</string>
     <string name="browser_engine_switch">电脑引擎</string>
-    <string name="browser_engine_switch_busy">有任务在跑，结束后才能切换</string>
     <string name="browser_start_title">在应用内打开视频页</string>
     <string name="browser_start_body">输入网址后点网页里的播放按钮。抓到 m3u8 / mp4 会立刻出现在下方，点「下载」即可存到手机。</string>
     <string name="browser_page_error">页面加载失败：%1$s</string>
@@ -190,8 +189,6 @@
     <string name="browser_candidate_download">下载</string>
     <string name="browser_candidate_copy">复制</string>
     <string name="browser_candidate_copied">链接已复制</string>
-    <string name="browser_quality_parsing">解析画质中…</string>
-    <string name="browser_quality_unknown">未知画质</string>
     <string name="browser_segments">%1$d 段</string>
     <string name="browser_download_preparing">正在解析媒体清单…</string>
     <string name="browser_download_running">下载中</string>
