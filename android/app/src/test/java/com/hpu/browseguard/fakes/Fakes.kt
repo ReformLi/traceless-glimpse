@@ -150,6 +150,7 @@ class FakeEngineSettings(
     override var baseUrl: String = "http://127.0.0.1:8730",
     override var downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
     override var sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
+    override var showPageByDefault: Boolean = false,
     var acceptSaves: Boolean = true,
 ) : EngineSettings {
 

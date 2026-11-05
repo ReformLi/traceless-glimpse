@@ -34,8 +34,11 @@ interface EngineSettings {
 
     var downloadExecutor: DownloadExecutor
 
-    /** 嗅探交给电脑引擎还是手机 WebView；默认电脑，界面可显式切换。 */
+    /** 嗅探交给电脑引擎还是手机 WebView；默认本机，界面可显式切换。 */
     var sniffExecutor: SniffExecutor
+
+    /** 进入浏览器时是否直接露出网页；默认关闭，只留地址栏与「显示网页」。 */
+    var showPageByDefault: Boolean
 }
 
 /**
@@ -73,14 +76,21 @@ class EngineConfig(context: Context) : EngineSettings {
 
     override var sniffExecutor: SniffExecutor
         get() = SniffExecutor.values().firstOrNull { it.name == prefs.getString(KEY_SNIFF_EXECUTOR, null) }
-            ?: SniffExecutor.ENGINE
+            ?: SniffExecutor.LOCAL_WEBVIEW
         set(value) {
             prefs.edit().putString(KEY_SNIFF_EXECUTOR, value.name).apply()
+        }
+
+    override var showPageByDefault: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_PAGE_BY_DEFAULT, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_SHOW_PAGE_BY_DEFAULT, value).apply()
         }
 
     private companion object {
         const val KEY_BASE_URL = "base_url"
         const val KEY_DOWNLOAD_EXECUTOR = "download_executor"
         const val KEY_SNIFF_EXECUTOR = "sniff_executor"
+        const val KEY_SHOW_PAGE_BY_DEFAULT = "show_page_by_default"
     }
 }

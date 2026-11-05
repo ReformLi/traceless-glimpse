@@ -33,6 +33,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -106,6 +107,7 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         onSaveEngineUrl = homeViewModel::saveEngineUrl,
         onRefreshConnection = homeViewModel::refreshConnection,
         onSelectSniffExecutor = homeViewModel::selectSniffExecutor,
+        onShowPageByDefaultChange = homeViewModel::setShowPageByDefault,
         onSelectDownloadExecutor = homeViewModel::selectDownloadExecutor,
         onPickOutputDirectory = {
             outputError = null
@@ -158,6 +160,7 @@ fun SettingsScreen(
     onSaveEngineUrl: () -> Unit,
     onRefreshConnection: () -> Unit,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
+    onShowPageByDefaultChange: (Boolean) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onPickOutputDirectory: () -> Unit,
     onResetOutputDirectory: () -> Unit,
@@ -207,6 +210,7 @@ fun SettingsScreen(
         ExecutionSection(
             state = state,
             onSelectSniffExecutor = onSelectSniffExecutor,
+            onShowPageByDefaultChange = onShowPageByDefaultChange,
             onSelectDownloadExecutor = onSelectDownloadExecutor,
         )
 
@@ -368,6 +372,7 @@ private fun EngineSection(
 private fun ExecutionSection(
     state: HomeUiState,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
+    onShowPageByDefaultChange: (Boolean) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
 ) {
     val sniffRunning = state.sniff is SniffPhase.Running
@@ -382,18 +387,23 @@ private fun ExecutionSection(
         Spacer(Modifier.height(8.dp))
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             SegmentedButton(
-                selected = state.sniffExecutor == SniffExecutor.ENGINE,
-                onClick = { onSelectSniffExecutor(SniffExecutor.ENGINE) },
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                enabled = !sniffLocked,
-                label = { Text(stringResource(R.string.sniff_mode_engine)) },
-            )
-            SegmentedButton(
                 selected = state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW,
                 onClick = { onSelectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW) },
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                enabled = !sniffLocked,
+                label = {
+                    Text(
+                        text = stringResource(R.string.sniff_mode_local),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
+            )
+            SegmentedButton(
+                selected = state.sniffExecutor == SniffExecutor.ENGINE,
+                onClick = { onSelectSniffExecutor(SniffExecutor.ENGINE) },
                 shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                 enabled = !sniffLocked,
-                label = { Text(stringResource(R.string.sniff_mode_local)) },
+                label = { Text(stringResource(R.string.sniff_mode_engine)) },
             )
         }
         Spacer(Modifier.height(6.dp))
@@ -402,6 +412,30 @@ private fun ExecutionSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.settings_show_page_label),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.settings_show_page_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = state.showPageByDefault,
+                onCheckedChange = onShowPageByDefaultChange,
+            )
+        }
 
         Spacer(Modifier.height(18.dp))
         Text(
@@ -721,7 +755,7 @@ private fun SettingsScreenPreview() {
                         cacheSizeBytes = 64L * 1024 * 1024,
                     ),
                 ),
-                sniffExecutor = SniffExecutor.ENGINE,
+                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
                 downloadExecutor = DownloadExecutor.ENGINE,
             ),
             history = HistoryUiState(
@@ -751,6 +785,7 @@ private fun SettingsScreenPreview() {
             onSaveEngineUrl = {},
             onRefreshConnection = {},
             onSelectSniffExecutor = {},
+            onShowPageByDefaultChange = {},
             onSelectDownloadExecutor = {},
             onPickOutputDirectory = {},
             onResetOutputDirectory = {},

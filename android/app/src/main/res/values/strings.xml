@@ -44,6 +44,8 @@
     <string name="settings_cookie_explicit">显式授权</string>
     <string name="settings_execution_section">执行方式</string>
     <string name="settings_execution_busy">有任务正在进行：等它结束或取消后才能切换</string>
+    <string name="settings_show_page_label">默认直接显示网页</string>
+    <string name="settings_show_page_hint">关闭时网页在后台加载，只留地址栏与「显示网页」；适合只想抓链接的场景。</string>
     <string name="settings_output_section">输出位置</string>
     <string name="settings_output_default">应用专属目录（默认）</string>
     <string name="settings_output_saf">已选文件夹：%1$s</string>
@@ -127,7 +129,7 @@
     <string name="sniff_mode_label">嗅探方式</string>
     <string name="sniff_mode_engine">电脑引擎</string>
     <string name="sniff_mode_local">本机嗅探</string>
-    <string name="sniff_mode_hint">电脑引擎解析能力更强；本机嗅探无需电脑，但仅支持直链</string>
+    <string name="sniff_mode_hint">本机嗅探无需电脑，默认推荐；电脑引擎解析能力更强，但需要电脑在线</string>
     <string name="sniff_offline_hint">电脑引擎离线。可以点上方状态重连，或切到本机嗅探（仅直链）继续。</string>
     <string name="sniff_offline_switch">切到本机嗅探</string>
     <string name="sniff_notice_dismiss">知道了</string>
@@ -161,25 +163,26 @@
     <string name="sniff_ready_title">链接已就绪</string>
     <string name="sniff_ready_body">点「嗅探」让电脑引擎或本机浏览器解析这条页面。</string>
 
-    <!-- 内置浏览器（M7）：地址栏 + WebView + 底部嗅探抽屉 -->
+    <!-- 内置浏览器（M10）：隐身模式 + 现代顶栏 + 左下角悬浮球 -->
     <string name="browser_back">后退</string>
-    <string name="browser_forward">前进</string>
+    <string name="browser_close">关闭浏览器</string>
     <string name="browser_reload">刷新</string>
     <string name="browser_stop">停止</string>
-    <string name="browser_go">打开</string>
     <string name="browser_address_placeholder">输入网址，例如 https://…</string>
     <string name="browser_address_invalid">请输入一个 http:// 或 https:// 网址</string>
-    <string name="browser_insecure">此页面使用 HTTP 明文连接</string>
-    <string name="browser_engine_switch">电脑引擎</string>
+    <string name="browser_address_clear">清空地址</string>
+    <string name="browser_show_page">显示网页</string>
+    <string name="browser_hide_page">隐藏网页</string>
+    <string name="browser_hidden_title">网页已在后台加载</string>
+    <string name="browser_hidden_body">点上方「显示网页」查看画面；抓到的媒体会出现在左下角的下载按钮里。</string>
     <string name="browser_start_title">在应用内打开视频页</string>
-    <string name="browser_start_body">输入网址后点网页里的播放按钮。抓到 m3u8 / mp4 会立刻出现在下方，点「下载」即可存到手机。</string>
+    <string name="browser_start_body">输入网址后点网页里的播放按钮。抓到 m3u8 / mp4 会出现在左下角的下载按钮里。</string>
     <string name="browser_page_error">页面加载失败：%1$s</string>
     <string name="browser_panel_title">嗅探结果</string>
     <string name="browser_panel_count">%1$d 条</string>
-    <string name="browser_panel_expand">展开</string>
-    <string name="browser_panel_collapse">收起</string>
+    <string name="browser_results_fab">查看嗅探结果</string>
+    <string name="browser_results_close">关闭</string>
     <string name="browser_panel_waiting">正在监听页面请求，点网页里的播放按钮</string>
-    <string name="browser_panel_empty">还没有抓到媒体。先让网页里的视频开始播放。</string>
     <string name="browser_blob_title">这是 MSE 分片流（blob:）</string>
     <string name="browser_blob_body">网页用 JavaScript 把分片推给播放器，本机拿不到可下载的整段地址。请改用电脑引擎嗅探。</string>
     <string name="browser_blob_hls_caught">检测到 MSE 伪装流，但已截获底层 HLS 清单，可尝试本地强行下载（需耗时较长）。</string>
@@ -187,9 +190,8 @@
     <string name="browser_blob_force_hls_plain">强行下载 HLS</string>
     <string name="browser_blob_switch">改用电脑引擎</string>
     <string name="browser_candidate_download">下载</string>
-    <string name="browser_candidate_copy">复制</string>
+    <string name="browser_candidate_copy">复制链接</string>
     <string name="browser_candidate_copied">链接已复制</string>
-    <string name="browser_segments">%1$d 段</string>
     <string name="browser_download_preparing">正在解析媒体清单…</string>
     <string name="browser_download_running">下载中</string>
     <string name="browser_download_done">已保存到手机</string>

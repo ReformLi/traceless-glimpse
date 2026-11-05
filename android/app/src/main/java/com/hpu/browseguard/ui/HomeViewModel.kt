@@ -130,8 +130,10 @@ data class HomeUiState(
     val mergeSelected: Boolean = true,
     /** 下载交给引擎还是本机直链——全局开关，只切下载这一段。 */
     val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
-    /** 嗅探交给电脑引擎还是手机 WebView；默认电脑，界面可显式切换。 */
-    val sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
+    /** 嗅探交给电脑引擎还是手机 WebView；默认本机，界面可显式切换。 */
+    val sniffExecutor: SniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+    /** 浏览器里默认直接露出网页；关闭时先隐藏，只留地址栏与「显示网页」。 */
+    val showPageByDefault: Boolean = false,
     /**
      * 显示「地址栏 + WebView + 嗅探面板」的内置浏览器。
      *
@@ -259,6 +261,7 @@ class HomeViewModel(
             engineUrlDraft = settings.baseUrl,
             downloadExecutor = settings.downloadExecutor,
             sniffExecutor = settings.sniffExecutor,
+            showPageByDefault = settings.showPageByDefault,
             browserMode = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW,
             // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
             mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
@@ -324,7 +327,17 @@ class HomeViewModel(
      */
     fun selectSniffExecutor(executor: SniffExecutor) {
         val snapshot = _state.value
-        if (snapshot.sniffExecutor == executor) return
+        if (snapshot.sniffExecutor == executor) {
+            // 已经选了本机但浏览器被关掉：再点一次就是重新打开，不必先去切电脑再切回来。
+            if (executor == SniffExecutor.LOCAL_WEBVIEW &&
+                !snapshot.browserMode &&
+                snapshot.sniff !is SniffPhase.Running &&
+                !snapshot.downloadInFlight
+            ) {
+                _state.update { it.copy(browserMode = true) }
+            }
+            return
+        }
         if (snapshot.sniff is SniffPhase.Running || snapshot.downloadInFlight) return
         settings.sniffExecutor = executor
         clearBrowserSession()
@@ -338,6 +351,17 @@ class HomeViewModel(
                 sniffNotice = null,
             )
         }
+    }
+
+    /** 浏览器左上角的「关闭」：退回首页，偏好仍留在本机嗅探。 */
+    fun exitBrowser() {
+        _state.update { it.copy(browserMode = false) }
+    }
+
+    /** 隐身模式开关：只影响界面默认露不露网页，不改嗅探链路。 */
+    fun setShowPageByDefault(value: Boolean) {
+        settings.showPageByDefault = value
+        _state.update { it.copy(showPageByDefault = value) }
     }
 
     /**

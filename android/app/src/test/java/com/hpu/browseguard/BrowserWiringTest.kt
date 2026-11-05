@@ -23,15 +23,51 @@ class BrowserWiringTest {
     }
 
     @Test
-    fun theDrawerAndTheCookieSummaryAreBothWired() {
+    fun theResultsFabAndDialogAreBothWired() {
         val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
         val provider = File("$SRC_ROOT/data/backend/CookieProvider.kt").readText()
         val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
 
-        assertTrue("把手拖拽要收在最小与最大之间", screen.contains(".coerceIn(drawerMin, drawerMax)"))
+        assertTrue("抓到的媒体要收进左下角悬浮球", screen.contains("FloatingActionButton("))
+        assertTrue("悬浮球必须能打开结果弹窗", screen.contains("SniffResultsDialog("))
+        assertTrue("每条候选都要能复制链接", screen.contains("R.string.browser_candidate_copy"))
         assertTrue("排序必须用带发现先后那条 Comparator", controllerUsesOrder())
         assertTrue("被抑制的读取次数靠汇总交代", provider.contains("\"cookie_audit_summary\""))
         assertTrue("下载结束（含失败与取消）都要收尾", downloader.contains(".onCompletion { cookies.finish() }"))
+    }
+
+    /** 隐身模式：WebView 仍然铺满渲染，只是盖一层提示，不缩成 0 也不设 INVISIBLE。 */
+    @Test
+    fun headlessModeKeepsTheWebViewAliveUnderACover() {
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
+
+        assertTrue("隐藏网页时 WebView 仍要挂在布局里", screen.contains("AndroidView("))
+        assertTrue(
+            "隐藏时用不透明提示层盖住",
+            screen.contains("if (!pageVisible)") && screen.contains("BrowserHiddenCover("),
+        )
+        assertTrue("顶栏要有「显示网页」入口", screen.contains("R.string.browser_show_page"))
+    }
+
+    /** 默认值与顺序（M10）：本机在前且是默认，隐藏网页的偏好要能落盘。 */
+    @Test
+    fun localIsTheDefaultAndSitsBeforeTheEngine() {
+        val config = File("$SRC_ROOT/data/EngineConfig.kt").readText()
+        val home = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
+        val settings = File("$SRC_ROOT/ui/SettingsScreen.kt").readText()
+
+        assertTrue("恢复默认要落在本机嗅探", config.contains("?: SniffExecutor.LOCAL_WEBVIEW"))
+        assertTrue("隐身偏好要有自己的持久化键", config.contains("KEY_SHOW_PAGE_BY_DEFAULT"))
+        assertTrue(
+            "首页本机要排在电脑前面",
+            home.indexOf("onSelect(SniffExecutor.LOCAL_WEBVIEW)") < home.indexOf("onSelect(SniffExecutor.ENGINE)"),
+        )
+        assertTrue(
+            "设置页本机要排在电脑前面",
+            settings.indexOf("onSelectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW)") <
+                settings.indexOf("onSelectSniffExecutor(SniffExecutor.ENGINE)"),
+        )
+        assertTrue("设置页要有「默认直接显示网页」开关", settings.contains("settings_show_page_label"))
     }
 
     private fun controllerUsesOrder(): Boolean {

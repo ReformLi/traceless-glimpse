@@ -6,8 +6,7 @@ import java.io.File
 /**
  * 嗅探执行者。
  *
- * 现在没有界面选项：唯一的调用方固定传 [ENGINE]（§21 裁决 2）。
- * [LOCAL_WEBVIEW] 的实现目前是空壳，等第 3 步③接线后才可能被选中。
+ * 界面可以显式切换；默认走 [LOCAL_WEBVIEW]（本机 WebView），电脑不可达时也自动降级到这里。
  */
 enum class SniffExecutor {
     ENGINE,
@@ -29,7 +28,7 @@ interface BackendProvider {
      * 每次调用按当前设置构造，改引擎地址立即生效（与改造前一致）。
      * 默认值只是省掉调用方的重复实参，不代表嗅探已经可切。
      */
-    fun sniff(executor: SniffExecutor = SniffExecutor.ENGINE): SniffBackend
+    fun sniff(executor: SniffExecutor = SniffExecutor.LOCAL_WEBVIEW): SniffBackend
 
     fun download(executor: DownloadExecutor): DownloadBackend
 

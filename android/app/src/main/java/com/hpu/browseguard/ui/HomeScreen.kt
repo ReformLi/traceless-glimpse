@@ -330,18 +330,23 @@ private fun SniffExecutorSegmented(
 ) {
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
         SegmentedButton(
-            selected = selected == SniffExecutor.ENGINE,
-            onClick = { onSelect(SniffExecutor.ENGINE) },
-            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-            enabled = enabled,
-            label = { Text(stringResource(R.string.sniff_mode_engine)) },
-        )
-        SegmentedButton(
             selected = selected == SniffExecutor.LOCAL_WEBVIEW,
             onClick = { onSelect(SniffExecutor.LOCAL_WEBVIEW) },
+            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+            enabled = enabled,
+            label = {
+                Text(
+                    text = stringResource(R.string.sniff_mode_local),
+                    fontWeight = FontWeight.SemiBold,
+                )
+            },
+        )
+        SegmentedButton(
+            selected = selected == SniffExecutor.ENGINE,
+            onClick = { onSelect(SniffExecutor.ENGINE) },
             shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
             enabled = enabled,
-            label = { Text(stringResource(R.string.sniff_mode_local)) },
+            label = { Text(stringResource(R.string.sniff_mode_engine)) },
         )
     }
 }

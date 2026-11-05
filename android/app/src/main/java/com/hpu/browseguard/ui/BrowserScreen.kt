@@ -19,10 +19,6 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,33 +28,36 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -73,19 +72,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -127,6 +130,7 @@ fun BrowserRoute(
             viewModel.downloadFromBrowser(result, sniff.pageUrl, sniff.title)
         },
         onCancelDownload = viewModel::cancelDownload,
+        onClose = viewModel::exitBrowser,
         onSwitchToEngine = { viewModel.selectSniffExecutor(SniffExecutor.ENGINE) },
         onGrantCookieConsent = viewModel::grantCookieConsent,
         onDenyCookieConsent = viewModel::denyCookieConsent,
@@ -140,6 +144,7 @@ internal fun BrowserScreen(
     controller: BrowserSniffController,
     onDownload: (SniffResult) -> Unit,
     onCancelDownload: () -> Unit,
+    onClose: () -> Unit,
     onSwitchToEngine: () -> Unit,
     onGrantCookieConsent: () -> Unit,
     onDenyCookieConsent: () -> Unit,
@@ -150,16 +155,14 @@ internal fun BrowserScreen(
     var address by rememberSaveable { mutableStateOf(state.sourceUrl.takeIf(::isBrowserUrl).orEmpty()) }
     var addressInvalid by remember { mutableStateOf(false) }
     var progress by remember { mutableIntStateOf(0) }
-    val density = LocalDensity.current
-    // 抽屉是 Column 里的一条：拉高它等于把 WebView 压矮，所以自动展开只露一张卡，
-    // 想看更多由把手拖——不然站点里刚加载完就把播放器顶出视口。
-    val drawerMin = remember(density) { with(density) { DRAWER_MIN_HEIGHT.toPx() } }
-    val drawerAuto = remember(density) { with(density) { DRAWER_AUTO_HEIGHT.toPx() } }
-    val drawerMax = remember(density) { with(density) { DRAWER_MAX_HEIGHT.toPx() } }
-    var drawerHeight by rememberSaveable { mutableStateOf(drawerAuto) }
-    val drawerExpanded = drawerHeight > drawerMin + 1f
+    // 隐身模式：WebView 始终铺满、照常渲染与跑 JS，只是上面盖一层不透明提示。
+    var pageVisible by rememberSaveable { mutableStateOf(state.showPageByDefault) }
+    // 只有「设置里的默认值」真的变了才覆盖手动切换；切 Tab 回来不能把用户刚点开的网页又盖回去。
+    var lastPageDefault by rememberSaveable { mutableStateOf(state.showPageByDefault) }
+    var showResults by rememberSaveable { mutableStateOf(false) }
     val initialUrl = remember { addressToUrl(address) }
     val busy = state.downloadInFlight
+    val hasResults = sniff.candidates.isNotEmpty() || sniff.blobLinks.isNotEmpty()
     val copyToClipboard: (String) -> Unit = { url ->
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         if (clipboard != null) {
@@ -187,9 +190,11 @@ internal fun BrowserScreen(
             addressInvalid = false
         }
     }
-    // 第一次抓到媒体就把抽屉弹出来；之后每次新命中同样自动展开。
-    LaunchedEffect(sniff.hitAt) {
-        if (sniff.hitAt > 0L) drawerHeight = drawerAuto
+    LaunchedEffect(state.showPageByDefault) {
+        if (lastPageDefault != state.showPageByDefault) {
+            lastPageDefault = state.showPageByDefault
+            pageVisible = state.showPageByDefault
+        }
     }
     DisposableEffect(Unit) {
         onDispose {
@@ -198,95 +203,129 @@ internal fun BrowserScreen(
             runCatching { CookieManager.getInstance().flush() }
         }
     }
-    BackHandler(enabled = sniff.canGoBack) { holder.view?.goBack() }
+    BackHandler {
+        if (sniff.canGoBack) holder.view?.goBack() else onClose()
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            BrowserTopBar(
-                address = address,
-                addressInvalid = addressInvalid,
-                insecure = address.startsWith("http://", ignoreCase = true),
-                loading = sniff.loading,
-                canGoBack = sniff.canGoBack,
-                canGoForward = sniff.canGoForward,
-                engineSwitchEnabled = !busy,
-                onAddressChange = {
-                    address = it
-                    addressInvalid = false
-                },
-                onOpen = ::openAddress,
-                onBack = { holder.view?.goBack() },
-                onForward = { holder.view?.goForward() },
-                onRefresh = {
-                    val view = holder.view
-                    if (sniff.loading) view?.stopLoading() else view?.reload()
-                },
-                onSwitchToEngine = onSwitchToEngine,
-            )
-
-            if (sniff.loading) {
-                if (progress in 1..99) {
-                    LinearProgressIndicator(
-                        progress = { progress / 100f },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.dp),
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.dp),
-                    )
-                }
-            }
-
-            Box(modifier = Modifier.weight(1f)) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        createBrowserWebView(
-                            context = ctx,
-                            controller = controller,
-                            onProgress = { progress = it },
-                        ).also { view ->
-                            holder.view = view
-                            view.loadUrl(initialUrl ?: BLANK_PAGE)
+        Box(modifier = Modifier.fillMaxSize().navigationBarsPadding()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                BrowserTopBar(
+                    address = address,
+                    addressInvalid = addressInvalid,
+                    insecure = address.startsWith("http://", ignoreCase = true),
+                    loading = sniff.loading,
+                    canGoBack = sniff.canGoBack,
+                    pageVisible = pageVisible,
+                    onAddressChange = {
+                        address = it
+                        addressInvalid = false
+                    },
+                    onOpen = ::openAddress,
+                    onBack = { holder.view?.goBack() },
+                    onClose = onClose,
+                    onRefresh = {
+                        val view = holder.view
+                        val typed = addressToUrl(address)
+                        when {
+                            sniff.loading -> view?.stopLoading()
+                            typed != null && typed != sniff.pageUrl -> openAddress()
+                            else -> view?.reload()
                         }
                     },
+                    onClear = {
+                        address = ""
+                        addressInvalid = false
+                    },
+                    onTogglePage = {
+                        pageVisible = !pageVisible
+                        if (!pageVisible) focusManager.clearFocus()
+                    },
                 )
-                if (sniff.pageUrl.isBlank()) {
-                    BrowserStartHint(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.background)
-                            .padding(horizontal = 32.dp),
-                    )
+
+                if (sniff.loading) {
+                    if (progress in 1..99) {
+                        LinearProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.dp),
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.dp),
+                        )
+                    }
                 }
-                sniff.error?.let { message ->
-                    BrowserErrorBanner(
-                        message = stringResource(R.string.browser_page_error, message),
-                        onDismiss = { controller.clearError() },
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(12.dp),
+
+                Box(modifier = Modifier.weight(1f)) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            createBrowserWebView(
+                                context = ctx,
+                                controller = controller,
+                                onProgress = { progress = it },
+                            ).also { view ->
+                                holder.view = view
+                                view.loadUrl(initialUrl ?: BLANK_PAGE)
+                            }
+                        },
                     )
+                    if (!pageVisible) {
+                        BrowserHiddenCover(
+                            hasPage = sniff.pageUrl.isNotBlank(),
+                            onShow = { pageVisible = true },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else if (sniff.pageUrl.isBlank()) {
+                        BrowserStartHint(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background)
+                                .padding(horizontal = 32.dp),
+                        )
+                    }
+                    sniff.error?.let { message ->
+                        BrowserErrorBanner(
+                            message = stringResource(R.string.browser_page_error, message),
+                            onDismiss = { controller.clearError() },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(12.dp),
+                        )
+                    }
+                    if (hasResults) {
+                        FloatingActionButton(
+                            onClick = { showResults = true },
+                            shape = CircleShape,
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(20.dp),
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (sniff.candidates.isNotEmpty()) {
+                                        Badge { Text(sniff.candidates.size.toString()) }
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    imageVector = DownloadArrowIcon,
+                                    contentDescription = stringResource(R.string.browser_results_fab),
+                                    modifier = Modifier.size(24.dp),
+                                )
+                            }
+                        }
+                    }
                 }
+
+                BrowserDownloadCard(phase = state.download, onCancel = onCancelDownload)
             }
-
-            BrowserDownloadCard(phase = state.download, onCancel = onCancelDownload)
-
-            BrowserSniffDrawer(
-                sniff = sniff,
-                height = drawerHeight,
-                expanded = drawerExpanded,
-                busy = busy,
-                onResize = { delta -> drawerHeight = (drawerHeight - delta).coerceIn(drawerMin, drawerMax) },
-                onToggle = { drawerHeight = if (drawerExpanded) drawerMin else drawerAuto },
-                onDownload = onDownload,
-                onCopy = copyToClipboard,
-                onSwitchToEngine = onSwitchToEngine,
-            )
         }
     }
 
@@ -301,6 +340,20 @@ internal fun BrowserScreen(
             onDismiss = onDenyCookieConsent,
         )
     }
+
+    if (showResults) {
+        SniffResultsDialog(
+            sniff = sniff,
+            busy = busy,
+            onDownload = { result ->
+                showResults = false
+                onDownload(result)
+            },
+            onCopy = copyToClipboard,
+            onSwitchToEngine = onSwitchToEngine,
+            onDismiss = { showResults = false },
+        )
+    }
 }
 
 @Composable
@@ -310,100 +363,211 @@ private fun BrowserTopBar(
     insecure: Boolean,
     loading: Boolean,
     canGoBack: Boolean,
-    canGoForward: Boolean,
-    engineSwitchEnabled: Boolean,
+    pageVisible: Boolean,
     onAddressChange: (String) -> Unit,
     onOpen: () -> Unit,
     onBack: () -> Unit,
-    onForward: () -> Unit,
+    onClose: () -> Unit,
     onRefresh: () -> Unit,
-    onSwitchToEngine: () -> Unit,
+    onClear: () -> Unit,
+    onTogglePage: () -> Unit,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
+        tonalElevation = 3.dp,
     ) {
-        Column(modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 10.dp, bottom = 4.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack, enabled = canGoBack) {
+                IconButton(onClick = if (canGoBack) onBack else onClose) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.browser_back),
-                        modifier = Modifier.size(20.dp),
+                        imageVector = if (canGoBack) {
+                            Icons.AutoMirrored.Filled.ArrowBack
+                        } else {
+                            Icons.Filled.Close
+                        },
+                        contentDescription = stringResource(
+                            if (canGoBack) R.string.browser_back else R.string.browser_close,
+                        ),
+                        modifier = Modifier.size(22.dp),
                     )
                 }
-                IconButton(onClick = onForward, enabled = canGoForward) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = stringResource(R.string.browser_forward),
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-                OutlinedTextField(
-                    value = address,
-                    onValueChange = onAddressChange,
-                    singleLine = true,
-                    isError = addressInvalid,
-                    placeholder = { Text(stringResource(R.string.browser_address_placeholder)) },
-                    supportingText = if (addressInvalid) {
-                        { Text(stringResource(R.string.browser_address_invalid)) }
-                    } else {
-                        null
-                    },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { onOpen() }),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 4.dp),
+                AddressField(
+                    address = address,
+                    invalid = addressInvalid,
+                    insecure = insecure,
+                    loading = loading,
+                    onAddressChange = onAddressChange,
+                    onOpen = onOpen,
+                    onRefresh = onRefresh,
+                    onClear = onClear,
+                    modifier = Modifier.weight(1f),
                 )
-                FilledTonalButton(
-                    onClick = onOpen,
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    modifier = Modifier
-                        .padding(start = 6.dp)
-                        .height(52.dp),
-                ) {
-                    Text(stringResource(R.string.browser_go))
+                Spacer(Modifier.width(6.dp))
+                if (pageVisible) {
+                    IconButton(onClick = onTogglePage) {
+                        Icon(
+                            imageVector = VisibilityOffIcon,
+                            contentDescription = stringResource(R.string.browser_hide_page),
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                } else {
+                    FilledTonalButton(
+                        onClick = onTogglePage,
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        modifier = Modifier.height(40.dp),
+                    ) {
+                        Text(stringResource(R.string.browser_show_page))
+                    }
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (insecure) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .background(Color(0xFFD97706), CircleShape),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = stringResource(R.string.browser_insecure),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
-                    )
-                } else {
-                    Spacer(Modifier.weight(1f))
-                }
-                TextButton(onClick = onRefresh) {
+            if (addressInvalid) {
+                Text(
+                    text = stringResource(R.string.browser_address_invalid),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 56.dp, top = 4.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddressField(
+    address: String,
+    invalid: Boolean,
+    insecure: Boolean,
+    loading: Boolean,
+    onAddressChange: (String) -> Unit,
+    onOpen: () -> Unit,
+    onRefresh: () -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val focusManager = LocalFocusManager.current
+    val colors = MaterialTheme.colorScheme
+    val contentColor = if (invalid) colors.onErrorContainer else colors.onSurface
+    Surface(
+        modifier = modifier.height(44.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = if (invalid) colors.errorContainer else colors.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (insecure) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(Color(0xFFD97706), CircleShape),
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            BasicTextField(
+                value = address,
+                onValueChange = onAddressChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = contentColor),
+                cursorBrush = SolidColor(colors.primary),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(
+                    onGo = {
+                        onOpen()
+                        focusManager.clearFocus()
+                    },
+                ),
+                modifier = Modifier.weight(1f),
+                decorationBox = { innerTextField ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (address.isEmpty()) {
+                            Text(
+                                text = stringResource(R.string.browser_address_placeholder),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+            )
+            if (address.isNotEmpty()) {
+                IconButton(onClick = onClear, modifier = Modifier.size(32.dp)) {
                     Icon(
-                        imageVector = if (loading) Icons.Filled.Close else Icons.Filled.Refresh,
-                        contentDescription = stringResource(
-                            if (loading) R.string.browser_stop else R.string.browser_reload,
-                        ),
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.browser_address_clear),
                         modifier = Modifier.size(16.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        stringResource(if (loading) R.string.browser_stop else R.string.browser_reload),
-                    )
-                }
-                TextButton(onClick = onSwitchToEngine, enabled = engineSwitchEnabled) {
-                    Text(stringResource(R.string.browser_engine_switch))
                 }
             }
+            IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    imageVector = if (loading) Icons.Filled.Close else Icons.Filled.Refresh,
+                    contentDescription = stringResource(
+                        if (loading) R.string.browser_stop else R.string.browser_reload,
+                    ),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowserHiddenCover(
+    hasPage: Boolean,
+    onShow: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            imageVector = VisibilityOffIcon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(46.dp),
+        )
+        Spacer(Modifier.height(14.dp))
+        Text(
+            text = stringResource(
+                if (hasPage) R.string.browser_hidden_title else R.string.browser_start_title,
+            ),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(
+                if (hasPage) R.string.browser_hidden_body else R.string.browser_start_body,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(18.dp))
+        FilledTonalButton(onClick = onShow) {
+            Icon(
+                imageVector = VisibilityOnIcon,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(stringResource(R.string.browser_show_page))
         }
     }
 }
@@ -464,96 +628,64 @@ private fun BrowserErrorBanner(
 }
 
 @Composable
-private fun BrowserSniffDrawer(
+private fun SniffResultsDialog(
     sniff: BrowserSniffState,
-    height: Float,
-    expanded: Boolean,
     busy: Boolean,
-    onResize: (Float) -> Unit,
-    onToggle: () -> Unit,
     onDownload: (SniffResult) -> Unit,
     onCopy: (String) -> Unit,
     onSwitchToEngine: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 4.dp,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(with(LocalDensity.current) { height.toDp() }),
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 6.dp)) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .draggable(
-                        state = rememberDraggableState(onDelta = onResize),
-                        orientation = Orientation.Vertical,
-                    )
-                    .clickable(onClick = onToggle)
-                    .padding(vertical = 4.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(36.dp)
-                        .height(4.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)),
-                )
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .heightIn(max = 600.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = stringResource(R.string.browser_panel_title),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Medium,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
                     )
                     if (sniff.candidates.isNotEmpty()) {
                         Spacer(Modifier.width(8.dp))
                         CountChip(stringResource(R.string.browser_panel_count, sniff.candidates.size))
                     }
                     Spacer(Modifier.weight(1f))
-                    Text(
-                        text = stringResource(
-                            if (expanded) R.string.browser_panel_collapse else R.string.browser_panel_expand,
-                        ),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Icon(
-                        imageVector = if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(R.string.browser_results_close),
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+
+                if (sniff.blobLinks.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    // blob 只是播放器拿到的假地址；排序保证 HLS 清单在前，
+                    // 所以「第一条可下载」就是黄卡要强行下载的那条底层清单。
+                    BlobHintCard(
+                        hlsTarget = sniff.candidates.firstOrNull { it.downloadable },
+                        enabled = !busy,
+                        onSwitchToEngine = onSwitchToEngine,
+                        onDownload = onDownload,
                     )
                 }
-            }
 
-            if (!expanded) return@Column
-
-            if (sniff.blobLinks.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                // blob 只是播放器拿到的假地址；排序保证 HLS 清单在第一张，
-                // 所以「第一条可下载」就是我们要强行下载的那条底层清单。
-                BlobHintCard(
-                    hlsTarget = sniff.candidates.firstOrNull { it.downloadable },
-                    enabled = !busy,
-                    onSwitchToEngine = onSwitchToEngine,
-                    onDownload = onDownload,
-                )
-            }
-
-            when {
-                sniff.candidates.isNotEmpty() -> {
-                    Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(12.dp))
+                if (sniff.candidates.isNotEmpty()) {
                     LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         items(sniff.candidates, key = { it.key }) { candidate ->
                             BrowserCandidateRow(
@@ -564,24 +696,30 @@ private fun BrowserSniffDrawer(
                             )
                         }
                     }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.browser_panel_waiting),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
 
-                sniff.loading || sniff.blobLinks.isNotEmpty() -> {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.browser_panel_waiting),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                else -> {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.browser_panel_empty),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text(stringResource(R.string.browser_results_close))
+                    }
                 }
             }
         }
@@ -671,66 +809,82 @@ private fun BrowserCandidateRow(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                FormatTag(candidate.formatLabel)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = candidate.quality,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f),
-                )
-                if (candidate.segments > 0) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FormatTag(candidate.formatLabel)
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        text = stringResource(R.string.browser_segments, candidate.segments),
+                        text = candidate.quality,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = candidate.host,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = candidate.result.mediaUrl,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                candidate.note?.let { note ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (candidate.downloadable) {
+                            note
+                        } else {
+                            "$note · ${stringResource(R.string.browser_not_downloadable)}"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (candidate.downloadable) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
                     )
                 }
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = candidate.host,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = candidate.result.mediaUrl,
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            candidate.note?.let { note ->
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = if (candidate.downloadable) note else "$note · ${stringResource(R.string.browser_not_downloadable)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (candidate.downloadable) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            ) {
-                OutlinedButton(onClick = onCopy) {
-                    Text(stringResource(R.string.browser_candidate_copy))
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                OutlinedButton(
+                    onClick = onCopy,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.browser_candidate_copy),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
-                FilledTonalButton(onClick = onDownload, enabled = enabled && candidate.downloadable) {
-                    Text(stringResource(R.string.browser_candidate_download))
+                Spacer(Modifier.height(6.dp))
+                FilledTonalButton(
+                    onClick = onDownload,
+                    enabled = enabled && candidate.downloadable,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.browser_candidate_download),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
             }
         }
@@ -1129,7 +1283,38 @@ private class BrowserBridge(private val controller: BrowserSniffController) {
 private const val BRIDGE_NAME = "__BGV_BRIDGE__"
 private const val BLANK_PAGE = "about:blank"
 
-/** 收起只留把手那一条；自动展开刚好露出第一张卡；把手最多拖到半屏多一点。 */
-private val DRAWER_MIN_HEIGHT = 60.dp
-private val DRAWER_AUTO_HEIGHT = 220.dp
-private val DRAWER_MAX_HEIGHT = 480.dp
+/** material-icons-core 不带这三个图标，路径按 Material 官方矢量手写。 */
+private fun browserIcon(name: String, pathData: String): ImageVector =
+    ImageVector.Builder(
+        name = name,
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        addPath(pathData = addPathNodes(pathData), fill = SolidColor(Color.Black))
+    }.build()
+
+private val DownloadArrowIcon = browserIcon(
+    name = "DownloadArrow",
+    pathData = "M19,9h-4V3H9v6H5l7,7 l7,-7z M5,18v2h14v-2H5z",
+)
+
+private val VisibilityOnIcon = browserIcon(
+    name = "VisibilityOn",
+    pathData = "M12,4.5C7,4.5 2.73,7.61 1,12c1.73,4.39 6,7.5 11,7.5s9.27,-3.11 11,-7.5" +
+        "C21.27,7.61 17,4.5 12,4.5z M12,17c-2.76,0 -5,-2.24 -5,-5s2.24,-5 5,-5 5,2.24 5,5" +
+        " -2.24,5 -5,5z M12,9c-1.66,0 -3,1.34 -3,3s1.34,3 3,3 3,-1.34 3,-3 -1.34,-3 -3,-3z",
+)
+
+private val VisibilityOffIcon = browserIcon(
+    name = "VisibilityOff",
+    pathData = "M12,7c2.76,0 5,2.24 5,5 0,0.65 -0.13,1.26 -0.36,1.83l2.92,2.92" +
+        "c1.51,-1.26 2.7,-2.89 3.43,-4.75 -1.73,-4.39 -6,-7.5 -11,-7.5 -1.4,0 -2.74,0.25" +
+        " -3.98,0.7l2.16,2.16C10.74,7.13 11.35,7 12,7z M2,4.27l2.28,2.28 0.46,0.46" +
+        "C3.08,8.3 1.78,10.02 1,12c1.73,4.39 6,7.5 11,7.5 1.55,0 3.03,-0.3 4.38,-0.84" +
+        "l0.42,0.42L19.73,22 21,20.73 3.27,3 2,4.27z M7.53,9.8l1.55,1.55" +
+        "c-0.05,0.21 -0.08,0.43 -0.08,0.65 0,1.66 1.34,3 3,3 0.22,0 0.44,-0.03 0.65,-0.08" +
+        "l1.55,1.55c-0.67,0.33 -1.41,0.53 -2.2,0.53 -2.76,0 -5,-2.24 -5,-5 0,-0.79 0.2,-1.53 0.53,-2.2z" +
+        "M11.84,9.02l3.15,3.15 0.02,-0.16c0,-1.66 -1.34,-3 -3,-3l-0.17,0.01z",
+)
