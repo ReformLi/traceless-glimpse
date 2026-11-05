@@ -35,9 +35,6 @@ internal sealed interface RemuxResult {
  * [frames] 是按 ADTS 头一帧一帧走出来的真实 AAC 帧数：`MediaExtractor` 会把多帧并成一个样本，
  * 所以样本数说不了音频有多长，帧数可以——这是目前唯一不受 moov 时长和样本重铺影响的绝对量。
  * [contentMs] 为 0 表示「认不出 ADTS，未知」，调用方不能拿 0 当「没有声音」的判据。
- *
- * 另有一批 [shapeMap] 形状字段是本次取证临时加的（帧长分布、每样本 AU 数、ADTS 头声明的
- * objectType/声道、轨道 `csd-0`），只进审计行、不参与判定；定位完连着探针一起删。
  */
 internal class AudioScan {
 
@@ -58,31 +55,6 @@ internal class AudioScan {
     var firstSampleBytes: Int = -1
         private set
 
-    // 以下全是取证用的形状事实，不参与任何门禁判定（临时诊断，定位完可整块删掉）。
-    var maxAuPerSample: Int = 0
-        private set
-    var minFrameLen: Int = 0
-        private set
-    var maxFrameLen: Int = 0
-        private set
-    var tinyFrames: Int = 0
-        private set
-    var adtsStartSamples: Int = 0
-        private set
-    var adtsObjectType: Int = 0
-        private set
-    var adtsChannelConfig: Int = 0
-        private set
-    /** ADTS 头里的编码版本位：0 = MPEG-4、1 = MPEG-2，-1 = 一帧都没数出来（未知）。 */
-    var adtsMpegVersion: Int = -1
-        private set
-    var csdHex: String = ""
-        private set
-    var aacProfile: Int = -1
-        private set
-    var containerChannels: Int = 0
-        private set
-
     private var oneAuPerSample = false
 
     /**
@@ -97,26 +69,12 @@ internal class AudioScan {
 
     fun add(ptsUs: Long, size: Int, buffer: ByteBuffer) {
         if (sampleRateHz == 0) sampleRateHz = AdtsFrameScanner.sampleRateHz(buffer)
-        val shape = AdtsFrameScanner.scanShape(buffer, size)
-        frames += shape.frames
-        if (shape.frames > maxAuPerSample) maxAuPerSample = shape.frames
-        if (shape.frames > 0) {
-            if (minFrameLen == 0 || shape.minFrameLen < minFrameLen) minFrameLen = shape.minFrameLen
-            if (shape.maxFrameLen > maxFrameLen) maxFrameLen = shape.maxFrameLen
-            tinyFrames += shape.tinyFrames
-            if (adtsObjectType == 0) {
-                adtsObjectType = shape.objectType
-                adtsChannelConfig = shape.channelConfig
-                adtsMpegVersion = shape.mpegVersion
-            }
-        } else if (oneAuPerSample) {
-            // 裸 AAC 载荷：一帧都认不出来正是合规的表现，帧数按样本数一一对上。
+        val counted = AdtsFrameScanner.countFrames(buffer, size)
+        frames += counted
+        if (counted == 0 && oneAuPerSample) {
+            // 裸 AAC 载荷：一帧 ADTS 头都认不出来正是合规的表现，帧数按样本数一一对上。
             frames++
-            if (maxAuPerSample < 1) maxAuPerSample = 1
-            if (minFrameLen == 0 || size < minFrameLen) minFrameLen = size
-            if (size > maxFrameLen) maxFrameLen = size
         }
-        if (shape.startsWithAdts) adtsStartSamples++
         if (samples == 0) firstSampleBytes = size
         samples++
         bytes += size.toLong()
@@ -132,13 +90,6 @@ internal class AudioScan {
      */
     fun seedSampleRateHz(hz: Int) {
         if (sampleRateHz == 0 && hz > 0) sampleRateHz = hz
-    }
-
-    /** 轨道声明的 `csd-0`/`aac-profile`/声道数：只进审计行，用来核对「声明」和「载荷」是不是一回事。 */
-    fun seedConfig(csd: ByteArray?, aacProfile: Int, channelCount: Int) {
-        if (csdHex.isEmpty()) csdHex = csd.toHexString().ifEmpty { "none" }
-        if (this.aacProfile < 0) this.aacProfile = aacProfile
-        if (containerChannels == 0) containerChannels = channelCount
     }
 
     /** 这些帧实际能播多久；帧数或采样率认不出来就是 0（未知），不是「没有声音」。 */
@@ -168,28 +119,6 @@ internal class AudioScan {
         "${prefix}SpanMs" to spanMs.toString(),
         "${prefix}MaxGapMs" to maxGapMs.toString(),
     )
-
-    /**
-     * 形状审计行字段（临时诊断）：只用来区分「源即静音」「一个样本塞了十几个 AU」
-     * 「声明与载荷不符」这三种坏法，不参与放行/拦截判定。
-     *
-     * [FramesPerSampleX100] 是帧数/样本数 ×100：合规 MP4 该是 100，TS 侧越大说明并包越严重；
-     * `AdtsStartSamples` 与 [samples] 相等就意味着产物里每个样本还带着 ADTS 头。
-     */
-    fun shapeMap(prefix: String): Map<String, String> = mapOf(
-        "${prefix}FramesPerSampleX100" to if (samples > 0) frames * 100L / samples else 0L,
-        "${prefix}AuPerSampleMax" to maxAuPerSample,
-        "${prefix}FrameLenMin" to minFrameLen,
-        "${prefix}FrameLenMax" to maxFrameLen,
-        "${prefix}TinyFrames" to tinyFrames,
-        "${prefix}AdtsStartSamples" to adtsStartSamples,
-        "${prefix}ObjType" to adtsObjectType,
-        "${prefix}ChanCfg" to adtsChannelConfig,
-        "${prefix}MpegVer" to adtsMpegVersion,
-        "${prefix}AacProfile" to aacProfile,
-        "${prefix}Channels" to containerChannels,
-        "${prefix}CsdHex" to csdHex,
-    ).mapValues { (_, value) -> value.toString() }
 }
 
 /**
@@ -249,11 +178,6 @@ internal class TsRemuxer {
                 ex.selectTrack(index)
                 val format = ex.getTrackFormat(index)
                 sourceAudio.seedSampleRateHz(sampleRateHzOf(format))
-                sourceAudio.seedConfig(
-                    csd = csdBytesOf(format),
-                    aacProfile = intOf(format, MediaFormat.KEY_AAC_PROFILE, -1),
-                    channelCount = intOf(format, MediaFormat.KEY_CHANNEL_COUNT),
-                )
                 probe.audioCsd?.let { csd -> format.setByteBuffer("csd-0", ByteBuffer.wrap(csd)) }
                 val out = try {
                     mux.addTrack(format)
@@ -546,11 +470,6 @@ internal class TsRemuxer {
             extractor.selectTrack(audioIndex)
             val outFormat = extractor.getTrackFormat(audioIndex)
             out.seedSampleRateHz(sampleRateHzOf(outFormat))
-            out.seedConfig(
-                csd = csdBytesOf(outFormat),
-                aacProfile = intOf(outFormat, MediaFormat.KEY_AAC_PROFILE, -1),
-                channelCount = intOf(outFormat, MediaFormat.KEY_CHANNEL_COUNT),
-            )
             // 拆开重封的产物载荷是裸 AAC，逐帧走必然数出 0 帧；不声明「一样本一 AU」，
             // 内容比例和密度两条门禁会把我们自己刚写好的合规文件当哑巴拦下来。
             if (splitAudioUnits) out.countOneAuPerSample()
@@ -729,17 +648,4 @@ internal class AudioUnitWriter(
         /** 一帧 AAC 常见上百字节，先按 4KB 起步，超出时按需长大。 */
         const val AU_BUFFER_BYTES = 4 * 1024
     }
-}
-
-private const val CSD_HEX_MAX_BYTES = 16
-
-/** 轨道配置的前 16 字节十六进制：`csd-0` 就 2 字节，超长的（视频 SPS/PPS）截断，别把审计行撑爆。 */
-private fun ByteArray?.toHexString(): String {
-    if (this == null) return ""
-    val hex = StringBuilder(size.coerceAtMost(CSD_HEX_MAX_BYTES) * 2)
-    for (index in 0 until size.coerceAtMost(CSD_HEX_MAX_BYTES)) {
-        hex.append("0123456789abcdef"[(this[index].toInt() shr 4) and 0x0F])
-        hex.append("0123456789abcdef"[this[index].toInt() and 0x0F])
-    }
-    return hex.toString()
 }

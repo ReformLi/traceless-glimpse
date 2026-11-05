@@ -92,20 +92,10 @@ class RemuxWiringTest {
             3,
             Regex("audioAuditFields\\(result\\.sourceAudio, result\\.outputAudio\\)").findAll(downloader).count(),
         )
-        // 临时取证钉子：形状行与解码探针各要覆盖到该覆盖的地方，缺一个就换一种猜法。
-        assertEquals(
-            "形状审计行要覆盖三条出口（成功、音轨兜底、音频类降级），一处都不能漏",
-            4,
-            Regex("logAudioDiagnostics\\(").findAll(downloader).count(),
-        )
-        assertTrue(
-            "源 .ts 与产物 .mp4 要各探一次解码：只有两边对照才分得清是谁丢的声音",
-            downloader.contains("AudioDecodeProbe.probe(file)") &&
-                Regex("AudioDecodeProbe\\.probe\\(file\\)").findAll(downloader).count() == 2,
-        )
-        assertTrue(
-            "被拦下的流也要留下形状：src/out 两份一起进审计行",
-            remuxer.contains("sourceAudio.seedConfig(") && remuxer.contains("out.seedConfig("),
+        // 取证不许反过来变成依赖：形状行与逐帧解码探针已完成使命，整层删除。
+        assertFalse(
+            "临时诊断层不许留在生产代码里",
+            downloader.contains("logAudioDiagnostics") || downloader.contains("hls_remux_shape"),
         )
     }
 

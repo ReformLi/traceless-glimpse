@@ -4,7 +4,6 @@ import com.hpu.browseguard.data.backend.remux.AdtsFrameScanner
 import com.hpu.browseguard.data.backend.remux.AudioScan
 import java.nio.ByteBuffer
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -131,85 +130,6 @@ class AdtsFrameScannerTest {
         assertAuditValuesAreNumbers(map)
     }
 
-    @Test
-    fun theShapeWalkMeasuresHowThickEachFrameIs() {
-        val run = adts(40) + adts(40, headerBytes = 9) + adts(64)
-        val shape = AdtsFrameScanner.scanShape(bufferOf(run), run.size)
-        assertEquals("形状走的必须是同一条帧边界", 3, shape.frames)
-        assertEquals(40, shape.minFrameLen)
-        assertEquals(64, shape.maxFrameLen)
-        assertEquals("真内容的帧不该薄于 32 字节", 0, shape.tinyFrames)
-        assertTrue("载荷开头就是 ADTS 同步字（TS 里正常，MP4 里就是并包旁证）", shape.startsWithAdts)
-        assertEquals("ADTS 的 profile 字段是 objectType 减一，AAC-LC 该读到 2", 2, shape.objectType)
-        assertEquals(0, shape.channelConfig)
-    }
-
-    @Test
-    fun thinFramesAreCountedSeparatelyFromThickOnes() {
-        val run = adts(AdtsFrameScanner.TINY_FRAME_BYTES - 1) + adts(120)
-        val shape = AdtsFrameScanner.scanShape(bufferOf(run), run.size)
-        assertEquals(2, shape.frames)
-        assertEquals("静音/填充帧才会薄到 32 字节以下", 1, shape.tinyFrames)
-        assertEquals(31, shape.minFrameLen)
-        assertEquals(120, shape.maxFrameLen)
-    }
-
-    @Test
-    fun aPayloadThatDoesNotStartWithAdtsIsNotClaimedTo() {
-        val noise = ByteArray(600) { (it * 7 % 251).toByte() }
-        val shape = AdtsFrameScanner.scanShape(bufferOf(noise), noise.size)
-        assertEquals(0, shape.frames)
-        assertEquals("没有帧就没有帧长可报，别写成 0 字节帧", 0, shape.minFrameLen)
-        assertFalse("裸 AAC 或视频数据混进来时这条要能自证", shape.startsWithAdts)
-    }
-
-    @Test
-    fun theChannelConfigComesOutOfTheSameHeaderAsTheObjectTypeId() {
-        val shape = AdtsFrameScanner.scanShape(bufferOf(adts(40, channelConfig = 2)), 40)
-        assertEquals("单声道/双声道是从 ADTS 头读的，不是猜的", 2, shape.channelConfig)
-        assertEquals(2, shape.objectType)
-        assertEquals("编码版本位 0 是 MPEG-4：AAC-LC 就该读到它", 0, shape.mpegVersion)
-    }
-
-    @Test
-    fun aScanWithNoFramesReportsTheVersionBitAsUnknown() {
-        val noise = ByteArray(60) { (it * 7 % 251).toByte() }
-        assertEquals("没数出帧就是不知道，不能默认写成 MPEG-4 或 MPEG-2", -1, AdtsFrameScanner.scanShape(bufferOf(noise), noise.size).mpegVersion)
-    }
-
-    @Test
-    fun theShapeLineSaysHowManyFramesSatInsideOneSample() {
-        val run = adts(30) + adts(30) + adts(30)
-        val scan = AudioScan().apply {
-            add(0L, run.size, bufferOf(run))
-            seedConfig(byteArrayOf(0x12, 0x10), 2, 2)
-        }
-        val map = scan.shapeMap("src")
-        assertEquals("3 帧挤在 1 个样本里 = 每样本 3.00 帧（放大 100 倍存成整数）", "300", map["srcFramesPerSampleX100"])
-        assertEquals("3", map["srcAuPerSampleMax"])
-        assertEquals("1", map["srcAdtsStartSamples"])
-        assertEquals("2", map["srcObjType"])
-        assertEquals("1210", map["srcCsdHex"])
-        assertEquals("2", map["srcChannels"])
-        assertEquals(
-            "形状行只报能确定解读的位：跨字节、各家写法不一的字段（如裸数据块数）不进审计行",
-            setOf(
-                "srcFramesPerSampleX100", "srcAuPerSampleMax", "srcFrameLenMin", "srcFrameLenMax",
-                "srcTinyFrames", "srcAdtsStartSamples", "srcObjType", "srcChanCfg", "srcMpegVer",
-                "srcAacProfile", "srcChannels", "srcCsdHex",
-            ),
-            map.keys,
-        )
-    }
-
-    @Test
-    fun aTrackWithoutCsdIsPrintedAsNoneRatherThanBlank() {
-        val map = AudioScan().apply { seedConfig(null, -1, 0) }.shapeMap("out")
-        assertEquals("none", map["outCsdHex"])
-        assertEquals("-1", map["outAacProfile"])
-        assertEquals("空扫描不该编出帧数", "0", map["outFramesPerSampleX100"])
-    }
-
     /** 帧边界要能单独问出来：拆分重封靠它，剥的就是这里给的那几个字节。 */
     @Test
     fun frameAtHandsBackThePayloadBoundsOfOneAdtsFrame() {
@@ -249,7 +169,7 @@ class AdtsFrameScannerTest {
             walked++
         }
         assertEquals(run.size, offset)
-        assertEquals(AdtsFrameScanner.scanShape(buffer, run.size).frames, walked)
+        assertEquals("计数与拆分必须走出同一个数", walked, AdtsFrameScanner.countFrames(buffer, run.size))
     }
 
     /**
@@ -284,11 +204,10 @@ class AdtsFrameScannerTest {
             add(0L, bareAac.size, bufferOf(bareAac))
             add(21_333L, bareAac.size, bufferOf(bareAac))
         }
-        assertEquals("裸 AAC 载荷一帧 ADTS 头都没有", 0, scan.adtsStartSamples)
+        assertEquals("裸 AAC 载荷一帧 ADTS 头都数不出来", 0, AdtsFrameScanner.countFrames(bufferOf(bareAac), bareAac.size))
         assertEquals("但按声明的「一样本一 AU」要能换成内容时长", 2, scan.frames)
         assertEquals("两帧就是 2048/48000 秒", 42_666L, scan.contentUs)
-        assertEquals("产物审计行要如实写着每样本一帧", 1, scan.maxAuPerSample)
-        assertEquals("产物审计行要如实写着每样本一帧", "100", scan.shapeMap("out")["outFramesPerSampleX100"])
+        assertEquals("声明不该骗出多余样本数", 2, scan.samples)
     }
 
     private fun assertAuditValuesAreNumbers(map: Map<String, String>) {
