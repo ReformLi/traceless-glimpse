@@ -63,6 +63,25 @@ sealed interface SniffPhase {
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : SniffPhase
 }
 
+/**
+ * 本机嗅探的分层。
+ *
+ * 简单嗅探（离屏）没抓到直链时，自动换成真实 WebView 在隐藏状态继续深嗅；
+ * 隐藏深嗅也没有结果，就请用户把页面露出来点播放（有些站点点了播放才发流）。
+ */
+enum class DeepSniffPhase {
+    Off,
+
+    /** 隐藏 WebView 正在加载/观察，主页显示「深度嗅探中」。 */
+    Running,
+
+    /** 隐藏深嗅已经抓到可下载直链，结果已回填主页。 */
+    Ready,
+
+    /** 隐藏深嗅也没抓到：主页给出「显示页面再嗅探」的入口。 */
+    NoResult,
+}
+
 /** 画质表已就绪、等用户点「开始下载」的两个阶段共用的形状。 */
 interface FormatPickable {
     val taskId: String
@@ -143,6 +162,16 @@ data class HomeUiState(
     val isWebViewVisible: Boolean = false,
     /** 浏览器里的网页是否露出；关闭时 WebView 仍在后台正常渲染，只盖一层提示。 */
     val browserPageVisible: Boolean = false,
+    /**
+     * 浏览器 WebView 是否已创建（可见浏览或隐藏深嗅）。
+     *
+     * 全 App 同一时刻只允许一个 WebView：置 false 时界面层会立刻销毁实例。
+     */
+    val browserSessionActive: Boolean = false,
+    /** 隐藏深嗅阶段；[DeepSniffPhase.Off] 表示没有在跑。 */
+    val deepSniff: DeepSniffPhase = DeepSniffPhase.Off,
+    /** 嗅探时强制静音网页；默认开启，隐藏深嗅绝不能出声。 */
+    val muteWhileSniffing: Boolean = true,
     /** 自动降级/失败后的可见提示；`null` 表示没有要说的。 */
     val sniffNotice: String? = null,
     /**
@@ -269,6 +298,9 @@ class HomeViewModel(
                 settings.showPageByDefault,
             browserPageVisible = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
                 settings.showPageByDefault,
+            browserSessionActive = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+                settings.showPageByDefault,
+            muteWhileSniffing = settings.muteWhileSniffing,
             // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
             mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
             localSandboxRoot = backends.localSandboxRoot,
@@ -333,26 +365,16 @@ class HomeViewModel(
      */
     fun selectSniffExecutor(executor: SniffExecutor) {
         val snapshot = _state.value
-        if (snapshot.sniffExecutor == executor) {
-            // 已经选了本机但浏览器被关掉：再点一次就是重新打开，不必先去切电脑再切回来。
-            if (executor == SniffExecutor.LOCAL_WEBVIEW &&
-                !snapshot.isWebViewVisible &&
-                snapshot.sniff !is SniffPhase.Running &&
-                !snapshot.downloadInFlight
-            ) {
-                openBrowser(showPage = false)
-            }
-            return
-        }
-        if (snapshot.sniff is SniffPhase.Running || snapshot.downloadInFlight) return
+        if (snapshot.sniffExecutor == executor) return
+        // 隐藏深嗅是浏览器这一侧自己的会话：允许中途切到电脑引擎，切完立刻销毁 WebView。
+        val deepRunning = snapshot.deepSniff == DeepSniffPhase.Running
+        if (snapshot.downloadInFlight) return
+        if (snapshot.sniff is SniffPhase.Running && !deepRunning) return
         settings.sniffExecutor = executor
-        clearBrowserSession()
+        closeBrowserSession()
         _state.update {
             it.copy(
                 sniffExecutor = executor,
-                // 切回本机不继承「默认直接显示网页」：必须回到输入地址的主页面。
-                isWebViewVisible = false,
-                browserPageVisible = false,
                 sniff = SniffPhase.Idle,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
@@ -361,21 +383,51 @@ class HomeViewModel(
         }
     }
 
-    /** 主页 / 浏览器左上角的「关闭」：退回输入地址的主页面，偏好仍留在本机嗅探。 */
-    fun exitBrowser() {
-        _state.update { it.copy(isWebViewVisible = false) }
+    /** 主页 / 浏览器左上角的「关闭」：退回输入地址的主页面，同时销毁 WebView。 */
+    fun exitBrowser() = closeBrowserSession()
+
+    /**
+     * 结束浏览器会话：状态一落，界面层立即释放（destroy）唯一的 WebView。
+     *
+     * 关闭页面、切走底部 Tab、切换嗅探执行者都走这里——任何一条都不该让后台
+     * 会话继续攥着 WebView 或继续播视频。
+     */
+    fun closeBrowserSession() {
+        clearBrowserSession()
+        _state.update {
+            it.copy(
+                isWebViewVisible = false,
+                browserPageVisible = false,
+                browserSessionActive = false,
+                deepSniff = DeepSniffPhase.Off,
+            )
+        }
     }
 
     /** 主页「显示网页」入口：本机模式才展开 WebView；[showPage] 决定是否直接露出页面。 */
     fun openBrowser(showPage: Boolean) {
         val snapshot = _state.value
         if (snapshot.sniffExecutor != SniffExecutor.LOCAL_WEBVIEW) return
-        _state.update { it.copy(isWebViewVisible = true, browserPageVisible = showPage) }
+        clearBrowserSession()
+        _state.update {
+            it.copy(
+                browserSessionActive = true,
+                isWebViewVisible = true,
+                browserPageVisible = showPage,
+                deepSniff = DeepSniffPhase.Off,
+            )
+        }
     }
 
     /** 浏览器顶栏与覆盖层的显隐开关；WebView 本身始终活着。 */
     fun setBrowserPageVisible(visible: Boolean) {
         _state.update { it.copy(browserPageVisible = visible) }
+    }
+
+    /** 「嗅探时静音网页」开关：只影响后续创建的 WebView，不改当前会话。 */
+    fun setMuteWhileSniffing(value: Boolean) {
+        settings.muteWhileSniffing = value
+        _state.update { it.copy(muteWhileSniffing = value) }
     }
 
     /** 隐身模式开关：只影响界面默认露不露网页，不改嗅探链路。 */
@@ -438,6 +490,10 @@ class HomeViewModel(
         autoStartSelection = false
         browserDownloadActive = false
         browserProductName = null
+        // 换了网址，旧的隐藏深嗅会话就没有意义了：先把 WebView 释放掉再改状态。
+        if (_state.value.browserSessionActive && !_state.value.isWebViewVisible) {
+            closeBrowserSession()
+        }
         _state.update {
             it.copy(
                 sourceUrl = value,
@@ -454,6 +510,10 @@ class HomeViewModel(
         autoStartSelection = false
         browserDownloadActive = false
         browserProductName = null
+        // 重新嗅探前先回收上一轮的隐藏深嗅会话，避免同时存在两个 WebView。
+        if (_state.value.browserSessionActive && !_state.value.isWebViewVisible) {
+            closeBrowserSession()
+        }
         startSniff()
     }
 
@@ -486,13 +546,13 @@ class HomeViewModel(
         sniffJob = viewModelScope.launch {
             history.beginSniff(recordId, sourceUrl)
             if (snapshot.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
-                collectLocalSniff(request)
+                finishLocalSniff(collectLocalSniff(request), sourceUrl)
                 return@launch
             }
             if (connected == null || outputDir == null) {
                 // 引擎都没连上，没必要先等 90s 超时：直接降级，并留下可见提示与审计行。
                 degradeToLocal("pc_unreachable", switchDownload = true)
-                collectLocalSniff(request)
+                finishLocalSniff(collectLocalSniff(request), sourceUrl)
                 return@launch
             }
 
@@ -510,8 +570,69 @@ class HomeViewModel(
                 // 超时说明引擎还活着，下载可以继续交给它；拒绝连接则本地下载也一并接管。
                 switchDownload = failure.reason == LocalReason.ENGINE_UNREACHABLE,
             )
-            collectLocalSniff(request)
+            finishLocalSniff(collectLocalSniff(request), sourceUrl)
         }
+    }
+
+    /**
+     * 简单嗅探结束后的分层判定：只有「页面正常结束但没有媒体」与「超时」才值得换真实
+     * WebView 再试；WebView 本身起不来（[LocalReason.WEBVIEW_UNAVAILABLE]）换一层也一样。
+     */
+    private fun finishLocalSniff(failure: BackendFailure.Local?, sourceUrl: String) {
+        if (failure == null) return
+        if (failure.reason != LocalReason.NO_SNIFF_RESULTS && failure.reason != LocalReason.TIMEOUT) return
+        val snapshot = _state.value
+        if (snapshot.sniffExecutor != SniffExecutor.LOCAL_WEBVIEW) return
+        if (snapshot.sourceUrl.trim() != sourceUrl) return
+        if (snapshot.isWebViewVisible || snapshot.browserSessionActive || snapshot.downloadInFlight) return
+        startHiddenDeepSniff()
+    }
+
+    /** 简单嗅探没抓到：换真实 WebView 在主页覆盖层下面继续嗅探（全程静音）。 */
+    private fun startHiddenDeepSniff() {
+        _state.update {
+            it.copy(
+                browserSessionActive = true,
+                isWebViewVisible = false,
+                browserPageVisible = false,
+                deepSniff = DeepSniffPhase.Running,
+                // 简单嗅探的失败文案由「隐藏深嗅」接手；页面还在加载，不能停在失败态。
+                sniff = SniffPhase.Running(TaskStatus.SNIFFING),
+            )
+        }
+    }
+
+    /** 隐藏深嗅抓到直链：合并进这次嗅探的结果，主页直接走原有的画质/下载流程。 */
+    fun onDeepSniffCandidates(results: List<SniffResult>) {
+        if (results.isEmpty()) return
+        val known = (_state.value.sniff as? SniffPhase.Success)?.results.orEmpty().map { it.mediaUrl }.toSet()
+        val fresh = results.filterNot { it.mediaUrl in known }
+        if (fresh.isEmpty()) return
+        var accepted = false
+        _state.update { state ->
+            if (state.deepSniff == DeepSniffPhase.Off) return@update state
+            accepted = true
+            val merged = LinkedHashMap<String, SniffResult>()
+            (state.sniff as? SniffPhase.Success)?.results?.forEach { merged[it.mediaUrl] = it }
+            fresh.forEach { merged[it.mediaUrl] = it }
+            state.copy(
+                deepSniff = DeepSniffPhase.Ready,
+                sniff = SniffPhase.Success(merged.values.toList()),
+            )
+        }
+        if (accepted) record { markReady(it, format = null) }
+    }
+
+    /** 隐藏深嗅也没有结果：停在主页，提示用户显示页面点一下播放。会话先留着，切过去不用重新加载。 */
+    fun onDeepSniffNoResult() {
+        if (_state.value.deepSniff != DeepSniffPhase.Running) return
+        _state.update {
+            it.copy(
+                deepSniff = DeepSniffPhase.NoResult,
+                sniff = LocalFailures.webViewNoMedia().toSniffPhase(),
+            )
+        }
+        browserDownloadActive = false
     }
 
     /** 历史写入统一从这里走：一次动作只对应 [historyId] 这一行。 */
@@ -545,6 +666,8 @@ class HomeViewModel(
                 // 自动降级留在旧首页：离屏嗅探正在跑，换成空浏览器只会让结果无处可看。
                 isWebViewVisible = false,
                 browserPageVisible = false,
+                browserSessionActive = false,
+                deepSniff = DeepSniffPhase.Off,
                 downloadExecutor = if (switchDownload) DownloadExecutor.LOCAL_DIRECT else it.downloadExecutor,
                 mergeSelected = if (switchDownload) false else it.mergeSelected,
                 download = DownloadPhase.Idle,
@@ -568,12 +691,17 @@ class HomeViewModel(
         if (switchDownload && hadMerge) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
     }
 
-    private suspend fun collectLocalSniff(request: SniffRequest) {
+    private suspend fun collectLocalSniff(request: SniffRequest): BackendFailure.Local? {
+        var failure: BackendFailure.Local? = null
         backends.sniff(SniffExecutor.LOCAL_WEBVIEW).sniff(request).collect { event ->
             applySniffEvent(event)
             // 本地也失败要当场升级提示，不能等流关闭——WebView 失败后流可能就此挂住。
-            if (event is SniffEvent.Failed) upgradeFallbackNotice()
+            if (event is SniffEvent.Failed) {
+                failure = event.failure as? BackendFailure.Local
+                upgradeFallbackNotice()
+            }
         }
+        return failure
     }
 
     private fun upgradeFallbackNotice() {
@@ -954,6 +1082,17 @@ class HomeViewModel(
         }
         downloadJob = viewModelScope.launch {
             backends.download(snapshot.downloadExecutor).start(request).collect { event -> applyDownloadEvent(event) }
+        }
+        // 隐藏深嗅已经把直链交出去：WebView 立刻回收，下载由独立的流继续跑。
+        val session = _state.value
+        if (session.browserSessionActive && !session.isWebViewVisible) {
+            _state.update {
+                it.copy(
+                    browserSessionActive = false,
+                    browserPageVisible = false,
+                    deepSniff = DeepSniffPhase.Off,
+                )
+            }
         }
     }
 

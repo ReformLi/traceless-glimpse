@@ -39,6 +39,9 @@ interface EngineSettings {
 
     /** 进入浏览器时是否直接露出网页；默认关闭，只留地址栏与「显示网页」。 */
     var showPageByDefault: Boolean
+
+    /** 嗅探时强制静音网页；默认开启，隐藏深嗅绝不能出声。 */
+    var muteWhileSniffing: Boolean
 }
 
 /**
@@ -87,10 +90,17 @@ class EngineConfig(context: Context) : EngineSettings {
             prefs.edit().putBoolean(KEY_SHOW_PAGE_BY_DEFAULT, value).apply()
         }
 
+    override var muteWhileSniffing: Boolean
+        get() = prefs.getBoolean(KEY_MUTE_WHILE_SNIFFING, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_MUTE_WHILE_SNIFFING, value).apply()
+        }
+
     private companion object {
         const val KEY_BASE_URL = "base_url"
         const val KEY_DOWNLOAD_EXECUTOR = "download_executor"
         const val KEY_SNIFF_EXECUTOR = "sniff_executor"
         const val KEY_SHOW_PAGE_BY_DEFAULT = "show_page_by_default"
+        const val KEY_MUTE_WHILE_SNIFFING = "mute_while_sniffing"
     }
 }

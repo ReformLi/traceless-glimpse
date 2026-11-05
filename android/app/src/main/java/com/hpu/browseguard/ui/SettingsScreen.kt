@@ -108,6 +108,7 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         onRefreshConnection = homeViewModel::refreshConnection,
         onSelectSniffExecutor = homeViewModel::selectSniffExecutor,
         onShowPageByDefaultChange = homeViewModel::setShowPageByDefault,
+        onMuteWhileSniffingChange = homeViewModel::setMuteWhileSniffing,
         onSelectDownloadExecutor = homeViewModel::selectDownloadExecutor,
         onPickOutputDirectory = {
             outputError = null
@@ -161,6 +162,7 @@ fun SettingsScreen(
     onRefreshConnection: () -> Unit,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
     onShowPageByDefaultChange: (Boolean) -> Unit,
+    onMuteWhileSniffingChange: (Boolean) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onPickOutputDirectory: () -> Unit,
     onResetOutputDirectory: () -> Unit,
@@ -211,6 +213,7 @@ fun SettingsScreen(
             state = state,
             onSelectSniffExecutor = onSelectSniffExecutor,
             onShowPageByDefaultChange = onShowPageByDefaultChange,
+            onMuteWhileSniffingChange = onMuteWhileSniffingChange,
             onSelectDownloadExecutor = onSelectDownloadExecutor,
         )
 
@@ -373,9 +376,11 @@ private fun ExecutionSection(
     state: HomeUiState,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
     onShowPageByDefaultChange: (Boolean) -> Unit,
+    onMuteWhileSniffingChange: (Boolean) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
 ) {
-    val sniffRunning = state.sniff is SniffPhase.Running
+    // 隐藏深嗅是浏览器自己的会话：它跑着也允许切到电脑引擎（切完立刻销毁 WebView）。
+    val sniffRunning = state.sniff is SniffPhase.Running && state.deepSniff == DeepSniffPhase.Off
     val sniffLocked = sniffRunning || state.downloadInFlight
     val downloadLocked = state.downloadInFlight
 
@@ -434,6 +439,30 @@ private fun ExecutionSection(
             Switch(
                 checked = state.showPageByDefault,
                 onCheckedChange = onShowPageByDefaultChange,
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.settings_mute_label),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.settings_mute_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = state.muteWhileSniffing,
+                onCheckedChange = onMuteWhileSniffingChange,
             )
         }
 
@@ -786,6 +815,7 @@ private fun SettingsScreenPreview() {
             onRefreshConnection = {},
             onSelectSniffExecutor = {},
             onShowPageByDefaultChange = {},
+            onMuteWhileSniffingChange = {},
             onSelectDownloadExecutor = {},
             onPickOutputDirectory = {},
             onResetOutputDirectory = {},

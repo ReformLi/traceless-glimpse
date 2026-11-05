@@ -46,6 +46,8 @@
     <string name="settings_execution_busy">有任务正在进行：等它结束或取消后才能切换</string>
     <string name="settings_show_page_label">默认直接显示网页</string>
     <string name="settings_show_page_hint">关闭时网页在后台加载，只留地址栏与「显示网页」；适合只想抓链接的场景。</string>
+    <string name="settings_mute_label">嗅探时静音网页</string>
+    <string name="settings_mute_hint">隐藏深嗅与内置浏览器都会把网页媒体强制静音；关闭后可能听到页面自动播放的声音。</string>
     <string name="settings_output_section">输出位置</string>
     <string name="settings_output_default">应用专属目录（默认）</string>
     <string name="settings_output_saf">已选文件夹：%1$s</string>
@@ -162,6 +164,13 @@
     <string name="sniff_empty_body">粘贴一个网页链接开始嗅探，视频、音频与 HLS 流都会列在这里。</string>
     <string name="sniff_ready_title">链接已就绪</string>
     <string name="sniff_ready_body">点「嗅探」让电脑引擎或本机浏览器解析这条页面。</string>
+    <!-- 分层嗅探：简单嗅探 → 隐藏深嗅 → 请用户显示页面 -->
+    <string name="deep_sniff_running_title">正在深度嗅探</string>
+    <string name="deep_sniff_running_body">简单嗅探没抓到直链，正在后台用网页再渲染一次；页面已强制静音，命中后会直接列在下面。</string>
+    <string name="deep_sniff_running_body_unmuted">简单嗅探没抓到直链，正在后台用网页再渲染一次；静音开关已关闭，页面可能出声。</string>
+    <string name="deep_sniff_no_result_title">需要显示页面再嗅探</string>
+    <string name="deep_sniff_no_result_body">有些站点要点了播放才发流。打开页面后点一下播放，回到主页就能看到抓到的链接。</string>
+    <string name="deep_sniff_show_page">显示网页并继续嗅探</string>
 
     <!-- 内置浏览器（M10）：隐身模式 + 现代顶栏 + 右下角悬浮球 -->
     <string name="browser_back">后退</string>

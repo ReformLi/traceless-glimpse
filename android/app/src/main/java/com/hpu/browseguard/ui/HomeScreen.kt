@@ -108,33 +108,38 @@ fun HomeRoute(
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    // 只有用户显式展开 WebView 才进浏览器；电脑不可达的自动降级仍留在旧首页，
-    // 让离屏嗅探的结果有地方可看。
-    if (state.isWebViewVisible) {
-        BrowserRoute(container, viewModel)
-        return
+    // 隐藏深嗅时 WebView 仍在组合树里渲染（只是被主页盖住）；可见浏览时主页让位。
+    // 会话一结束 browserSessionActive 就落 false，组合退出即触发 WebView 销毁。
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (state.browserSessionActive) {
+            BrowserRoute(container, viewModel)
+        }
+        if (!state.isWebViewVisible) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                HomeScreen(
+                    state = state,
+                    onRefresh = viewModel::refreshConnection,
+                    onEditEngineUrl = viewModel::editEngineUrl,
+                    onSaveEngineUrl = viewModel::saveEngineUrl,
+                    onSelectSniffExecutor = viewModel::selectSniffExecutor,
+                    onDismissSniffNotice = viewModel::dismissSniffNotice,
+                    onSelectDownloadExecutor = viewModel::selectDownloadExecutor,
+                    onEditSourceUrl = viewModel::editSourceUrl,
+                    onOpenBrowser = { viewModel.openBrowser(showPage = true) },
+                    onSniff = viewModel::sniff,
+                    onPickFormats = viewModel::pickFormats,
+                    onSelectFormat = viewModel::selectFormat,
+                    onEditNamingTemplate = viewModel::editNamingTemplate,
+                    onToggleMerge = viewModel::toggleMerge,
+                    onStartDownload = viewModel::startDownload,
+                    onCancelDownload = viewModel::cancelDownload,
+                    onResetDownload = viewModel::resetDownload,
+                    onGrantCookieConsent = viewModel::grantCookieConsent,
+                    onDenyCookieConsent = viewModel::denyCookieConsent,
+                )
+            }
+        }
     }
-    HomeScreen(
-        state = state,
-        onRefresh = viewModel::refreshConnection,
-        onEditEngineUrl = viewModel::editEngineUrl,
-        onSaveEngineUrl = viewModel::saveEngineUrl,
-        onSelectSniffExecutor = viewModel::selectSniffExecutor,
-        onDismissSniffNotice = viewModel::dismissSniffNotice,
-        onSelectDownloadExecutor = viewModel::selectDownloadExecutor,
-        onEditSourceUrl = viewModel::editSourceUrl,
-        onOpenBrowser = { viewModel.openBrowser(showPage = true) },
-        onSniff = viewModel::sniff,
-        onPickFormats = viewModel::pickFormats,
-        onSelectFormat = viewModel::selectFormat,
-        onEditNamingTemplate = viewModel::editNamingTemplate,
-        onToggleMerge = viewModel::toggleMerge,
-        onStartDownload = viewModel::startDownload,
-        onCancelDownload = viewModel::cancelDownload,
-        onResetDownload = viewModel::resetDownload,
-        onGrantCookieConsent = viewModel::grantCookieConsent,
-        onDenyCookieConsent = viewModel::denyCookieConsent,
-    )
 }
 
 @Composable
@@ -488,24 +493,36 @@ private fun SniffWorkCard(
                 Text(stringResource(R.string.sniff_action))
             }
             if (state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
-                OutlinedButton(onClick = onOpenBrowser, enabled = editable) {
+                // 常驻入口：隐藏深嗅在跑时禁止改输入，但「显示网页」必须点得动。
+                OutlinedButton(
+                    onClick = onOpenBrowser,
+                    enabled = editable || state.deepSniff != DeepSniffPhase.Off,
+                ) {
                     Text(stringResource(R.string.browser_show_page))
                 }
             }
-            when (val phase = state.sniff) {
-                is SniffPhase.Running -> Text(
-                    text = stringResource(R.string.sniff_running) + " " + phase.status.displayWithWire(),
+            when {
+                state.deepSniff == DeepSniffPhase.Running -> Text(
+                    text = stringResource(R.string.deep_sniff_running_title),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                is SniffPhase.Failed -> Text(
-                    text = phase.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                else -> Unit
+                state.deepSniff == DeepSniffPhase.NoResult -> Unit
+                else -> when (val phase = state.sniff) {
+                    is SniffPhase.Running -> Text(
+                        text = stringResource(R.string.sniff_running) + " " + phase.status.displayWithWire(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    is SniffPhase.Failed -> Text(
+                        text = phase.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    else -> Unit
+                }
             }
         }
         if (running) {
@@ -525,34 +542,44 @@ private fun SniffWorkCard(
             )
         }
 
-        when (val phase = state.sniff) {
-            is SniffPhase.Failed -> {
+        when {
+            state.deepSniff == DeepSniffPhase.Running -> {
                 Spacer(Modifier.height(12.dp))
-                SniffFailureCard(phase, onRetry = if (sniffEnabled) onSniff else null)
+                DeepSniffRunningCard(muted = state.muteWhileSniffing)
             }
-            is SniffPhase.Success -> {
-                Spacer(Modifier.height(16.dp))
-                SniffResultsBlock(
-                    results = phase.results,
-                    canPickFormats = state.canPickFormats,
-                    preparing = state.download as? DownloadPhase.Preparing,
-                    onPickFormats = onPickFormats,
-                )
+            state.deepSniff == DeepSniffPhase.NoResult -> {
+                Spacer(Modifier.height(12.dp))
+                DeepSniffNoResultCard(onShowPage = onOpenBrowser)
             }
-            is SniffPhase.Running -> Unit
-            SniffPhase.Idle -> {
-                if (state.download is DownloadPhase.Idle && !running) {
+            else -> when (val phase = state.sniff) {
+                is SniffPhase.Failed -> {
                     Spacer(Modifier.height(12.dp))
-                    if (url.isEmpty()) {
-                        EmptyHint(
-                            title = stringResource(R.string.sniff_empty_title),
-                            description = stringResource(R.string.sniff_empty_body),
-                        )
-                    } else if (urlProblem == null) {
-                        EmptyHint(
-                            title = stringResource(R.string.sniff_ready_title),
-                            description = stringResource(R.string.sniff_ready_body),
-                        )
+                    SniffFailureCard(phase, onRetry = if (sniffEnabled) onSniff else null)
+                }
+                is SniffPhase.Success -> {
+                    Spacer(Modifier.height(16.dp))
+                    SniffResultsBlock(
+                        results = phase.results,
+                        canPickFormats = state.canPickFormats,
+                        preparing = state.download as? DownloadPhase.Preparing,
+                        onPickFormats = onPickFormats,
+                    )
+                }
+                is SniffPhase.Running -> Unit
+                SniffPhase.Idle -> {
+                    if (state.download is DownloadPhase.Idle && !running) {
+                        Spacer(Modifier.height(12.dp))
+                        if (url.isEmpty()) {
+                            EmptyHint(
+                                title = stringResource(R.string.sniff_empty_title),
+                                description = stringResource(R.string.sniff_empty_body),
+                            )
+                        } else if (urlProblem == null) {
+                            EmptyHint(
+                                title = stringResource(R.string.sniff_ready_title),
+                                description = stringResource(R.string.sniff_ready_body),
+                            )
+                        }
                     }
                 }
             }
@@ -576,6 +603,58 @@ private fun OfflineHint(onSwitchToLocal: () -> Unit) {
             Spacer(Modifier.height(2.dp))
             TextButton(onClick = onSwitchToLocal, contentPadding = PaddingValues(0.dp)) {
                 Text(stringResource(R.string.sniff_offline_switch))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeepSniffRunningCard(muted: Boolean) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(
+                text = stringResource(R.string.deep_sniff_running_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(
+                    if (muted) R.string.deep_sniff_running_body else R.string.deep_sniff_running_body_unmuted,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeepSniffNoResultCard(onShowPage: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(
+                text = stringResource(R.string.deep_sniff_no_result_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.deep_sniff_no_result_body),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(onClick = onShowPage) {
+                Text(stringResource(R.string.deep_sniff_show_page))
             }
         }
     }

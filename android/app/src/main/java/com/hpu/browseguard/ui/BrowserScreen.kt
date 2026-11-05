@@ -15,6 +15,8 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.util.Log
+import android.view.ViewGroup
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -104,6 +106,7 @@ import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.ui.components.ConfirmDialog
 import java.net.URI
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 /**
  * 纯手机模式的主界面：地址栏 + WebView + 底部嗅探抽屉。
@@ -122,6 +125,27 @@ fun BrowserRoute(
         onDispose { controller.close() }
     }
     val sniff by controller.state.collectAsStateWithLifecycle()
+
+    // 隐藏深嗅：WebView 在主页覆盖层下面照常渲染；可下载直链回填主页，
+    // 走和简单嗅探完全相同的画质/下载流程。
+    LaunchedEffect(sniff.candidates, state.deepSniff) {
+        if (state.deepSniff == DeepSniffPhase.Off) return@LaunchedEffect
+        viewModel.onDeepSniffCandidates(
+            sniff.candidates.filter { it.downloadable }.map { it.result },
+        )
+    }
+    // 页面加载完、静默期过了还没有任何命中：停在主页，请用户显示页面点播放。
+    LaunchedEffect(state.deepSniff, sniff.loading, sniff.pageUrl) {
+        if (state.deepSniff != DeepSniffPhase.Running) return@LaunchedEffect
+        if (sniff.loading || sniff.pageUrl.isBlank()) return@LaunchedEffect
+        delay(DEEP_SNIFF_GRACE_MS)
+        val latest = controller.state.value
+        if (viewModel.state.value.deepSniff == DeepSniffPhase.Running &&
+            latest.candidates.isEmpty() && latest.blobLinks.isEmpty()
+        ) {
+            viewModel.onDeepSniffNoResult()
+        }
+    }
 
     BrowserScreen(
         state = state,
@@ -198,7 +222,8 @@ internal fun BrowserScreen(
             runCatching { CookieManager.getInstance().flush() }
         }
     }
-    BackHandler {
+    // 隐藏深嗅时 WebView 还活着但被主页盖住，返回键不能由它接管。
+    BackHandler(enabled = state.isWebViewVisible) {
         if (sniff.canGoBack) holder.view?.goBack() else onClose()
     }
 
@@ -262,6 +287,7 @@ internal fun BrowserScreen(
                             createBrowserWebView(
                                 context = ctx,
                                 controller = controller,
+                                mute = state.muteWhileSniffing,
                                 onProgress = { progress = it },
                             ).also { view ->
                                 holder.view = view
@@ -1142,10 +1168,13 @@ private class WebViewHolder {
 }
 
 private fun WebView.release() {
+    Log.i(WEBVIEW_LOG_TAG, "destroy webview")
     stopLoading()
     removeJavascriptInterface(BRIDGE_NAME)
     loadUrl(BLANK_PAGE)
     clearHistory()
+    // 先摘出 View 树再销毁：父容器还握着引用时 destroy 会留下面板/泄漏。
+    (parent as? ViewGroup)?.removeView(this)
     removeAllViews()
     destroy()
 }
@@ -1154,6 +1183,7 @@ private fun WebView.release() {
 private fun createBrowserWebView(
     context: Context,
     controller: BrowserSniffController,
+    mute: Boolean,
     onProgress: (Int) -> Unit,
 ): WebView = WebView(context).apply {
     val webSettings = settings
@@ -1182,7 +1212,7 @@ private fun createBrowserWebView(
     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
     addJavascriptInterface(BrowserBridge(controller), BRIDGE_NAME)
-    webViewClient = browserClient(controller)
+    webViewClient = browserClient(controller, mute)
     webChromeClient = object : WebChromeClient() {
         override fun onProgressChanged(view: WebView?, newProgress: Int) {
             onProgress(newProgress)
@@ -1206,23 +1236,31 @@ private fun createBrowserWebView(
     }
 
     // 文档开始时注入到所有 frame；不支持的老 WebView 仍由 onPageStarted/Finished 兜底。
-    if (controller.hookScript.isNotBlank() && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-        runCatching { WebViewCompat.addDocumentStartJavaScript(this, controller.hookScript, setOf("*")) }
+    if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        if (controller.hookScript.isNotBlank()) {
+            runCatching { WebViewCompat.addDocumentStartJavaScript(this, controller.hookScript, setOf("*")) }
+        }
+        // 静音必须在页面脚本之前生效：等 onPageStarted 再注入，自动播放可能已经出声。
+        if (mute) {
+            runCatching { WebViewCompat.addDocumentStartJavaScript(this, MUTE_SCRIPT, setOf("*")) }
+        }
     }
 }
 
-private fun browserClient(controller: BrowserSniffController): WebViewClient = object : WebViewClient() {
+private fun browserClient(controller: BrowserSniffController, mute: Boolean): WebViewClient = object : WebViewClient() {
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         if (url.isNullOrBlank()) return
         controller.onPageStarted(url)
         controller.userAgent = view?.settings?.userAgentString.orEmpty()
         view?.evaluateJavascript(controller.hookScript, null)
+        if (mute) view?.evaluateJavascript(MUTE_SCRIPT, null)
     }
 
     override fun onPageFinished(view: WebView?, url: String?) {
         if (url.isNullOrBlank()) return
         controller.onPageFinished(url)
         view?.evaluateJavascript(controller.hookScript, null)
+        if (mute) view?.evaluateJavascript(MUTE_SCRIPT, null)
     }
 
     override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
@@ -1293,6 +1331,47 @@ private class BrowserBridge(private val controller: BrowserSniffController) {
 
 private const val BRIDGE_NAME = "__BGV_BRIDGE__"
 private const val BLANK_PAGE = "about:blank"
+private const val WEBVIEW_LOG_TAG = "BgvWebView"
+
+/** 隐藏深嗅页面加载完后，再给页面这么久的静默期；仍无命中才提示显示页面。 */
+private const val DEEP_SNIFF_GRACE_MS = 4_000L
+
+/**
+ * 嗅探静音脚本：在 document-start 注入，先于页面脚本 Hook 掉 `play`。
+ *
+ * WebSettings 没有「静音网页」这一项，把网页音量交给系统流也不可靠——隐藏深嗅
+ * 绝不能出声，所以这里同时做三件事：改写 `HTMLMediaElement.prototype.play`、
+ * 监听捕获阶段的 `play` 事件、周期性扫描新插入的 media 元素并强制 muted。
+ */
+private const val MUTE_SCRIPT = """
+    (function () {
+      if (window.__bgvMuted) return;
+      window.__bgvMuted = true;
+      var mute = function (el) {
+        try {
+          if (!el.muted) el.muted = true;
+          if (el.volume !== 0) el.volume = 0;
+          if (!el.hasAttribute('muted')) el.setAttribute('muted', '');
+        } catch (e) {}
+      };
+      var proto = window.HTMLMediaElement && HTMLMediaElement.prototype;
+      if (proto && proto.play) {
+        var play = proto.play;
+        proto.play = function () { mute(this); return play.apply(this, arguments); };
+      }
+      document.addEventListener('play', function (e) { mute(e.target); }, true);
+      document.addEventListener('volumechange', function (e) {
+        if (!e.target.muted || e.target.volume !== 0) mute(e.target);
+      }, true);
+      var scan = function () {
+        var list = document.querySelectorAll('video,audio');
+        for (var i = 0; i < list.length; i++) mute(list[i]);
+      };
+      scan();
+      document.addEventListener('DOMContentLoaded', scan, true);
+      setInterval(scan, 1000);
+    })();
+"""
 
 /** material-icons-core 不带这三个图标，路径按 Material 官方矢量手写。 */
 private fun browserIcon(name: String, pathData: String): ImageVector =

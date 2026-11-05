@@ -151,6 +151,7 @@ class FakeEngineSettings(
     override var downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
     override var sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
     override var showPageByDefault: Boolean = false,
+    override var muteWhileSniffing: Boolean = true,
     var acceptSaves: Boolean = true,
 ) : EngineSettings {
 

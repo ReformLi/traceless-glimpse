@@ -27,13 +27,16 @@ import com.hpu.browseguard.shared.model.Task
 import com.hpu.browseguard.shared.model.TaskMode
 import com.hpu.browseguard.shared.model.TaskStatus
 import com.hpu.browseguard.ui.Connection
+import com.hpu.browseguard.ui.DeepSniffPhase
 import com.hpu.browseguard.ui.DownloadPhase
 import com.hpu.browseguard.ui.HomeViewModel
 import com.hpu.browseguard.ui.SniffPhase
 import com.hpu.browseguard.ui.localOutputPath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -647,6 +650,114 @@ class HomeViewModelBehaviorTest {
         vm.openBrowser(showPage = true)
 
         assertFalse(vm.state.value.isWebViewVisible)
+    }
+
+    /** 简单嗅探空手而归 → 自动起隐藏 WebView 继续深嗅，主页仍可见。 */
+    @Test
+    fun aSimpleSniffWithoutResultsEscalatesToAHiddenWebView() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val vm = fakes.connectedViewModel()
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+
+        fakes.provider.localSniffBackend.emit(SniffEvent.Failed(LocalFailures.webViewNoMedia()))
+        fakes.provider.localSniffBackend.close()
+        advanceUntilIdle()
+
+        val state = vm.state.value
+        assertEquals("没抓到就该换真实网页再试", DeepSniffPhase.Running, state.deepSniff)
+        assertTrue("隐藏会话要立起来", state.browserSessionActive)
+        assertFalse("深嗅不上屏", state.isWebViewVisible)
+        assertTrue("失败文案先让位给深嗅进度", state.sniff is SniffPhase.Running)
+    }
+
+    /** 隐藏深嗅抓到直链：结果回填主页，会话标记为已就绪。 */
+    @Test
+    fun hiddenDeepSniffCandidatesBecomeHomeResults() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val vm = fakes.connectedViewModel()
+        val link = sniffResult()
+        enterHiddenDeepSniff(fakes, vm)
+
+        vm.onDeepSniffCandidates(listOf(link))
+
+        assertEquals(DeepSniffPhase.Ready, vm.state.value.deepSniff)
+        assertEquals(SniffPhase.Success(listOf(link)), vm.state.value.sniff)
+    }
+
+    /** 隐藏深嗅也没有命中：停在主页，等用户把页面露出来点播放。 */
+    @Test
+    fun hiddenDeepSniffWithoutCandidatesAsksForTheVisiblePage() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val vm = fakes.connectedViewModel()
+        enterHiddenDeepSniff(fakes, vm)
+
+        vm.onDeepSniffNoResult()
+
+        assertEquals(DeepSniffPhase.NoResult, vm.state.value.deepSniff)
+        assertTrue("失败态由深嗅无结果这一层给出", vm.state.value.sniff is SniffPhase.Failed)
+        assertTrue("会话留着，点「显示网页」不用重新加载", vm.state.value.browserSessionActive)
+    }
+
+    /** 隐藏深嗅点了下载：任务移交下载流之后，WebView 会话立刻回收。 */
+    @Test
+    fun startingADownloadFromTheHiddenSessionDropsTheWebView() = runTest(dispatcher) {
+        val fakes = Fakes(
+            settings = FakeEngineSettings(
+                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+            ),
+        )
+        val vm = fakes.connectedViewModel()
+        val link = sniffResult()
+        enterHiddenDeepSniff(fakes, vm)
+        vm.onDeepSniffCandidates(listOf(link))
+
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
+        )
+        vm.startDownload()
+
+        assertFalse("直链已经交出去，WebView 不该再留着", vm.state.value.browserSessionActive)
+        assertEquals(DeepSniffPhase.Off, vm.state.value.deepSniff)
+        assertTrue("下载本身由独立的流继续", fakes.provider.downloadBackend.startRequests.isNotEmpty())
+    }
+
+    /** 隐藏深嗅进行中允许切到电脑引擎，切完会话立刻结束（WebView 由界面销毁）。 */
+    @Test
+    fun switchingToTheEngineClosesTheHiddenSession() = runTest(dispatcher) {
+        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val vm = fakes.connectedViewModel()
+        enterHiddenDeepSniff(fakes, vm)
+
+        vm.selectSniffExecutor(SniffExecutor.ENGINE)
+
+        assertEquals(SniffExecutor.ENGINE, vm.state.value.sniffExecutor)
+        assertFalse(vm.state.value.browserSessionActive)
+        assertEquals(DeepSniffPhase.Off, vm.state.value.deepSniff)
+        assertTrue("深嗅的结果不跟着换腿", vm.state.value.sniff !is SniffPhase.Success)
+    }
+
+    @Test
+    fun theMutePreferenceIsPersistedAndMirrored() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+        assertTrue("默认静音", vm.state.value.muteWhileSniffing)
+
+        vm.setMuteWhileSniffing(false)
+
+        assertFalse(vm.state.value.muteWhileSniffing)
+        assertFalse(fakes.settings.muteWhileSniffing)
+    }
+
+    private suspend fun TestScope.enterHiddenDeepSniff(fakes: Fakes, vm: HomeViewModel) {
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        fakes.provider.localSniffBackend.emit(SniffEvent.Failed(LocalFailures.webViewNoMedia()))
+        fakes.provider.localSniffBackend.close()
+        advanceUntilIdle()
+        assertEquals(DeepSniffPhase.Running, vm.state.value.deepSniff)
     }
 
     private class Fakes(

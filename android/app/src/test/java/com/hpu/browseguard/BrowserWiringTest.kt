@@ -107,6 +107,42 @@ class BrowserWiringTest {
         assertTrue("设置页要有「默认直接显示网页」开关", settings.contains("settings_show_page_label"))
     }
 
+    /** M10.6：销毁顺序与隐藏深嗅的静音，都要钉在源码上。 */
+    @Test
+    fun theSingleWebViewIsDetachedBeforeDestroyAndMutedByName() {
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
+
+        assertTrue("销毁前先从父容器摘下来", screen.contains("(parent as? ViewGroup)?.removeView(this)"))
+        assertTrue(
+            "摘除必须发生在 destroy 之前",
+            screen.indexOf("removeView(this)") < screen.indexOf("destroy()"),
+        )
+        assertTrue("销毁要留一行可核对的日志", screen.contains("""Log.i(WEBVIEW_LOG_TAG, "destroy webview")"""))
+        assertTrue(
+            "隐藏深嗅要 Hook HTMLMediaElement.prototype.play",
+            screen.contains("HTMLMediaElement") && screen.contains("proto.play = function"),
+        )
+        assertTrue("document-start 就注入静音脚本", screen.contains("addDocumentStartJavaScript(this, MUTE_SCRIPT"))
+        assertTrue("老 WebView 由页面回调兜底", screen.contains("view?.evaluateJavascript(MUTE_SCRIPT, null)"))
+        assertTrue("自动播放不依赖手势，否则隐藏页根本播不起来", screen.contains("mediaPlaybackRequiresUserGesture = false"))
+    }
+
+    /** 会话状态驱动 WebView 的生死：隐藏深嗅在后台组合，可见时主页让位。 */
+    @Test
+    fun theWebViewSessionIsSingleAndDrivenByState() {
+        val home = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
+        val app = File("$SRC_ROOT/ui/BgvApp.kt").readText()
+        val vm = File("$SRC_ROOT/ui/HomeViewModel.kt").readText()
+        val settings = File("$SRC_ROOT/ui/SettingsScreen.kt").readText()
+
+        assertTrue("隐藏深嗅期间 WebView 仍要组合", home.contains("if (state.browserSessionActive)"))
+        assertTrue("主页盖在会话之上，而非替换", home.contains("if (!state.isWebViewVisible)"))
+        assertTrue("切走 Tab 立刻结束会话", app.contains("homeViewModel.closeBrowserSession()"))
+        assertTrue("会话回收覆盖可见态", vm.contains("browserSessionActive = false"))
+        assertTrue("设置页有静音开关", settings.contains("settings_mute_label"))
+        assertTrue("隐藏深嗅在跑时仍可切引擎", settings.contains("state.deepSniff == DeepSniffPhase.Off"))
+    }
+
     private fun controllerUsesOrder(): Boolean {
         val controller = File("$SRC_ROOT/data/browser/BrowserSniffController.kt").readText()
         return controller.contains("sortedWith(BROWSER_CANDIDATE_ORDER)") &&

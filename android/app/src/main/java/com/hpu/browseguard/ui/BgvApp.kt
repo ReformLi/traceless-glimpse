@@ -73,6 +73,11 @@ fun BgvApp(container: AppContainer) {
         container.reconcileHistory()
     }
 
+    // 切走底部 Tab 立刻结束浏览器会话：隐藏深嗅与可见浏览都不该在后台继续跑 WebView。
+    LaunchedEffect(destination) {
+        if (destination != AppDestination.HOME) homeViewModel.closeBrowserSession()
+    }
+
     // 浏览器自己处理状态栏 inset；只订阅这一个布尔值，别跟着下载进度重组。
     val browserActive by remember(homeViewModel) {
         homeViewModel.state.map { it.isWebViewVisible }.distinctUntilChanged()
