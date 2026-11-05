@@ -3,7 +3,7 @@
 Python 3.11+ / FastAPI / Pydantic v2。承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 合并与后处理；默认监听 `127.0.0.1:8730`，所有响应（含错误）携带 `X-Protocol-Version: 0.2`（`main.py` 的 `PROTOCOL_VERSION`，M5 起随 `Task.outputPath` 升版）。
 
 模式由 `BGV_ENGINE_MODE` 选择：`stub`（默认）返回假数据但状态机与错误码真实，`real` 才接真实 Playwright / yt-dlp / FFmpeg。
-两模式的差异清单见仓库根 `STUB_VS_REAL.md`。桩模式仍然是默认值——协议联调、CI、Schema 对账都在桩上跑，
+两模式的差异清单见仓库根 `STUB_VS_REAL.md`。桩模式仍然是默认值——协议联调与 Schema 对账都在桩上跑，
 不依赖外部二进制，这条设计从 M0 起没变。
 
 ## 环境

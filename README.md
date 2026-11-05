@@ -24,7 +24,6 @@
 | `mcp/` | MCP Server（Kotlin/JVM，仅 stdio transport，复用 `:shared` 与 `:engine-client`） |
 | `docs/` | PRD 与接口协议，协议是三端的合同 |
 | `scripts/` | Schema 一致性校验、冒烟测试脚本 |
-| `.github/workflows/` | CI：Kotlin 编译 + Python 测试 + Schema 校验 |
 
 ## 如何运行
 
@@ -130,4 +129,4 @@ Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文�
 - 先读 `docs/PRD.md` 与 `docs/PROTOCOL.md`；协议字段增删需三端确认，删除或改语义必须升版本。
 - 安全约束是结构性的：Task 无 `cookieFile` / `browser` / `userAgent` / `headers` 字段；`formatSelector` 只接受结构化对象；`headersHint` 与错误 `detail` 输出前必须脱敏。
 - 依赖版本全部固定（Gradle 版本目录 / `engine/requirements-lock.txt`），不引入文档外依赖；新增先提出讨论。
-- 提交前跑 `python scripts/check_schema.py` 与各端测试（CI 同口径）。
+- 提交前跑 `python scripts/check_schema.py` 与各端测试（仓库未接托管 CI，这道对账靠本地跑）。

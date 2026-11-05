@@ -193,7 +193,7 @@ download_rejected task_id=<id> stage=<entry|state|drm|selector> code=<§5 既有
 
 | 变化 | 为什么不构成协议增量 |
 |---|---|
-| M6 Android 完整功能（Room 历史、SAF 输出目录、Cookie 按域授权、R8 发布资产） | 全在设备内；`Task`/`SniffResult`/`FormatInfo`/`ErrorPayload` 字段与枚举一字未动，CI Schema 校验口径不变 |
+| M6 Android 完整功能（Room 历史、SAF 输出目录、Cookie 按域授权、R8 发布资产） | 全在设备内；`Task`/`SniffResult`/`FormatInfo`/`ErrorPayload` 字段与枚举一字未动，Schema 对账口径不变（`scripts/check_schema.py`） |
 | M7 内置浏览器与本机 HLS 逐段下载 | 本机执行者**不发协议请求**：`data/backend/` 里禁止出现 `EngineClient` / `encode(`，由 `TaskNeverGoesOnTheWireTest` 扫源码钉住 |
 | M8 TS→MP4 转封装 + 音频完整性门禁链 | 引擎侧 PostAction 白名单里那行 `remux` 是 PC 引擎的能力，与 App 内转封装同名不同路径；本机的降级理由码（`audio_content_too_short` 等）是**本地归因**，不进 §5 错误码表——本地失败不借用引擎协议码 |
 | M9 按 AU 拆分重封 | 纯容器写入层，产物字节形态变了但协议里没有任何字段描述音频包的 AU 结构 |

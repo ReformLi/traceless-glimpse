@@ -359,7 +359,7 @@ Policy      { domain?, forceProxy?, cookieMode, maxResolution?, maxSizeBytes?, a
 
 2. **`engine/models.py`** 定义 Pydantic 模型，字段名与 JSON Schema 对齐；`cookiePolicy` 使用 `Literal["none","lazy","explicit"]`。
 
-3. **CI 校验**：KMP 模块导出 `schema/task.schema.json`，Python 侧 Pydantic 的 `model_json_schema()` 同样导出，CI 比较两份 Schema 的 `required` 和 `enum` 集合是否一致。不一致则构建失败。
+3. **Schema 对账**：KMP 模块导出 `schema/*.json`，Python 侧 Pydantic 的 `model_json_schema()` 同样导出，`scripts/check_schema.py` 比较两份 Schema 的 `required` / `properties` / `enum` / `type` / `x-nullable` 五类，不一致则非零退出。项目为本机单人开发，未接托管 CI，这道对账在提交前与发版前手动跑。
 
 4. **协议安全约束的编译期固化**：`Task` 的 Kotlin 数据类中**不存在** `cookieFile`、`browser`、`headers` 字段；任何试图传入这些字段的代码在 KMP 侧无法构造对象，在 Pydantic 侧因 `extra="forbid"` 返回 422。这是协议第 1 节“字段不存在比存在但被校验更可靠”的工程实现。
 
@@ -428,7 +428,7 @@ v0.1 的 FR-SEC 系列已经从工程角度定义了 SSRF 防护、惰性 Cookie
 
 | 阶段                  | 范围                                                   | 技术产出                                                  | 出口标准                               | 状态 |
 | ------------------- | ---------------------------------------------------- | ----------------------------------------------------- | ---------------------------------- | --- |
-| **M0 协议与模型**        | KMP `shared/commonMain` + Pydantic 模型 + CI Schema 校验 | `Task`/`SniffResult`/`FormatInfo`/`ErrorPayload` 双向对齐 | CI 比较 Schema 通过；协议第 9.1 示例在桩引擎上跑通  | 已过 |
+| **M0 协议与模型**        | KMP `shared/commonMain` + Pydantic 模型 + Schema 对账脚本 | `Task`/`SniffResult`/`FormatInfo`/`ErrorPayload` 双向对齐 | `scripts/check_schema.py` 对账通过；协议第 9.1 示例在桩引擎上跑通  | 已过 |
 | **M1 引擎主链路**        | Python 引擎 + Playwright 隔离嗅探 + yt-dlp 下载 + FFmpeg 合并  | 本地 HTTP 服务，协议 v0.1 端点可用                               | 验收标准 1、3、4 通过                      | 已过 |
 | **M2 安全加固**         | 惰性 Cookie、SSRF 全链路、日志脱敏、输出沙箱、隐私自检页                   | `GET /v1/privacy/selfcheck` 可用                        | 验收标准 2、5、6 通过                      | 已过（`docs/acceptance-m2.md`） |
 | **M3 Android 客户端**  | Kotlin + Compose 主路径 UI、队列、设置；KMP 模型消费协议             | `com.hpu.browseguard` 可完成“粘贴→嗅探→选择→下载”                | 主路径 ≤4 步；与引擎联调通过                   | 已过（`docs/smoke-report.md` §8–§17） |
@@ -457,7 +457,7 @@ v0.1 的 FR-SEC 系列已经从工程角度定义了 SSRF 防护、惰性 Cookie
 
 在原验收标准 1–8 之外，追加：
 
-9. **KMP 模型一致性**：CI 比较 Kotlin `@Serializable` 导出的 Schema 与 Pydantic `model_json_schema()`，`required` 集合和 `enum` 取值完全一致。
+9. **KMP 模型一致性**：`scripts/check_schema.py` 比较 Kotlin `@Serializable` 导出的 Schema 与 Pydantic `model_json_schema()`，`required` 集合和 `enum` 取值必须完全一致，提交前跑。
 10. **WebView 隔离**：连续两次使用路径 B 嗅探，第二次 WebView 不携带第一次的 Cookie；`clearCache`/`clearHistory` 后存储目录无残留。
 11. **WebView 诚实降级**：对 blob/MSE 播放页面，路径 B 返回“未发现可下载流”并提示引擎嗅探，不产生虚假的 `SniffResult`。
 12. **协议安全约束的编译期固化**：Kotlin 侧无法构造包含 `cookieFile` 的 `Task`；Python 侧 `extra="forbid"` 对未知字段返回 422。
