@@ -17,6 +17,7 @@ import com.hpu.browseguard.shared.model.MediaStreamType
 import com.hpu.browseguard.shared.model.Resolution
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.TaskStatus
+import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
@@ -362,6 +363,13 @@ class LocalDirectDownloader(
                                     mp4Part.delete()
                                     remuxFallback = true
                                     remuxAudioFallback = true
+                                    logAudioDiagnostics(
+                                        host = hostOf(link.mediaUrl),
+                                        source = result.sourceAudio,
+                                        output = result.outputAudio,
+                                        tsFile = finalFile,
+                                        mp4File = null,
+                                    )
                                     audit.log(
                                         "hls_remux_skipped",
                                         mapOf(
@@ -372,6 +380,13 @@ class LocalDirectDownloader(
                                 } else {
                                     if (mp4Final.exists()) mp4Final.delete()
                                     if (mp4Part.renameTo(mp4Final)) {
+                                        logAudioDiagnostics(
+                                            host = hostOf(link.mediaUrl),
+                                            source = result.sourceAudio,
+                                            output = result.outputAudio,
+                                            tsFile = finalFile,
+                                            mp4File = mp4Final,
+                                        )
                                         // 只有 `.mp4` 已经落地，才允许删源 `.ts`。
                                         finalFile.delete()
                                         terminalName = mp4Name
@@ -400,6 +415,16 @@ class LocalDirectDownloader(
                                 mp4Part.delete()
                                 remuxFallback = true
                                 remuxAudioFallback = result.reason in RemuxAudioGuard.AUDIO_FALLBACK_REASONS
+                                if (remuxAudioFallback) {
+                                    // 拦下来了还得能说清「拦得对」：源 .ts 留着，就地探一次它的真实能量。
+                                    logAudioDiagnostics(
+                                        host = hostOf(link.mediaUrl),
+                                        source = result.sourceAudio,
+                                        output = result.outputAudio,
+                                        tsFile = finalFile,
+                                        mp4File = null,
+                                    )
+                                }
                                 audit.log(
                                     "hls_remux_skipped",
                                     mapOf(
@@ -512,6 +537,36 @@ class LocalDirectDownloader(
      */
     private fun audioAuditFields(source: AudioScan?, output: AudioScan?): Map<String, String> =
         (source?.auditMap("src") ?: emptyMap()) + (output?.auditMap("out") ?: emptyMap())
+
+    /**
+     * 形状审计行 + 解码探针（临时诊断，定位完连着 [AudioDecodeProbe] 一起删）。
+     *
+     * `hls_remux_shape` 说的是「帧长分布、一个样本塞了几帧、ADTS 头声明的是什么」，
+     * `hls_audio_probe` 说的是「系统解码器真能解出多少秒、解出来的 PCM 有没有能量」。
+     * 两组都不参与判定，只负责把「门禁全过却听不到声音」这条路分成可数的几种坏法。
+     */
+    private fun logAudioDiagnostics(
+        host: String,
+        source: AudioScan?,
+        output: AudioScan?,
+        tsFile: File?,
+        mp4File: File?,
+    ) {
+        if (source != null || output != null) {
+            audit.log(
+                "hls_remux_shape",
+                mapOf("host" to host) +
+                    (source?.shapeMap("src") ?: emptyMap()) +
+                    (output?.shapeMap("out") ?: emptyMap()),
+            )
+        }
+        tsFile?.let { file ->
+            audit.log("hls_audio_probe", mapOf("host" to host, "file" to "ts") + AudioDecodeProbe.probe(file))
+        }
+        mp4File?.let { file ->
+            audit.log("hls_audio_probe", mapOf("host" to host, "file" to "mp4") + AudioDecodeProbe.probe(file))
+        }
+    }
 
     /** 发一次带 Range 的 GET；返回 `null` 表示服务端回了 416，调用方需要清断点重来。 */
     private fun exchange(link: SniffResult, from: Long): okhttp3.Response? {

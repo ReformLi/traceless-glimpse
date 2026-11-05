@@ -3,6 +3,7 @@ package com.hpu.browseguard
 import com.hpu.browseguard.data.backend.remux.PtsGate
 import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,8 +24,7 @@ class RemuxAudioGuardTest {
     }
 
     @Test
-    fun videoOnlySuccessIsNotAllowedToLookLikeDone() {
-        // 视频样本 > 0、音频样本 0 —— 旧的 Done 条件会放过这一种，正是无声 MP4 的来源。
+    fun videoOnlySuccessIsNotAllowedToLookLikeDone() {        // 视频样本 > 0、音频样本 0 —— 旧的 Done 条件会放过这一种，正是无声 MP4 的来源。
         assertEquals(RemuxAudioGuard.AUDIO_EMPTY, RemuxAudioGuard.sampleGate(0))
         assertEquals(RemuxAudioGuard.AUDIO_EMPTY, RemuxAudioGuard.sampleGate(-1))
         assertNull(RemuxAudioGuard.sampleGate(1))
@@ -235,6 +235,8 @@ class RemuxAudioGuardTest {
                 RemuxAudioGuard.AUDIO_CONTENT_TOO_SHORT,
                 RemuxAudioGuard.AUDIO_PTS_NEGATIVE,
                 RemuxAudioGuard.AUDIO_TRACK_REJECTED,
+                RemuxAudioGuard.AUDIO_AU_SPLIT_FAILED,
+                RemuxAudioGuard.AUDIO_AU_COUNT_MISMATCH,
                 PtsGate.AUDIO_PTS_BACKWARD,
                 PtsGate.AUDIO_PTS_GAP,
             ),
@@ -390,6 +392,98 @@ class RemuxAudioGuardTest {
             RemuxAudioGuard.timeSliceGate(0L, 20 * US, emptyMap()),
         )
         assertNull(RemuxAudioGuard.timeSliceGate(0L, 0L, denseWindows(10)))
+    }
+
+    /**
+     * 拆分重封的前提三件事缺一不可：AAC、认得准采样率、首样本确实是 ADTS 串。
+     *
+     * 条件不满足就必须退回「原样搬运」——那正是过去产出并包 mp4a（Android 能放、严格播放器
+     * 没声音）的那条路，但拆错的代价更大：拿不到采样率就拼不出正确的 1024 步进时间戳。
+     */
+    @Test
+    fun onlyCleanAacWithAKnownRateGetsSplitIntoUnits() {
+        assertTrue(
+            "AAC + 48k + 首样本带 ADTS 头 = 拆",
+            RemuxAudioGuard.splitsAudioUnits(RemuxAudioGuard.AAC_MIME, 48_000, firstSampleIsAdts = true),
+        )
+        assertFalse(
+            "非 AAC 的轨道不拆：剥不出 ADTS，硬剥就是毁数据",
+            RemuxAudioGuard.splitsAudioUnits("audio/mpeg", 44_100, firstSampleIsAdts = true),
+        )
+        assertFalse(
+            "认不出采样率就不拆：时间戳步进无从算起",
+            RemuxAudioGuard.splitsAudioUnits(RemuxAudioGuard.AAC_MIME, 0, firstSampleIsAdts = true),
+        )
+        assertFalse(
+            "首样本不是 ADTS 就不拆：整条流按裸 AAC 原样搬运",
+            RemuxAudioGuard.splitsAudioUnits(RemuxAudioGuard.AAC_MIME, 48_000, firstSampleIsAdts = false),
+        )
+    }
+
+    /**
+     * 解码配置的另一张坏脸：容器给的 `csd-0` 本身就是一整串 ADTS 头。
+     *
+     * 样本已经剥头按 AU 重封了，配置还留着 ADTS 就是混合封装——严格播放器照这段配置建解码器
+     * 会失败，或者只解出半个 AU。所以这种 `csd-0` 视同「没有可用配置」，必须由 ADTS 头重新合成。
+     */
+    @Test
+    fun anAdtsHeaderHandedBackAsCsdIsNotAUsableDecoderConfig() {
+        assertFalse(
+            "非 AAC 轨道不掺和：它本来就不要求 csd-0",
+            RemuxAudioGuard.replacesDecoderConfig("audio/mpeg", hasUsableCsd = true, csdIsAdtsHeader = true),
+        )
+        assertTrue(
+            "缺配置要合成",
+            RemuxAudioGuard.replacesDecoderConfig(RemuxAudioGuard.AAC_MIME, hasUsableCsd = false, csdIsAdtsHeader = false),
+        )
+        assertTrue(
+            "ADTS 头冒充的配置要换掉",
+            RemuxAudioGuard.replacesDecoderConfig(RemuxAudioGuard.AAC_MIME, hasUsableCsd = true, csdIsAdtsHeader = true),
+        )
+        assertFalse(
+            "裸 AudioSpecificConfig（实测的 1190）原样保留",
+            RemuxAudioGuard.replacesDecoderConfig(RemuxAudioGuard.AAC_MIME, hasUsableCsd = true, csdIsAdtsHeader = false),
+        )
+    }
+
+    /**
+     * AU 数一致性：源帧数、写入数、产物复开的样本数必须一模一样。
+     *
+     * 这是唯一能直接看见「有声音被吃掉」的判据——时间戳、密度、首尾对齐在样本被均匀重铺时
+     * 全都照常好看，只有绝对数量骗不了人。
+     */
+    @Test
+    fun auCountsMustMatchExactlyAfterSplitting() {
+        assertNull(RemuxAudioGuard.auCountGate(sourceFrames = 40_411, writtenAus = 40_411, outputSamples = 40_411))
+        assertEquals(
+            "muxer 少写了 29 帧，产物必须当哑巴拦下来",
+            RemuxAudioGuard.AUDIO_AU_COUNT_MISMATCH,
+            RemuxAudioGuard.auCountGate(sourceFrames = 40_411, writtenAus = 40_382, outputSamples = 40_382),
+        )
+        assertEquals(
+            "写进去了但复开读到的样本更少：容器层丢样本",
+            RemuxAudioGuard.AUDIO_AU_COUNT_MISMATCH,
+            RemuxAudioGuard.auCountGate(sourceFrames = 2_611, writtenAus = 2_611, outputSamples = 488),
+        )
+        assertEquals(
+            "拆出来的 AU 比源里数到的还多，只能是走帧两处不一致",
+            RemuxAudioGuard.AUDIO_AU_COUNT_MISMATCH,
+            RemuxAudioGuard.auCountGate(sourceFrames = 100, writtenAus = 101, outputSamples = 101),
+        )
+        assertNull(
+            "非 ADTS 的一路（源帧数 0）不适用这条：没有 AU 可对",
+            RemuxAudioGuard.auCountGate(sourceFrames = 0, writtenAus = 0, outputSamples = 488),
+        )
+    }
+
+    @Test
+    fun theNewAudioExitsSpeakTheAudioFallbackCopy() {
+        assertTrue(
+            "拆分失败与 AU 数不符都属于「保留的 .ts 仍带声音」这一类",
+            RemuxAudioGuard.AUDIO_FALLBACK_REASONS.containsAll(
+                setOf(RemuxAudioGuard.AUDIO_AU_SPLIT_FAILED, RemuxAudioGuard.AUDIO_AU_COUNT_MISMATCH),
+            ),
+        )
     }
 
     private fun denseWindows(count: Int, samples: Int = FULL): Map<Int, Int> =

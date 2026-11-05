@@ -78,6 +78,19 @@ internal object RemuxAudioGuard {
     const val AUDIO_TRACK_REJECTED = "audio_track_rejected"
 
     /**
+     * 拆分模式下某个音频样本剥不出 ADTS 帧：一半拆成「一样本一 AU」、一半整包塞进去，
+     * 产物就成了只有严格播放器才会踩的混合封装——不如保留 `.ts`，它本来就带完整声音。
+     */
+    const val AUDIO_AU_SPLIT_FAILED = "audio_au_split_failed"
+
+    /**
+     * AU 数对不上：源里数出来的 ADTS 帧、实际写进 muxer 的 AU、产物复开读到的样本，
+     * 三个数必须一模一样。少一个就是「有声音被吃掉」，而且只有这一条能直接看见它——
+     * 时间戳、密度、时长在样本被均匀重铺时全都照常好看。
+     */
+    const val AUDIO_AU_COUNT_MISMATCH = "audio_au_count_mismatch"
+
+    /**
      * 这些原因都意味着「转出来的文件会没声音/不完整」，UI 统一换成更准确的降级文案。
      *
      * 含 [PtsGate] 的两条音轨时间戳判据：它们拒的也是「音频时间轴接不上」的片子，
@@ -99,6 +112,8 @@ internal object RemuxAudioGuard {
         AUDIO_CONTENT_TOO_SHORT,
         AUDIO_PTS_NEGATIVE,
         AUDIO_TRACK_REJECTED,
+        AUDIO_AU_SPLIT_FAILED,
+        AUDIO_AU_COUNT_MISMATCH,
         PtsGate.AUDIO_PTS_BACKWARD,
         PtsGate.AUDIO_PTS_GAP,
     )
@@ -128,9 +143,46 @@ internal object RemuxAudioGuard {
     fun trackGate(audioIndex: Int?): String? =
         if (audioIndex == null) NO_AUDIO_TRACK else null
 
+    /**
+     * AAC 轨的 `csd-0` 该不该由 ADTS 头重新合成：容器没给，或给的其实是一整串 ADTS 头。
+     *
+     * 后者是同一个病灶的另一张脸——MP4 的解码配置必须是裸 AudioSpecificConfig，把 ADTS 头当配置
+     * 封进去，严格播放器照着它建解码器就会失败或只解出半个 AU。既然样本已按 AU 剥了头，配置也
+     * 必须是剥了头的；两者留一个带 ADTS 就是混合封装，不能赌。
+     */
+    fun replacesDecoderConfig(mime: String?, hasUsableCsd: Boolean, csdIsAdtsHeader: Boolean): Boolean =
+        mime == AAC_MIME && (!hasUsableCsd || csdIsAdtsHeader)
+
     /** 源里明明有音轨，写进 muxer 的音频样本却是 0。 */
     fun sampleGate(audioSamples: Int): String? =
         if (audioSamples <= 0) AUDIO_EMPTY else null
+
+    /**
+     * 要不要按 AU 拆分重封：只有「AAC + 采样率拿得准 + 首样本确实是 ADTS 串」才拆。
+     *
+     * 拆分是为了合规——mp4a 要求**一个样本恰好一个 AU、且不带 ADTS 头**，而 `MediaExtractor`
+     * 从 TS 里读出来的音频常把十几个 AU 并成一个样本（实测每样本 15.47 帧）。并包文件在
+     * Android 自己这儿解得开，在严格解码器（相册、网页、电视盒子、剪辑软件）里就等于没声音。
+     * 条件不满足就维持原样搬运：非 AAC 的轨道、认不出采样率的轨道，都拆不出正确的时间戳。
+     *
+     * 已知边界：一帧 HE-AAC（SBR）实际出 2048 个采样点，按 1024 步进会把音轨铺成两倍长。
+     * 这种流真出现时会被末尾对齐与内容比例两条门禁拦下来降级，不会变成坏文件；
+     * 要直接放行得先补 SBR 检测，不在这里顺手猜。
+     */
+    fun splitsAudioUnits(mime: String?, sampleRateHz: Int, firstSampleIsAdts: Boolean): Boolean =
+        mime == AAC_MIME && sampleRateHz > 0 && firstSampleIsAdts
+
+    /**
+     * AU 数一致性：源帧数、写入数、产物读回数三者必须相等。
+     *
+     * [sourceFrames] 为 0 说明这一路压根没按 ADTS 走（非 AAC 或头不规整），那时没拆，也不该拿这条吓人。
+     */
+    fun auCountGate(sourceFrames: Int, writtenAus: Int, outputSamples: Int): String? =
+        if (sourceFrames > 0 && (writtenAus != sourceFrames || outputSamples != writtenAus)) {
+            AUDIO_AU_COUNT_MISMATCH
+        } else {
+            null
+        }
 
     /**
      * AAC 必须有解码配置：容器自带的 `csd-0` 可用就放行，否则必须由 ADTS 头合成；

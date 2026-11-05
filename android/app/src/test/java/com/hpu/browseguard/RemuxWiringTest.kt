@@ -3,6 +3,7 @@ package com.hpu.browseguard
 import com.hpu.browseguard.data.backend.remux.RemuxAudioGuard
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -35,7 +36,10 @@ class RemuxWiringTest {
         assertTrue("找不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.trackGate"))
         assertTrue("AAC 缺解码配置必须拒绝", remuxer.contains("RemuxAudioGuard.csdGate"))
         assertTrue("音频样本为 0 必须拒绝", remuxer.contains("RemuxAudioGuard.sampleGate"))
-        assertTrue("产物要复开全量扫一遍", remuxer.contains("verifyOutput(target, segmentDurationMs, outputAudio)"))
+        assertTrue(
+            "产物要复开全量扫一遍，还要把「是否拆过 AU」告诉复检",
+            remuxer.contains("verifyOutput(target, segmentDurationMs, outputAudio, splitAudioUnits = splitter != null)"),
+        )
         assertTrue("复开读不到音轨必须拒绝", remuxer.contains("RemuxAudioGuard.outputGate"))
         assertTrue("音视频末尾时长要对齐", remuxer.contains("RemuxAudioGuard.avDurationGate"))
         assertTrue(
@@ -88,6 +92,78 @@ class RemuxWiringTest {
             3,
             Regex("audioAuditFields\\(result\\.sourceAudio, result\\.outputAudio\\)").findAll(downloader).count(),
         )
+        // 临时取证钉子：形状行与解码探针各要覆盖到该覆盖的地方，缺一个就换一种猜法。
+        assertEquals(
+            "形状审计行要覆盖三条出口（成功、音轨兜底、音频类降级），一处都不能漏",
+            4,
+            Regex("logAudioDiagnostics\\(").findAll(downloader).count(),
+        )
+        assertTrue(
+            "源 .ts 与产物 .mp4 要各探一次解码：只有两边对照才分得清是谁丢的声音",
+            downloader.contains("AudioDecodeProbe.probe(file)") &&
+                Regex("AudioDecodeProbe\\.probe\\(file\\)").findAll(downloader).count() == 2,
+        )
+        assertTrue(
+            "被拦下的流也要留下形状：src/out 两份一起进审计行",
+            remuxer.contains("sourceAudio.seedConfig(") && remuxer.contains("out.seedConfig("),
+        )
+    }
+
+    /**
+     * 取证不许改变被测对象：`MediaFormat.getByteBuffer("csd-0")` 给回来的就是它自己那只缓冲，
+     * 就地 `get` 会把 position 顶到末尾，之后 `mux.addTrack(同一个 format)` 读到 remaining=0，
+     * MPEG4Writer 报「Missing codec specific data / 0 frames to dump timeStamps in Audio track」，
+     * 整条音轨一帧都不写。这条曾经把带声的 .ts 判成降级，所以钉住：只允许读副本。
+     */
+    @Test
+    fun theCsdPeekMustNotDrainTheTrackFormatItReads() {
+        val remuxer = File("$SRC_ROOT/data/backend/remux/TsRemuxer.kt").readText()
+        val peek = Regex("private fun csdBytesOf[\\s\\S]*?\\n    }").find(remuxer)?.value.orEmpty()
+
+        assertTrue("读 csd 要先 duplicate，不能碰原缓冲：$peek", peek.contains(".duplicate()"))
+        assertFalse("副本之外不许再有原地读：$peek", peek.contains("it.get("))
+    }
+
+    /**
+     * 按 AU 拆分重封的调用点钉子：少接一处，产物就退回「并包 mp4a」——
+     * Android 能放、严格播放器没声音，而所有时间戳类门禁全绿，正是这次真机查出来的病灶。
+     */
+    @Test
+    fun mergedAdtsSamplesAreSplitIntoOneAccessUnitEach() {
+        val remuxer = File("$SRC_ROOT/data/backend/remux/TsRemuxer.kt").readText()
+        val scanner = File("$SRC_ROOT/data/backend/remux/AdtsFrameScanner.kt").readText()
+
+        assertTrue("要不要拆由门禁按 AAC/采样率/首样本定", remuxer.contains("RemuxAudioGuard.splitsAudioUnits("))
+        assertTrue("拆分器要带上容器或 ADTS 给的采样率", remuxer.contains("AudioUnitWriter(probe.audioRateHz)"))
+        assertTrue("载荷边界只能问 frameAt，不许再手写一遍偏移", remuxer.contains("AdtsFrameScanner.frameAt(source, offset, size)"))
+        assertTrue("AU 的时间戳按 1024/采样率 从音频起点一次换算", remuxer.contains("AdtsFrameScanner.auPtsUs(startUs, totalAus, rateHz)"))
+        assertTrue(
+            "交给 muxer 的载荷必须位置 0、长度正好：info.offset 非 0 时堆缓冲与直连缓冲两条路径的解释不一致",
+            remuxer.contains("auInfo.set(0, size, ptsUs, 0)"),
+        )
+        assertTrue(
+            "写 AU 要用独立 BufferInfo，不能复用整包那条 info",
+            remuxer.contains("val auInfo = MediaCodec.BufferInfo()"),
+        )
+        assertTrue("拆不下去就整条放弃，绝不留半拆半不拆的产物", remuxer.contains("RemuxAudioGuard.AUDIO_AU_SPLIT_FAILED"))
+        assertTrue(
+            "容器把整串 ADTS 头当 csd-0 交回来时要换成裸配置：样本剥了头、配置还留着 ADTS 就是混合封装",
+            remuxer.contains("RemuxAudioGuard.replacesDecoderConfig(mime, hasUsableCsd, csdIsAdtsHeader)"),
+        )
+        assertTrue(
+            "每帧另开一只载荷视图：同一只缓冲的 position/limit 用不了第二次，第二帧必炸",
+            remuxer.contains("val slice = source.duplicate()"),
+        )
+        assertTrue("不拆的路径仍然原样搬运整包", remuxer.contains("if (splitter == null) {"))
+        assertTrue(
+            "AU 数三方对齐：源帧数 = 写入数 = 产物复开样本数",
+            remuxer.contains("RemuxAudioGuard.auCountGate(sourceAudio.frames, splitter.writtenAus, outputAudio.samples)"),
+        )
+        assertTrue(
+            "拆开重封的产物是裸 AAC，复检要按「一样本一 AU」数帧，否则内容/密度门禁会误杀合规文件",
+            remuxer.contains("if (splitAudioUnits) out.countOneAuPerSample()"),
+        )
+        assertTrue("走帧与拆分共用同一套边界", scanner.contains("val frame = frameAt(buffer, offset, size) ?: break"))
     }
 
     @Test

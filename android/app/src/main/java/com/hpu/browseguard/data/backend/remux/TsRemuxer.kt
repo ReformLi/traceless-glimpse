@@ -35,6 +35,9 @@ internal sealed interface RemuxResult {
  * [frames] 是按 ADTS 头一帧一帧走出来的真实 AAC 帧数：`MediaExtractor` 会把多帧并成一个样本，
  * 所以样本数说不了音频有多长，帧数可以——这是目前唯一不受 moov 时长和样本重铺影响的绝对量。
  * [contentMs] 为 0 表示「认不出 ADTS，未知」，调用方不能拿 0 当「没有声音」的判据。
+ *
+ * 另有一批 [shapeMap] 形状字段是本次取证临时加的（帧长分布、每样本 AU 数、ADTS 头声明的
+ * objectType/声道、轨道 `csd-0`），只进审计行、不参与判定；定位完连着探针一起删。
  */
 internal class AudioScan {
 
@@ -55,9 +58,65 @@ internal class AudioScan {
     var firstSampleBytes: Int = -1
         private set
 
+    // 以下全是取证用的形状事实，不参与任何门禁判定（临时诊断，定位完可整块删掉）。
+    var maxAuPerSample: Int = 0
+        private set
+    var minFrameLen: Int = 0
+        private set
+    var maxFrameLen: Int = 0
+        private set
+    var tinyFrames: Int = 0
+        private set
+    var adtsStartSamples: Int = 0
+        private set
+    var adtsObjectType: Int = 0
+        private set
+    var adtsChannelConfig: Int = 0
+        private set
+    /** ADTS 头里的编码版本位：0 = MPEG-4、1 = MPEG-2，-1 = 一帧都没数出来（未知）。 */
+    var adtsMpegVersion: Int = -1
+        private set
+    var csdHex: String = ""
+        private set
+    var aacProfile: Int = -1
+        private set
+    var containerChannels: Int = 0
+        private set
+
+    private var oneAuPerSample = false
+
+    /**
+     * 声明「这个文件的音频就是一个样本一个 AU」——拆分重封后的产物复检必须走这条路。
+     *
+     * 合规 mp4a 的载荷是**裸 AAC，没有 ADTS 头**，逐帧走自然数出 0 帧；不声明的话
+     * 内容比例与密度两条门禁会把我们自己刚写好的合规文件当成哑巴拦下来。
+     */
+    fun countOneAuPerSample() {
+        oneAuPerSample = true
+    }
+
     fun add(ptsUs: Long, size: Int, buffer: ByteBuffer) {
         if (sampleRateHz == 0) sampleRateHz = AdtsFrameScanner.sampleRateHz(buffer)
-        frames += AdtsFrameScanner.countFrames(buffer, size)
+        val shape = AdtsFrameScanner.scanShape(buffer, size)
+        frames += shape.frames
+        if (shape.frames > maxAuPerSample) maxAuPerSample = shape.frames
+        if (shape.frames > 0) {
+            if (minFrameLen == 0 || shape.minFrameLen < minFrameLen) minFrameLen = shape.minFrameLen
+            if (shape.maxFrameLen > maxFrameLen) maxFrameLen = shape.maxFrameLen
+            tinyFrames += shape.tinyFrames
+            if (adtsObjectType == 0) {
+                adtsObjectType = shape.objectType
+                adtsChannelConfig = shape.channelConfig
+                adtsMpegVersion = shape.mpegVersion
+            }
+        } else if (oneAuPerSample) {
+            // 裸 AAC 载荷：一帧都认不出来正是合规的表现，帧数按样本数一一对上。
+            frames++
+            if (maxAuPerSample < 1) maxAuPerSample = 1
+            if (minFrameLen == 0 || size < minFrameLen) minFrameLen = size
+            if (size > maxFrameLen) maxFrameLen = size
+        }
+        if (shape.startsWithAdts) adtsStartSamples++
         if (samples == 0) firstSampleBytes = size
         samples++
         bytes += size.toLong()
@@ -73,6 +132,13 @@ internal class AudioScan {
      */
     fun seedSampleRateHz(hz: Int) {
         if (sampleRateHz == 0 && hz > 0) sampleRateHz = hz
+    }
+
+    /** 轨道声明的 `csd-0`/`aac-profile`/声道数：只进审计行，用来核对「声明」和「载荷」是不是一回事。 */
+    fun seedConfig(csd: ByteArray?, aacProfile: Int, channelCount: Int) {
+        if (csdHex.isEmpty()) csdHex = csd.toHexString().ifEmpty { "none" }
+        if (this.aacProfile < 0) this.aacProfile = aacProfile
+        if (containerChannels == 0) containerChannels = channelCount
     }
 
     /** 这些帧实际能播多久；帧数或采样率认不出来就是 0（未知），不是「没有声音」。 */
@@ -102,6 +168,28 @@ internal class AudioScan {
         "${prefix}SpanMs" to spanMs.toString(),
         "${prefix}MaxGapMs" to maxGapMs.toString(),
     )
+
+    /**
+     * 形状审计行字段（临时诊断）：只用来区分「源即静音」「一个样本塞了十几个 AU」
+     * 「声明与载荷不符」这三种坏法，不参与放行/拦截判定。
+     *
+     * [FramesPerSampleX100] 是帧数/样本数 ×100：合规 MP4 该是 100，TS 侧越大说明并包越严重；
+     * `AdtsStartSamples` 与 [samples] 相等就意味着产物里每个样本还带着 ADTS 头。
+     */
+    fun shapeMap(prefix: String): Map<String, String> = mapOf(
+        "${prefix}FramesPerSampleX100" to if (samples > 0) frames * 100L / samples else 0L,
+        "${prefix}AuPerSampleMax" to maxAuPerSample,
+        "${prefix}FrameLenMin" to minFrameLen,
+        "${prefix}FrameLenMax" to maxFrameLen,
+        "${prefix}TinyFrames" to tinyFrames,
+        "${prefix}AdtsStartSamples" to adtsStartSamples,
+        "${prefix}ObjType" to adtsObjectType,
+        "${prefix}ChanCfg" to adtsChannelConfig,
+        "${prefix}MpegVer" to adtsMpegVersion,
+        "${prefix}AacProfile" to aacProfile,
+        "${prefix}Channels" to containerChannels,
+        "${prefix}CsdHex" to csdHex,
+    ).mapValues { (_, value) -> value.toString() }
 }
 
 /**
@@ -161,6 +249,11 @@ internal class TsRemuxer {
                 ex.selectTrack(index)
                 val format = ex.getTrackFormat(index)
                 sourceAudio.seedSampleRateHz(sampleRateHzOf(format))
+                sourceAudio.seedConfig(
+                    csd = csdBytesOf(format),
+                    aacProfile = intOf(format, MediaFormat.KEY_AAC_PROFILE, -1),
+                    channelCount = intOf(format, MediaFormat.KEY_CHANNEL_COUNT),
+                )
                 probe.audioCsd?.let { csd -> format.setByteBuffer("csd-0", ByteBuffer.wrap(csd)) }
                 val out = try {
                     mux.addTrack(format)
@@ -177,6 +270,18 @@ internal class TsRemuxer {
             var buffer = ByteBuffer.allocate(INITIAL_BUFFER_BYTES)
             var videoSamples = 0
             var audioSamples = 0
+            // AAC-in-TS 常把十几个 AU 并成一个样本还带着 ADTS 头，直接抄进 MP4 就是不合规的 mp4a：
+            // Android 解得开，严格播放器解不开。这里按 AU 拆开重封，见 [AudioUnitWriter]。
+            val audioOutIndex = probe.audioIndex?.let { outputTracks[it] }
+            val auInfo = MediaCodec.BufferInfo()
+            val splitter = if (probe.splitAudioUnits && audioOutIndex != null) {
+                AudioUnitWriter(probe.audioRateHz) { payload, size, ptsUs ->
+                    auInfo.set(0, size, ptsUs, 0)
+                    mux.writeSampleData(audioOutIndex, payload, auInfo)
+                }
+            } else {
+                null
+            }
 
             while (true) {
                 if (isCancelled()) return RemuxResult.Cancelled
@@ -214,12 +319,17 @@ internal class TsRemuxer {
                 info.set(0, read, ptsUs, flags)
                 if (isVideo) {
                     videoSamples++
+                    mux.writeSampleData(outIndex, buffer, info)
                 } else {
                     // `writeSampleData` 会推进 position，ADTS 帧计数必须在写入之前做。
                     sourceAudio.add(ptsUs, read, buffer)
                     audioSamples++
+                    if (splitter == null) {
+                        mux.writeSampleData(outIndex, buffer, info)
+                    } else if (splitter.write(buffer, read, ptsUs) == 0) {
+                        return RemuxResult.Skipped(RemuxAudioGuard.AUDIO_AU_SPLIT_FAILED, sourceAudio)
+                    }
                 }
-                mux.writeSampleData(outIndex, buffer, info)
                 if (!ex.advance()) break
             }
 
@@ -234,8 +344,15 @@ internal class TsRemuxer {
             muxer = null
 
             val outputAudio = AudioScan()
-            verifyOutput(target, segmentDurationMs, outputAudio)?.let {
+            verifyOutput(target, segmentDurationMs, outputAudio, splitAudioUnits = splitter != null)?.let {
                 return RemuxResult.Skipped(it, sourceAudio, outputAudio)
+            }
+            // 拆完之后 AU 数必须严丝合缝：源帧数 = 写入数 = 产物复开的样本数。
+            // 少一个就是「有声音被吃掉」，而时间戳/密度/时长在样本被重铺时全都照常好看。
+            if (splitter != null) {
+                RemuxAudioGuard.auCountGate(sourceAudio.frames, splitter.writtenAus, outputAudio.samples)?.let {
+                    return RemuxResult.Skipped(it, sourceAudio, outputAudio)
+                }
             }
 
             val durationMs = outputDurationMs(target) ?: return RemuxResult.Skipped("output_unreadable")
@@ -277,6 +394,8 @@ internal class TsRemuxer {
         val audioIndex: Int?,
         val audioCsd: ByteArray?,
         val startUs: Long,
+        val audioRateHz: Int,
+        val splitAudioUnits: Boolean,
     )
 
     private sealed class ProbeOutcome {
@@ -311,22 +430,34 @@ internal class TsRemuxer {
 
             val videoStart = if (video >= 0) firstSample(extractor, video)?.first else null
             var csd: ByteArray? = null
+            var audioRateHz = 0
+            var splitAudioUnits = false
             val audioStart = if (audio >= 0) {
                 val first = firstSample(extractor, audio)
+                val head = first?.second
                 val format = extractor.getTrackFormat(audio)
                 val mime = format.getString(MediaFormat.KEY_MIME)
-                val csdSize = if (format.containsKey("csd-0")) {
-                    format.getByteBuffer("csd-0")?.remaining() ?: 0
-                } else {
-                    0
+                val rawCsd = csdBytesOf(format)
+                val hasUsableCsd = rawCsd != null && rawCsd.isNotEmpty()
+                // 有些 TS extractor 把整串 ADTS 头当 csd-0 交回来；它对 MP4 不是可用的解码配置。
+                val csdIsAdtsHeader = rawCsd != null &&
+                    AdtsFrameScanner.frameAt(ByteBuffer.wrap(rawCsd), 0, rawCsd.size) != null
+                if (RemuxAudioGuard.replacesDecoderConfig(mime, hasUsableCsd, csdIsAdtsHeader)) {
+                    csd = head?.let { AdtsAudioConfig.fromAdtsHeader(it, it.size) }
                 }
-                val hasUsableCsd = csdSize > 0
-                if (!hasUsableCsd && mime == RemuxAudioGuard.AAC_MIME) {
-                    csd = first?.second?.let { AdtsAudioConfig.fromAdtsHeader(it, it.size) }
-                }
-                RemuxAudioGuard.csdGate(mime, hasUsableCsd, csd)?.let {
+                RemuxAudioGuard.csdGate(mime, hasUsableCsd && !csdIsAdtsHeader, csd)?.let {
                     return ProbeOutcome.Skipped(it)
                 }
+                // 拆分重封的前提：轨道声明的采样率优先，容器没给就信 ADTS 头里的索引。
+                audioRateHz = intOf(format, MediaFormat.KEY_SAMPLE_RATE).takeIf { it > 0 }
+                    ?: head?.let { AdtsFrameScanner.sampleRateHz(ByteBuffer.wrap(it)) }
+                    ?: 0
+                splitAudioUnits = RemuxAudioGuard.splitsAudioUnits(
+                    mime = mime,
+                    sampleRateHz = audioRateHz,
+                    firstSampleIsAdts = head != null &&
+                        AdtsFrameScanner.frameAt(ByteBuffer.wrap(head), 0, head.size) != null,
+                )
                 first?.first
             } else {
                 null
@@ -340,6 +471,8 @@ internal class TsRemuxer {
                     audioIndex = audio.takeIf { it >= 0 },
                     audioCsd = csd,
                     startUs = startUs,
+                    audioRateHz = audioRateHz,
+                    splitAudioUnits = splitAudioUnits,
                 ),
             )
         } finally {
@@ -384,10 +517,18 @@ internal class TsRemuxer {
      * 间隔与内容两条排在分布审计之前：它们量的分别是「中间空了多久」和「总共有多久声音」，
      * 比分布统计更贴近现场，而这几条判据命中的往往是同一个坏文件。
      *
+     * 还有第七道在调用方：拆开重封的产物必须「源 ADTS 帧数 == 写入 AU 数 == 复开样本数」
+     * （[RemuxAudioGuard.auCountGate]）。这一条只有 remux 自己知道前两个数，复检拿不到。
+     *
      * 无论放行还是拒绝，产物的音频事实都写进 [out]：调用方把源和产物两份数字并排打进审计行，
      * 「声音是在下载侧丢的还是 muxer 侧丢的」才能一眼看出来。
      */
-    private fun verifyOutput(file: File, segmentDurationMs: Long, out: AudioScan): String? {
+    private fun verifyOutput(
+        file: File,
+        segmentDurationMs: Long,
+        out: AudioScan,
+        splitAudioUnits: Boolean,
+    ): String? {
         val extractor = MediaExtractor()
         return try {
             extractor.setDataSource(file.absolutePath)
@@ -403,7 +544,16 @@ internal class TsRemuxer {
             if (audioIndex < 0) return RemuxAudioGuard.OUTPUT_AUDIO_MISSING
 
             extractor.selectTrack(audioIndex)
-            out.seedSampleRateHz(sampleRateHzOf(extractor.getTrackFormat(audioIndex)))
+            val outFormat = extractor.getTrackFormat(audioIndex)
+            out.seedSampleRateHz(sampleRateHzOf(outFormat))
+            out.seedConfig(
+                csd = csdBytesOf(outFormat),
+                aacProfile = intOf(outFormat, MediaFormat.KEY_AAC_PROFILE, -1),
+                channelCount = intOf(outFormat, MediaFormat.KEY_CHANNEL_COUNT),
+            )
+            // 拆开重封的产物载荷是裸 AAC，逐帧走必然数出 0 帧；不声明「一样本一 AU」，
+            // 内容比例和密度两条门禁会把我们自己刚写好的合规文件当哑巴拦下来。
+            if (splitAudioUnits) out.countOneAuPerSample()
             if (videoIndex >= 0) extractor.selectTrack(videoIndex)
 
             var buffer = ByteBuffer.allocate(VERIFY_SAMPLE_BUFFER_BYTES)
@@ -458,10 +608,33 @@ internal class TsRemuxer {
     }
 
     /** 轨道声明的采样率：缺键、或某些实现存成 Long 而取不到时，都当没给，别把复检带崩。 */
-    private fun sampleRateHzOf(format: MediaFormat): Int = try {
-        if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 0
+    private fun sampleRateHzOf(format: MediaFormat): Int = intOf(format, MediaFormat.KEY_SAMPLE_RATE)
+
+    /** 整型轨道参数：不同实现同一个键可能存成 Int/Long/Float，取不到就回 [fallback]，诊断取值不允许抛。 */
+    private fun intOf(format: MediaFormat, key: String, fallback: Int = 0): Int = try {
+        if (format.containsKey(key)) format.getInteger(key) else fallback
     } catch (e: Exception) {
-        0
+        try {
+            format.getFloat(key).toInt()
+        } catch (ignored: Exception) {
+            fallback
+        }
+    }
+
+    /** `csd-0` 的原始字节（AAC 就是 2 字节 AudioSpecificConfig）；只进审计行，不参与判定。 */
+    private fun csdBytesOf(format: MediaFormat): ByteArray? = try {
+        val buffer = if (format.containsKey("csd-0")) format.getByteBuffer("csd-0") else null
+        buffer?.let { source ->
+            // 必须 duplicate：MediaFormat 给回来的就是它自己那只缓冲，就地 get 会把 position 顶到末尾。
+            // 之后 mux.addTrack(同一个 format) 再读就是 remaining=0，MPEG4Writer 报
+            // 「Missing codec specific data / 0 frames to dump timeStamps in Audio track」，
+            // 整条音轨一帧不写——上一轮真机把带声的 .ts 判成降级，就是这么被探没的。
+            val read = source.duplicate()
+            read.position(0)
+            ByteArray(read.remaining()).also { bytes -> read.get(bytes) }
+        }
+    } catch (e: Exception) {
+        null
     }
 
     private fun outputDurationMs(file: File): Long? {
@@ -487,4 +660,86 @@ internal class TsRemuxer {
         const val FIRST_SAMPLE_BUFFER_BYTES = 4 * 1024 * 1024
         const val VERIFY_SAMPLE_BUFFER_BYTES = 1024 * 1024
     }
+}
+
+/**
+ * 把「一个样本并了若干 ADTS 帧」的音频重封成合规 mp4a：剥掉头、一帧一个样本、
+ * 时间戳按 1024/采样率 从音频起点匀铺。
+ *
+ * 为什么必须拆：`MediaExtractor` 读 TS 里的 AAC 时实测每样本并了 15.47 帧，而且载荷仍带 ADTS 头
+ * （862 秒的片子只有 2611 个样本、里面装着 40411 个 AU）。直接抄进 MP4，Android 自己的解码器
+ * 认这种写法，相册、网页、电视盒子、剪辑软件这类严格按「一样本一 AU、不带 ADTS 头」走的解码器
+ * 就只解得出每样本第一个 AU——862 秒只剩 55 秒，听感就是「没声音」。而这一切发生时时间戳一条没丢、
+ * 密度均匀、首尾对齐：原有的六条门禁全绿。
+ *
+ * 为什么时间戳不跟源样本的 PTS 走：合规 AAC 每帧时长恒等于 `1024/采样率`，源里每样本并几帧是
+ * **打包**的决定，不是**时间**的决定。跟源样本走会两头出错——某样本并到第 16 帧就越过下一个样本的
+ * 起点（时间戳倒退，把好流误判成坏流而整条放弃）；源里真有几十秒空洞时，又恰恰把空洞原样复刻进产物。
+ * 这里从第一个音频样本的 PTS 起按 AU 序号匀铺：单调性由构造保证，音频总时长等于
+ * 「AU 数 × 1024/采样率」这个绝对量。真有空洞的流会因此「提前收尾」，由音视频末尾对齐门禁拦下；
+ * 注水的流由内容时长比例门禁拦下——两条都只看 AU 数，不依赖源时间轴的形状，反而更准。
+ *
+ * [sink] 只在同一时刻拿到那只复用缓冲，必须**立刻**把它写走（`MediaMuxer.writeSampleData`
+ * 就是同步拷贝），不许存下来稍后再用。缓冲的位置恒为 0、长度恒等于 [MediaCodec.BufferInfo.size]，
+ * 因为 `writeSampleData` 对堆缓冲和直连缓冲走两条路径，靠 offset 推断起点最容易出错。
+ */
+internal class AudioUnitWriter(
+    private val rateHz: Int,
+    private val sink: (payload: ByteBuffer, size: Int, ptsUs: Long) -> Unit,
+) {
+
+    private var payload = ByteBuffer.allocate(AU_BUFFER_BYTES)
+    private var startUs = -1L
+    private var totalAus = 0
+
+    /**
+     * 写出 [source] 前 [size] 字节里的每一个 AU，返回写了几个；返回 0 表示这一路拆不下去，
+     * 调用方据此放弃整条流——半拆半不拆的产物是只有严格播放器才会踩的混合封装，不能赌。
+     *
+     * [basePtsUs] 只在第一个样本被读取时采用，作为整条音频时间轴的起点；之后一律由 AU 序号推导。
+     */
+    fun write(source: ByteBuffer, size: Int, basePtsUs: Long): Int {
+        if (startUs < 0L) startUs = basePtsUs
+        var offset = 0
+        var index = 0
+        while (true) {
+            val frame = AdtsFrameScanner.frameAt(source, offset, size) ?: break
+            if (frame.payloadSize <= 0) return 0
+            if (frame.payloadSize > payload.capacity()) payload = ByteBuffer.allocate(frame.payloadSize)
+            payload.clear()
+            // 每帧另开一只视图：position/limit 只能各用一次，复用同一只会在第二帧
+            // 「newPosition(47) > limit(40)」当场炸掉——真机每个样本并十几帧，第一帧之后就是这条路径。
+            val slice = source.duplicate()
+            slice.position(frame.payloadStart)
+            slice.limit(frame.payloadStart + frame.payloadSize)
+            payload.put(slice)
+            payload.flip()
+            sink(payload, frame.payloadSize, AdtsFrameScanner.auPtsUs(startUs, totalAus, rateHz))
+            offset = frame.nextOffset
+            totalAus++
+            index++
+        }
+        return index
+    }
+
+    /** 已经写出的 AU 总数，就是产物的音频样本数；[RemuxAudioGuard.auCountGate] 拿它对账。 */
+    val writtenAus: Int get() = totalAus
+
+    private companion object {
+        /** 一帧 AAC 常见上百字节，先按 4KB 起步，超出时按需长大。 */
+        const val AU_BUFFER_BYTES = 4 * 1024
+    }
+}
+
+private const val CSD_HEX_MAX_BYTES = 16
+
+/** 轨道配置的前 16 字节十六进制：`csd-0` 就 2 字节，超长的（视频 SPS/PPS）截断，别把审计行撑爆。 */
+private fun ByteArray?.toHexString(): String {
+    if (this == null) return ""
+    val hex = StringBuilder(size.coerceAtMost(CSD_HEX_MAX_BYTES) * 2)
+    for (index in 0 until size.coerceAtMost(CSD_HEX_MAX_BYTES)) {
+        hex.append("0123456789abcdef"[(this[index].toInt() shr 4) and 0x0F])
+        hex.append("0123456789abcdef"[this[index].toInt() and 0x0F])
+    }
+    return hex.toString()
 }
