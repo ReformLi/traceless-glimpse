@@ -24,7 +24,7 @@ class RemuxWiringTest {
         assertTrue("转封装期间要有独立的进度阶段", downloader.contains("phase = REMUX_PHASE"))
         assertTrue("成功要留一行", downloader.contains("\"hls_remux_done\""))
         assertTrue("降级要留一行", downloader.contains("\"hls_remux_skipped\""))
-        assertTrue("降级事实要传回界面", downloader.contains("remuxFallback = remuxFallback"))
+        assertTrue("降级事实要带进终态事件", downloader.contains("remuxFallback = remuxFallback"))
         assertTrue("音轨降级要单独标记", downloader.contains("remuxAudioFallback = remuxAudioFallback"))
         assertTrue("源 .ts 只能在 mp4 落地后删", downloader.contains("if (mp4Part.renameTo(mp4Final))"))
     }
@@ -166,23 +166,34 @@ class RemuxWiringTest {
         assertTrue("计划要带分片时长", downloader.contains("segmentDurationSeconds = media.targetDurationSeconds"))
     }
 
+    /**
+     * 转封装的三句事实各自都得「有人写、有人读」。
+     *
+     * 主页瘦身后没有完成卡了，这些事实只剩一条活路：写进记录、由下载页那一行按键取文案。
+     * 少一环，用户看到的就是一个卡在 100% 的任务，或一个播放器打不开却没人说明的 `.ts`。
+     */
     @Test
-    fun theUiShowsTheRemuxPhaseAndTheFallbackLine() {
+    fun theRemuxFactsLandInTheDownloadRow() {
         val strings = File("src/main/res/values/strings.xml").readText()
-        val browser = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
-        val home = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
-        val viewModel = File("$SRC_ROOT/ui/HomeViewModel.kt").readText()
+        val record = File("$SRC_ROOT/data/history/DownloadRecord.kt").readText()
+        val coordinator = File("$SRC_ROOT/data/download/DownloadCoordinator.kt").readText()
+        val list = File("$SRC_ROOT/ui/HistoryScreen.kt").readText()
 
         assertTrue("转封装阶段要有提示", strings.contains("正在转封装为 MP4…"))
         assertTrue("降级文案按约定", strings.contains("转封装失败，已保留 .ts（系统播放器可能不认这个格式）"))
         assertTrue("音轨降级文案按约定", strings.contains("转封装失败，已保留原格式（含音频）"))
-        assertTrue("浏览器抽屉要认 remux 阶段", browser.contains("R.string.download_remuxing"))
-        assertTrue("下载卡片也要认 remux 阶段", home.contains("R.string.download_remuxing"))
-        assertTrue("完成卡要显示降级提示", browser.contains("R.string.download_remux_fallback"))
-        assertTrue("浏览器要认音轨降级文案", browser.contains("R.string.download_remux_fallback_audio"))
-        assertTrue("下载卡也要认音轨降级文案", home.contains("R.string.download_remux_fallback_audio"))
-        assertTrue("终态要把降级事实带进成功卡", viewModel.contains("remuxFallback = true"))
-        assertTrue("终态要把音轨降级事实带进成功卡", viewModel.contains("remuxAudioFallback = event.remuxAudioFallback"))
+
+        assertTrue("阶段 key 要登记", record.contains("const val REMUXING = \"remuxing\""))
+        assertTrue("降级 key 要登记", record.contains("const val REMUX_FALLBACK = \"remux_fallback\""))
+        assertTrue("音轨降级 key 要登记", record.contains("const val REMUX_AUDIO_FALLBACK = \"remux_audio_fallback\""))
+
+        assertTrue("心跳要写转封装阶段", coordinator.contains("RecordNotes.REMUXING"))
+        assertTrue("终态要写通用降级 key", coordinator.contains("RecordNotes.REMUX_FALLBACK"))
+        assertTrue("终态要写音频降级细分 key", coordinator.contains("RecordNotes.REMUX_AUDIO_FALLBACK"))
+
+        assertTrue("下载行要认转封装阶段", list.contains("RecordNotes.REMUXING -> stringResource(R.string.download_remuxing)"))
+        assertTrue("下载行要认降级文案", list.contains("RecordNotes.REMUX_FALLBACK -> stringResource(R.string.download_remux_fallback)"))
+        assertTrue("下载行要认音轨降级文案", list.contains("RecordNotes.REMUX_AUDIO_FALLBACK -> stringResource(R.string.download_remux_fallback_audio)"))
     }
 
     /**

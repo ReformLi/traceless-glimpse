@@ -53,12 +53,22 @@ internal fun localTask(
  */
 internal const val LOCAL_TASK_PREFIX = "local_"
 
+/**
+ * 本机画质表的占位 id，和 `LocalDirectDownloader.LOCAL_TABLE_ID` 是同一个串。
+ *
+ * 它会被 `attachTask` 回填进历史行的 `taskId`，所以「这是不是引擎句柄」的判定必须认得它：
+ * 不认，冷启动对账就把它当远端任务，引擎离线时永远 `skipped`，那一行会一直挂着「嗅探中」，
+ * 而盘上的产物早就下完了。`LocalTaskIdNamespaceTest` 把这个串钉死，防止两边各写一份漂移。
+ */
+internal const val LOCAL_TABLE_TASK_ID = "local"
+
 /** 取消要能找回同一条在跑的下载：id 由直链本身决定，不靠调用方传。 */
 internal fun localTaskId(mediaUrl: String): String =
     LOCAL_TASK_PREFIX + mediaUrl.hashCode().toUInt().toString(16)
 
-/** 发往引擎之前必须过这一关：本地句柄没有远端对应物。 */
-internal fun isLocalTaskId(taskId: String): Boolean = taskId.startsWith(LOCAL_TASK_PREFIX)
+/** 发往引擎之前必须过这一关：本地句柄（含画质表占位 id）没有远端对应物。 */
+internal fun isLocalTaskId(taskId: String): Boolean =
+    taskId.startsWith(LOCAL_TASK_PREFIX) || taskId == LOCAL_TABLE_TASK_ID
 
 /** 进度对象：`phase` 用本地命名，`percent` 由字节数算（拿不到总长时留 0，界面自会显示「暂无进度」口径）。 */
 internal fun localProgress(

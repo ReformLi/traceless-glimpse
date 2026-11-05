@@ -68,6 +68,19 @@ class LocalHandleIsolationTest {
         assertEquals("拦在发请求之前", 0, server.requestCount)
     }
 
+    /**
+     * 画质表那个占位 id 也会被回填进历史行的 `taskId`，它同样没有远端对应物：
+     * 发过去只会让引擎回一句「任务不存在」，把本机拿错句柄伪装成引擎的诊断。
+     */
+    @Test
+    fun cancelRefusesTheLocalFormatTablePlaceholderToo() {
+        val boom = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { downloader.cancel("local") }
+        }
+        assertTrue(boom.message!!.contains("本地任务句柄不得发往引擎"))
+        assertEquals("拦在发请求之前", 0, server.requestCount)
+    }
+
     /** 守卫别只剩一个入口：定义 1 处 + 调用 2 处，且都在 `HttpDownloader.kt` 里。 */
     @Test
     fun bothHttpEntriesStillCallTheGuard() {

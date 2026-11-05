@@ -46,7 +46,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Badge
@@ -61,6 +60,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -97,13 +99,11 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
-import com.hpu.browseguard.data.backend.REMUX_PHASE
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.browser.BrowserCandidate
 import com.hpu.browseguard.data.browser.BrowserSniffController
 import com.hpu.browseguard.data.browser.BrowserSniffState
 import com.hpu.browseguard.shared.model.SniffResult
-import com.hpu.browseguard.ui.components.ConfirmDialog
 import java.net.URI
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -154,12 +154,10 @@ fun BrowserRoute(
         onDownload = { result ->
             viewModel.downloadFromBrowser(result, sniff.pageUrl, sniff.title)
         },
-        onCancelDownload = viewModel::cancelDownload,
         onClose = viewModel::exitBrowser,
+        onQueuedHintShown = viewModel::consumeQueuedHint,
         onPageVisibleChange = viewModel::setBrowserPageVisible,
         onSwitchToEngine = { viewModel.selectSniffExecutor(SniffExecutor.ENGINE) },
-        onGrantCookieConsent = viewModel::grantCookieConsent,
-        onDenyCookieConsent = viewModel::denyCookieConsent,
     )
 }
 
@@ -169,16 +167,15 @@ internal fun BrowserScreen(
     sniff: BrowserSniffState,
     controller: BrowserSniffController,
     onDownload: (SniffResult) -> Unit,
-    onCancelDownload: () -> Unit,
     onClose: () -> Unit,
+    onQueuedHintShown: () -> Unit,
     onPageVisibleChange: (Boolean) -> Unit,
     onSwitchToEngine: () -> Unit,
-    onGrantCookieConsent: () -> Unit,
-    onDenyCookieConsent: () -> Unit,
 ) {
     val holder = remember { WebViewHolder() }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val snackbarHostState = remember { SnackbarHostState() }
     var address by rememberSaveable { mutableStateOf(state.sourceUrl.takeIf(::isBrowserUrl).orEmpty()) }
     var addressInvalid by remember { mutableStateOf(false) }
     var progress by remember { mutableIntStateOf(0) }
@@ -345,22 +342,31 @@ internal fun BrowserScreen(
                     }
                 }
 
-                BrowserDownloadCard(phase = state.download, onCancel = onCancelDownload)
+                BrowserDownloadCard(state)
+            }
+
+            // 网页露出时浏览器盖在主页上面，轻提示由这里播；隐藏深嗅时主页那层负责。
+            if (state.isWebViewVisible) {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
+                ) { data ->
+                    Snackbar(snackbarData = data)
+                }
             }
         }
     }
 
-    val awaiting = state.download as? DownloadPhase.AwaitingCookieConsent
-    awaiting?.let { phase ->
-        ConfirmDialog(
-            title = stringResource(R.string.cookie_consent_title, phase.host),
-            message = stringResource(R.string.cookie_consent_body),
-            confirmLabel = stringResource(R.string.cookie_consent_agree),
-            dismissLabel = stringResource(R.string.cookie_consent_reject),
-            onConfirm = onGrantCookieConsent,
-            onDismiss = onDenyCookieConsent,
-        )
+    LaunchedEffect(state.queuedHint, state.isWebViewVisible) {
+        val hint = state.queuedHint ?: return@LaunchedEffect
+        if (!state.isWebViewVisible) return@LaunchedEffect
+        onQueuedHintShown()
+        snackbarHostState.showSnackbar(hint)
     }
+
+    // Cookie 授权弹窗由 BgvApp 根容器渲染：三个 Tab 和浏览器页面都能看到，不在这里重复。
 
     if (showResults) {
         SniffResultsDialog(
@@ -927,98 +933,37 @@ private fun FormatTag(text: String) {
         )
     }
 }
-
+/**
+ * 浏览器这一侧只说「还没交给队列」的那一段。
+ *
+ * 任务一旦进队列，进度、成败、文件位置都由「下载」那一页报，这里连取消都不放：
+ * 取消是任务级操作，入口只留一个，就在列表行上。
+ */
 @Composable
-private fun BrowserDownloadCard(phase: DownloadPhase, onCancel: () -> Unit) {
-    if (phase is DownloadPhase.Idle) return
-    var confirmCancel by remember { mutableStateOf(false) }
+private fun BrowserDownloadCard(state: HomeUiState) {
+    val phase = state.download
+    val waitingForConsent = state.consentWait != null
+    if (!waitingForConsent &&
+        phase !is DownloadPhase.Preparing &&
+        phase !is DownloadPhase.Selecting &&
+        phase !is DownloadPhase.Failed
+    ) {
+        return
+    }
     Surface(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-            when (phase) {
-                is DownloadPhase.Preparing, is DownloadPhase.Selecting -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = stringResource(R.string.browser_download_preparing),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+            when {
+                waitingForConsent -> Text(
+                    text = stringResource(R.string.browser_consent_waiting),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
-                is DownloadPhase.AwaitingCookieConsent -> {
-                    Text(
-                        text = stringResource(R.string.browser_consent_waiting),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                is DownloadPhase.Running -> {
-                    val task = phase.task
-                    val progress = task.progress
-                    val percent = (progress?.percent ?: 0.0).coerceIn(0.0, 100.0)
-                    val determinate = progress != null && (progress.bytesTotal > 0 || progress.percent > 0)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = stringResource(R.string.browser_download_running),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        if (determinate) {
-                            Text(
-                                text = String.format(Locale.ROOT, "%.0f%%", percent),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    if (determinate) {
-                        LinearProgressIndicator(
-                            progress = { (percent / 100.0).toFloat() },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = runningDetail(task, stringResource(R.string.download_remuxing)),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        TextButton(onClick = { confirmCancel = true }, enabled = !phase.cancelRequested) {
-                            Text(
-                                stringResource(
-                                    if (phase.cancelRequested) R.string.download_cancelling else R.string.download_cancel,
-                                ),
-                            )
-                        }
-                    }
-                }
-
-                is DownloadPhase.Success -> BrowserSuccessContent(phase)
-
-                is DownloadPhase.Cancelled -> {
-                    Text(
-                        text = stringResource(R.string.browser_download_cancelled),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                is DownloadPhase.Failed -> {
+                phase is DownloadPhase.Failed -> {
                     Text(
                         text = stringResource(R.string.browser_download_failed),
                         style = MaterialTheme.typography.titleSmall,
@@ -1040,110 +985,18 @@ private fun BrowserDownloadCard(phase: DownloadPhase, onCancel: () -> Unit) {
                     )
                 }
 
-                DownloadPhase.Idle -> Unit
+                else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = stringResource(R.string.browser_download_preparing),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
-
-    if (confirmCancel) {
-        ConfirmDialog(
-            title = stringResource(R.string.download_cancel_title),
-            message = stringResource(R.string.download_cancel_message),
-            confirmLabel = stringResource(R.string.download_cancel),
-            dismissLabel = stringResource(R.string.download_cancel_keep),
-            destructive = true,
-            onConfirm = {
-                confirmCancel = false
-                onCancel()
-            },
-            onDismiss = { confirmCancel = false },
-        )
-    }
-}
-
-@Composable
-private fun BrowserSuccessContent(phase: DownloadPhase.Success) {
-    val context = LocalContext.current
-    val path = phase.publishedPath ?: localOutputPath(phase.task)
-    var openProblem by remember(phase.task.id) { mutableStateOf<OpenFileProblem?>(null) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-            imageVector = Icons.Filled.CheckCircle,
-            contentDescription = null,
-            tint = Color(0xFF16A34A),
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = stringResource(R.string.browser_download_done),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
-        )
-        if (!phase.publishing) {
-            TextButton(onClick = { openProblem = path?.let { openLocalFile(context, it) } }, enabled = path != null) {
-                Text(stringResource(R.string.browser_download_open))
-            }
-        }
-    }
-    path?.let {
-        Text(
-            text = it,
-            style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    if (phase.publishing) {
-        Text(
-            text = stringResource(R.string.download_publishing),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    phase.publishWarning?.let { warning ->
-        Text(
-            text = stringResource(R.string.download_publish_failed, warning),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
-    if (phase.remuxFallback) {
-        Text(
-            text = stringResource(
-                if (phase.remuxAudioFallback) {
-                    R.string.download_remux_fallback_audio
-                } else {
-                    R.string.download_remux_fallback
-                },
-            ),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    openProblem?.let { problem ->
-        Text(
-            text = openProblemText(problem),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
-}
-
-private fun runningDetail(task: com.hpu.browseguard.shared.model.Task, remuxLabel: String): String {
-    val progress = task.progress ?: return ""
-    if (progress.phase == REMUX_PHASE) return remuxLabel
-    val parts = ArrayList<String>(3)
-    if (progress.bytesTotal > 0) {
-        parts += "${formatBytes(progress.bytesDownloaded)} / ${formatBytes(progress.bytesTotal)}"
-    } else {
-        progress.phase.takeIf { it.isNotBlank() }?.let(parts::add)
-        parts += formatBytes(progress.bytesDownloaded)
-    }
-    if (progress.speedBps > 0) parts += "${formatBytes(progress.speedBps)}/s"
-    return parts.joinToString(" · ")
 }
 
 private fun isBrowserUrl(value: String): Boolean =

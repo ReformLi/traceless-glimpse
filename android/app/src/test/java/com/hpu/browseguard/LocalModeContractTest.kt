@@ -42,10 +42,15 @@ class LocalModeContractTest {
     @Test
     fun aSingleFormatRowIsSelectedAutomatically() {
         val body = functionBody(viewModel, "applyDownloadEvent")
-        assertTrue("扫描没落到位：$body", body.contains("toFinalPhase()"))
+        assertTrue("扫描没落到位：$body", body.contains("DownloadPhase.Selecting(event.taskId, event.formats)"))
         assertTrue(
             "Selecting 分支必须拿 singleOrNull 自动选中",
             body.contains("event.formats.singleOrNull()?.formatId"),
+        )
+        // 画质表这条流只走到「挑画质」为止；进度与终态归下载队列，界面再镜像一份就会出现两份进度。
+        assertTrue(
+            "开下以后的事件必须整支丢弃",
+            body.contains("is DownloadEvent.Started, is DownloadEvent.Progress, is DownloadEvent.Terminal -> Unit"),
         )
     }
 

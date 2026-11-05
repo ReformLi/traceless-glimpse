@@ -18,12 +18,19 @@ import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.cookie.CookieConsentStore
 import com.hpu.browseguard.data.cookie.CookieVault
+import com.hpu.browseguard.data.history.ArtifactPresence
+import com.hpu.browseguard.data.history.DeleteChoice
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.ReconcileReport
 import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.history.TaskLookup
 import com.hpu.browseguard.data.history.defaultHistoryTitle
+import com.hpu.browseguard.data.media.ArtifactSnapshot
+import com.hpu.browseguard.data.media.MediaProbe
+import com.hpu.browseguard.data.output.ArtifactChange
+import com.hpu.browseguard.data.output.ArtifactMover
+import com.hpu.browseguard.data.output.MoveTarget
 import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.HealthResponse
@@ -31,6 +38,7 @@ import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.shared.model.Task
 import java.io.File
 import java.util.Collections
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -281,6 +289,69 @@ class FakeCookieVault(initial: Map<String, String> = emptyMap()) : CookieVault {
     }
 }
 
+/**
+ * 搬运工替身：只记「收到什么请求」，结果由测试逐条摆布。
+ *
+ * 默认全部成功——批量操作那些测试想看的是编排（谁被回填、谁被跳过、权限没抓住时
+ * 是不是一个都没动），不是搬运本身；搬运自己的 `(1)` 追加与失败保原文件另有真机验收。
+ */
+class FakeArtifactMover : ArtifactMover {
+
+    data class RenameCall(val recordId: String, val newBaseName: String)
+    data class MoveCall(val recordId: String, val target: MoveTarget)
+
+    val renameCalls: MutableList<RenameCall> = Collections.synchronizedList(mutableListOf())
+    val moveCalls: MutableList<MoveCall> = Collections.synchronizedList(mutableListOf())
+    val permittedUris: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    /** null 表示这个文件夹能用；否则原样回给用户的那句拒绝原因。 */
+    var permitDenial: String? = null
+
+    /** 改名/移动的结果，按第几次调用取用；用完回落到 [fallback]。 */
+    val renameResults: MutableList<ArtifactChange> = Collections.synchronizedList(mutableListOf())
+    val moveResults: MutableList<ArtifactChange> = Collections.synchronizedList(mutableListOf())
+    var fallback: ArtifactChange = ArtifactChange.Changed("/phone/moved/clip.mp4", "clip.mp4", 2_048L)
+
+    /** 非空时每次搬运都先等它：用来验证「一批还在跑时点第二下，不该开出第二批」。 */
+    var holdOn: CompletableDeferred<Unit>? = null
+
+    override suspend fun rename(record: DownloadRecord, newBaseName: String): ArtifactChange {
+        renameCalls += RenameCall(record.id, newBaseName)
+        holdOn?.await()
+        return next(renameResults, renameCalls.size)
+    }
+
+    override suspend fun move(record: DownloadRecord, target: MoveTarget): ArtifactChange {
+        moveCalls += MoveCall(record.id, target)
+        holdOn?.await()
+        return next(moveResults, moveCalls.size)
+    }
+
+    override fun permitTarget(treeUri: String): String? {
+        permittedUris += treeUri
+        return permitDenial
+    }
+
+    private fun next(results: List<ArtifactChange>, callCount: Int): ArtifactChange =
+        results.getOrNull(callCount - 1) ?: fallback
+}
+
+/** 产物探测替身：把「界面有没有去问文件系统」记下来，读数由测试摆布。 */
+class FakeMediaProbe(
+    var snapshot: ArtifactSnapshot? = null,
+    var snapshotForId: MutableMap<String, ArtifactSnapshot> = mutableMapOf(),
+) : MediaProbe {
+
+    val probed: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun probe(record: DownloadRecord): ArtifactSnapshot {
+        probed += record.id
+        return snapshotForId[record.id]
+            ?: snapshot
+            ?: ArtifactSnapshot(record = record, presence = ArtifactPresence.PRESENT, fileName = "clip.mp4")
+    }
+}
+
 /** 内存版历史仓库：让 JVM 单测能看见 HomeViewModel 到底写了什么。 */
 class FakeHistoryRepository : HistoryRepository {
 
@@ -289,6 +360,10 @@ class FakeHistoryRepository : HistoryRepository {
     override val records: Flow<List<DownloadRecord>> = state
 
     val calls: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    /** 界面传来的删除选择，用来验证「公开目录必须二选一」真的走到了仓库。 */
+    val deleteChoices: MutableList<Pair<String, DeleteChoice>> =
+        Collections.synchronizedList(mutableListOf())
 
     val rows: List<DownloadRecord>
         get() = state.value
@@ -328,22 +403,48 @@ class FakeHistoryRepository : HistoryRepository {
         }
     }
 
-    override suspend fun markDone(id: String, outputPath: String?, format: String?) {
+    override suspend fun markProgress(
+        id: String,
+        downloadedBytes: Long,
+        bytesTotal: Long,
+        speedBps: Long,
+        note: String?,
+    ) {
+        calls += "markProgress"
+        update(id) {
+            it.copy(
+                downloadedBytes = downloadedBytes,
+                bytesTotal = bytesTotal,
+                speedBps = speedBps,
+                note = note,
+            )
+        }
+    }
+
+    override suspend fun markDone(
+        id: String,
+        outputPath: String?,
+        format: String?,
+        sizeBytes: Long?,
+        note: String?,
+    ) {
         calls += "markDone"
         update(id) {
             it.copy(
                 status = RecordStatus.DONE,
                 outputPath = outputPath ?: it.outputPath,
                 format = format ?: it.format,
+                sizeBytes = sizeBytes ?: it.sizeBytes,
+                note = note,
             )
         }
     }
 
-    override suspend fun markFailed(id: String, errorCode: String?) {
+    override suspend fun markFailed(id: String, errorCode: String?, errorMessage: String?) {
         calls += "markFailed"
         // 与 RoomHistoryRepository 同一条契约：已完成的记录不被后来的失败改写。
         if (state.value.any { it.id == id && it.status == RecordStatus.DONE }) return
-        update(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode) }
+        update(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode, errorMessage = errorMessage) }
     }
 
     override suspend fun markCancelled(id: String) {
@@ -352,8 +453,32 @@ class FakeHistoryRepository : HistoryRepository {
         update(id) { it.copy(status = RecordStatus.CANCELLED) }
     }
 
-    override suspend fun delete(id: String): Boolean {
+    override suspend fun abandon(id: String): Boolean {
+        calls += "abandon"
+        val row = state.value.firstOrNull { it.id == id } ?: return false
+        if (row.status == RecordStatus.DONE) return false
+        if (row.outputPath != null) {
+            update(id) { it.copy(status = RecordStatus.CANCELLED) }
+            return false
+        }
+        state.value = state.value.filterNot { it.id == id }
+        return true
+    }
+
+    override suspend fun updateArtifact(id: String, outputPath: String, title: String?, sizeBytes: Long?) {
+        calls += "updateArtifact"
+        update(id) {
+            it.copy(
+                outputPath = outputPath,
+                title = title ?: it.title,
+                sizeBytes = sizeBytes ?: it.sizeBytes,
+            )
+        }
+    }
+
+    override suspend fun delete(id: String, choice: DeleteChoice): Boolean {
         calls += "delete"
+        deleteChoices += id to choice
         state.value = state.value.filterNot { it.id == id }
         return false
     }

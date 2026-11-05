@@ -23,9 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
@@ -42,10 +40,14 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,8 +69,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.backend.DownloadExecutor
-import com.hpu.browseguard.data.backend.REMUX_PHASE
 import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.download.ConsentWait
 import com.hpu.browseguard.shared.model.Codec
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.DrmSystem
@@ -81,11 +83,7 @@ import com.hpu.browseguard.shared.model.MediaStreamType
 import com.hpu.browseguard.shared.model.Resolution
 import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.shared.model.SniffResult
-import com.hpu.browseguard.shared.model.Task
-import com.hpu.browseguard.shared.model.TaskMode
-import com.hpu.browseguard.shared.model.TaskProgress
 import com.hpu.browseguard.shared.model.TaskStatus
-import com.hpu.browseguard.ui.components.ConfirmDialog
 import com.hpu.browseguard.ui.components.ErrorCard
 import com.hpu.browseguard.ui.components.StateView
 import com.hpu.browseguard.ui.components.StateViewKind
@@ -104,6 +102,7 @@ fun HomeRoute(
             container.audit,
             container.history,
             container.cookieConsents,
+            container.downloads,
         ),
     ),
 ) {
@@ -132,10 +131,7 @@ fun HomeRoute(
                     onEditNamingTemplate = viewModel::editNamingTemplate,
                     onToggleMerge = viewModel::toggleMerge,
                     onStartDownload = viewModel::startDownload,
-                    onCancelDownload = viewModel::cancelDownload,
-                    onResetDownload = viewModel::resetDownload,
-                    onGrantCookieConsent = viewModel::grantCookieConsent,
-                    onDenyCookieConsent = viewModel::denyCookieConsent,
+                    onQueuedHintShown = viewModel::consumeQueuedHint,
                 )
             }
         }
@@ -159,85 +155,82 @@ fun HomeScreen(
     onEditNamingTemplate: (String) -> Unit,
     onToggleMerge: (Boolean) -> Unit,
     onStartDownload: () -> Unit,
-    onCancelDownload: () -> Unit,
-    onResetDownload: () -> Unit,
-    onGrantCookieConsent: () -> Unit,
-    onDenyCookieConsent: () -> Unit,
+    onQueuedHintShown: () -> Unit,
 ) {
-    val awaiting = state.download as? DownloadPhase.AwaitingCookieConsent
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
-    ) {
-        Text(
-            text = stringResource(R.string.home_title),
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(Modifier.height(4.dp))
-        val (sniffPart, downloadPart) = homeSubtitleRes(state.sniffExecutor, state.downloadExecutor)
-        Text(
-            text = stringResource(R.string.home_subtitle, stringResource(sniffPart), stringResource(downloadPart)),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        state.sniffNotice?.let { notice ->
-            Spacer(Modifier.height(14.dp))
-            NoticeBanner(notice, onDismissSniffNotice)
-        }
-
-        Spacer(Modifier.height(18.dp))
-        SniffWorkCard(
-            state = state,
-            onRefreshConnection = onRefresh,
-            onSelectSniffExecutor = onSelectSniffExecutor,
-            onEditSourceUrl = onEditSourceUrl,
-            onOpenBrowser = onOpenBrowser,
-            onSniff = onSniff,
-            onPickFormats = onPickFormats,
-        )
-
-        val download = state.download
-        if (download is FormatPickable) {
-            Spacer(Modifier.height(16.dp))
-            FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
-        }
-        if (download is DownloadPhase.Running || download is DownloadPhase.Success ||
-            download is DownloadPhase.Cancelled || download is DownloadPhase.Failed
+    val snackbarHostState = remember { SnackbarHostState() }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 24.dp),
         ) {
-            Spacer(Modifier.height(16.dp))
-            DownloadCard(
+            Text(
+                text = stringResource(R.string.home_title),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            val (sniffPart, downloadPart) = homeSubtitleRes(state.sniffExecutor, state.downloadExecutor)
+            Text(
+                text = stringResource(
+                    R.string.home_subtitle,
+                    stringResource(sniffPart),
+                    stringResource(downloadPart),
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            state.sniffNotice?.let { notice ->
+                Spacer(Modifier.height(14.dp))
+                NoticeBanner(notice, onDismissSniffNotice)
+            }
+
+            Spacer(Modifier.height(18.dp))
+            SniffWorkCard(
                 state = state,
-                phase = download,
-                onCancel = onCancelDownload,
-                onRetryPrepare = onPickFormats,
-                onRetrySniff = onSniff,
+                onRefreshConnection = onRefresh,
+                onSelectSniffExecutor = onSelectSniffExecutor,
+                onEditSourceUrl = onEditSourceUrl,
+                onOpenBrowser = onOpenBrowser,
+                onSniff = onSniff,
+                onPickFormats = onPickFormats,
+            )
+
+            val download = state.download
+            if (download is FormatPickable) {
+                Spacer(Modifier.height(16.dp))
+                FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
+            }
+            // 按下「开始下载」之后这里就空了：进度、成败、文件位置都搬到「下载」那一页去说。
+            if (download is DownloadPhase.Failed) {
+                Spacer(Modifier.height(16.dp))
+                DownloadTriggerFailedCard(state, download, onPickFormats, onSniff)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            EngineSettingsSection(
+                state = state,
+                onRefresh = onRefresh,
+                onEditEngineUrl = onEditEngineUrl,
+                onSaveEngineUrl = onSaveEngineUrl,
+                onSelectDownloadExecutor = onSelectDownloadExecutor,
             )
         }
-
-        Spacer(Modifier.height(16.dp))
-        EngineSettingsSection(
-            state = state,
-            onRefresh = onRefresh,
-            onEditEngineUrl = onEditEngineUrl,
-            onSaveEngineUrl = onSaveEngineUrl,
-            onSelectDownloadExecutor = onSelectDownloadExecutor,
-        )
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp),
+        ) { data -> Snackbar(snackbarData = data) }
     }
 
-    // 阻断式：这一层不写历史、不标失败，任务就停在这里等一次显式点头。
-    awaiting?.let { phase ->
-        ConfirmDialog(
-            title = stringResource(R.string.cookie_consent_title, phase.host),
-            message = stringResource(R.string.cookie_consent_body),
-            confirmLabel = stringResource(R.string.cookie_consent_agree),
-            dismissLabel = stringResource(R.string.cookie_consent_reject),
-            onConfirm = onGrantCookieConsent,
-            onDismiss = onDenyCookieConsent,
-        )
+    // 轻提示读一次就消费：下一次回到主页不再重播同一句「已加入队列」。
+    LaunchedEffect(state.queuedHint) {
+        val hint = state.queuedHint ?: return@LaunchedEffect
+        onQueuedHintShown()
+        snackbarHostState.showSnackbar(hint)
     }
 }
 
@@ -1023,294 +1016,30 @@ private fun MetaChip(text: String) {
     }
 }
 
+/**
+ * 「开始下载」这一下就没成功：画质表都拉不出来，任务根本没进队列。
+ *
+ * 已经进队列的任务不在这里说话——它的成败由「下载」那一页报。
+ */
 @Composable
-private fun DownloadCard(
-    state: HomeUiState,
-    phase: DownloadPhase,
-    onCancel: () -> Unit,
-    onRetryPrepare: () -> Unit,
-    onRetrySniff: () -> Unit,
-) {
-    BgvCard {
-        when (phase) {
-            is DownloadPhase.Running -> RunningDownloadContent(phase, onCancel)
-            is DownloadPhase.Success -> SuccessDownloadContent(state, phase, onRetryPrepare)
-            is DownloadPhase.Cancelled -> CancelledDownloadContent(state, onRetryPrepare, onRetrySniff)
-            is DownloadPhase.Failed -> FailedDownloadContent(state, phase, onRetryPrepare, onRetrySniff)
-            else -> Unit
-        }
-    }
-}
-
-@Composable
-private fun RunningDownloadContent(phase: DownloadPhase.Running, onCancel: () -> Unit) {
-    var confirmCancel by remember { mutableStateOf(false) }
-    val task = phase.task
-    val progress = task.progress
-    val total = progress?.bytesTotal ?: 0L
-    val downloaded = progress?.bytesDownloaded ?: 0L
-    val speed = progress?.speedBps ?: 0L
-    val eta = progress?.etaSeconds ?: 0
-    val percent = (progress?.percent ?: 0.0).coerceIn(0.0, 100.0)
-
-    Text(
-        text = stringResource(R.string.download_running_title),
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Medium,
-    )
-    Spacer(Modifier.height(4.dp))
-    Text(
-        text = if (task.progress?.phase == REMUX_PHASE) {
-            stringResource(R.string.download_remuxing)
-        } else {
-            task.status.displayWithWire()
-        },
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(12.dp))
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (total > 0L) {
-            LinearProgressIndicator(
-                progress = { (percent / 100.0).toFloat() },
-                modifier = Modifier.weight(1f),
-            )
-        } else {
-            LinearProgressIndicator(modifier = Modifier.weight(1f))
-        }
-        if (total > 0L) {
-            Text(
-                text = String.format(Locale.ROOT, "%.0f%%", percent),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-            )
-        }
-    }
-    Spacer(Modifier.height(14.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        DownloadStat(
-            label = stringResource(R.string.download_size),
-            value = formatBytes(downloaded),
-            modifier = Modifier.weight(1f),
-        )
-        DownloadStat(
-            label = stringResource(R.string.download_stat_total),
-            value = if (total > 0L) formatBytes(total) else stringResource(R.string.download_stat_unknown),
-            modifier = Modifier.weight(1f),
-        )
-        DownloadStat(
-            label = stringResource(R.string.download_stat_speed),
-            value = if (speed > 0L) {
-                formatBytes(speed) + "/s"
-            } else {
-                stringResource(R.string.download_stat_unknown)
-            },
-            modifier = Modifier.weight(1f),
-        )
-        DownloadStat(
-            label = stringResource(R.string.download_stat_eta),
-            value = if (eta > 0) formatDuration(eta) else stringResource(R.string.download_stat_unknown),
-            modifier = Modifier.weight(1f),
-        )
-    }
-    Spacer(Modifier.height(16.dp))
-    OutlinedButton(onClick = { confirmCancel = true }, enabled = !phase.cancelRequested) {
-        Text(
-            stringResource(
-                if (phase.cancelRequested) R.string.download_cancelling else R.string.download_cancel,
-            ),
-        )
-    }
-
-    if (confirmCancel) {
-        ConfirmDialog(
-            title = stringResource(R.string.download_cancel_title),
-            message = stringResource(R.string.download_cancel_message),
-            confirmLabel = stringResource(R.string.download_cancel),
-            dismissLabel = stringResource(R.string.download_cancel_keep),
-            destructive = true,
-            onConfirm = {
-                confirmCancel = false
-                onCancel()
-            },
-            onDismiss = { confirmCancel = false },
-        )
-    }
-}
-
-@Composable
-private fun DownloadStat(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun SuccessDownloadContent(
-    state: HomeUiState,
-    phase: DownloadPhase.Success,
-    onRetryPrepare: () -> Unit,
-) {
-    val context = LocalContext.current
-    val task = phase.task
-    val localMode = state.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
-    // 本地链条没有 outputPath（那是引擎协议的字段），产物名在 namingTemplate 槽位里。
-    val stagingPath = if (localMode) localOutputPath(task) else task.outputPath
-    val path = phase.publishedPath ?: stagingPath
-    val openable = localMode && path != null && !phase.publishing
-    var openProblem by remember { mutableStateOf<OpenFileProblem?>(null) }
-
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(
-            imageVector = Icons.Filled.CheckCircle,
-            contentDescription = null,
-            tint = Color(0xFF16A34A),
-            modifier = Modifier.size(20.dp),
-        )
-        Text(
-            text = stringResource(R.string.download_done_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
-        )
-    }
-    Spacer(Modifier.height(12.dp))
-    InfoRow(
-        label = stringResource(R.string.download_output_path),
-        value = when {
-            phase.publishing -> stringResource(R.string.download_publishing)
-            phase.publishedName != null ->
-                stringResource(R.string.download_published, phase.publishedName)
-
-            else -> path ?: task.outputDir
-        },
-    )
-    task.namingTemplate?.let {
-        InfoRow(
-            label = stringResource(
-                if (localMode) R.string.download_file_name else R.string.download_naming,
-            ),
-            value = it,
-        )
-    }
-    InfoRow(
-        label = stringResource(R.string.download_size),
-        value = formatBytes(task.progress?.bytesDownloaded ?: 0L),
-    )
-
-    Spacer(Modifier.height(12.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        FilledTonalButton(
-            onClick = { openProblem = path?.let { openLocalFile(context, it) } },
-            enabled = openable,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(stringResource(R.string.download_open_file))
-        }
-        OutlinedButton(onClick = onRetryPrepare, enabled = state.canPickFormats) {
-            Text(stringResource(R.string.download_again))
-        }
-    }
-    if (!openable && !phase.publishing) {
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = stringResource(R.string.download_open_pc_hint),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    phase.publishWarning?.let { warning ->
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = stringResource(R.string.download_publish_failed, warning),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
-    if (phase.remuxFallback) {
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = stringResource(
-                if (phase.remuxAudioFallback) {
-                    R.string.download_remux_fallback_audio
-                } else {
-                    R.string.download_remux_fallback
-                },
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    openProblem?.let { problem ->
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = openProblemText(problem),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
-}
-
-@Composable
-private fun CancelledDownloadContent(
-    state: HomeUiState,
-    onRetryPrepare: () -> Unit,
-    onRetrySniff: () -> Unit,
-) {
-    Text(
-        text = stringResource(R.string.download_cancelled_title),
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Medium,
-    )
-    Spacer(Modifier.height(6.dp))
-    Text(
-        text = stringResource(R.string.download_cancelled_hint),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(12.dp))
-    RetryAction(state, onRetryPrepare, onRetrySniff)
-}
-
-@Composable
-private fun FailedDownloadContent(
+private fun DownloadTriggerFailedCard(
     state: HomeUiState,
     phase: DownloadPhase.Failed,
     onRetryPrepare: () -> Unit,
     onRetrySniff: () -> Unit,
 ) {
     val drm = phase.code == ErrorCode.DRM_PROTECTED.wireCode()
+    val canRetryPrepare = state.canPickFormats
     ErrorCard(
-        title = if (drm) {
-            ErrorCode.DRM_PROTECTED.message
-        } else {
-            stringResource(R.string.download_failed_title)
-        },
+        title = if (drm) ErrorCode.DRM_PROTECTED.message else stringResource(R.string.download_failed_title),
         message = phase.message,
         code = phase.code,
-        retryLabel = if (state.canPickFormats) {
+        retryLabel = if (canRetryPrepare) {
             stringResource(R.string.download_retry)
         } else {
             stringResource(R.string.download_retry_sniff)
         },
-        onRetry = if (state.canPickFormats) onRetryPrepare else onRetrySniff,
+        onRetry = if (canRetryPrepare) onRetryPrepare else onRetrySniff,
     )
     Spacer(Modifier.height(8.dp))
     Text(
@@ -1318,23 +1047,6 @@ private fun FailedDownloadContent(
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-}
-
-@Composable
-private fun RetryAction(
-    state: HomeUiState,
-    onRetryPrepare: () -> Unit,
-    onRetrySniff: () -> Unit,
-) {
-    if (state.canPickFormats) {
-        FilledTonalButton(onClick = onRetryPrepare) {
-            Text(stringResource(R.string.download_retry))
-        }
-    } else {
-        FilledTonalButton(onClick = onRetrySniff, enabled = state.canSniff) {
-            Text(stringResource(R.string.download_retry_sniff))
-        }
-    }
 }
 
 @Composable
@@ -1610,12 +1322,6 @@ private fun recommendedFormat(formats: List<FormatInfo>): FormatInfo? {
     ) ?: formats.maxByOrNull { it.bitrateKbps }
 }
 
-private fun formatDuration(seconds: Int): String = when {
-    seconds >= 3600 -> "${seconds / 3600}h${"%02d".format(seconds % 3600 / 60)}m"
-    seconds >= 60 -> "${seconds / 60}m${"%02d".format(seconds % 60)}s"
-    else -> "${seconds}s"
-}
-
 private fun Connection.dotColor(): Color = when (this) {
     is Connection.Connected -> Color(0xFF16A34A)
     is Connection.Failed -> Color(0xFFDC2626)
@@ -1641,26 +1347,6 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1 shl 10 -> String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0)
     else -> "$bytes B"
 }
-
-private fun previewTask(
-    status: TaskStatus,
-    progress: TaskProgress? = null,
-    outputDir: String = "E:\\Videos\\BGV",
-    outputPath: String? = null,
-    namingTemplate: String? = "{title}-{height}p",
-) = Task(
-    id = "0192f3a4",
-    sourceUrl = "https://example.com/watch?v=abc",
-    mode = TaskMode.DOWNLOAD,
-    cookiePolicy = CookiePolicy.LAZY,
-    outputDir = outputDir,
-    status = status,
-    progress = progress,
-    namingTemplate = namingTemplate,
-    outputPath = outputPath,
-    createdAt = "2026-10-31T08:00:00Z",
-    updatedAt = "2026-10-31T08:01:20Z",
-)
 
 private val previewSelfcheck = SelfcheckResponse(
     listenAddress = "127.0.0.1:8730",
@@ -1712,6 +1398,7 @@ private fun previewState(
     downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
     selectedFormatId: String? = null,
     localSandboxRoot: String? = null,
+    consentWait: ConsentWait? = null,
 ) = HomeUiState(
     engineUrl = "http://127.0.0.1:8730",
     engineUrlDraft = "http://127.0.0.1:8730",
@@ -1723,6 +1410,7 @@ private fun previewState(
     downloadExecutor = downloadExecutor,
     sniffExecutor = sniffExecutor,
     localSandboxRoot = localSandboxRoot,
+    consentWait = consentWait,
 )
 
 private val previewFormats = listOf(
@@ -1782,10 +1470,7 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
             onEditNamingTemplate = {},
             onToggleMerge = {},
             onStartDownload = {},
-            onCancelDownload = {},
-            onResetDownload = {},
-            onGrantCookieConsent = {},
-            onDenyCookieConsent = {},
+            onQueuedHintShown = {},
         )
     }
 }
@@ -1876,24 +1561,11 @@ private fun HomeSelectingPreview() {
     )
 }
 
-@Preview(name = "9 下载中", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 2700)
-@Composable
-private fun HomeDownloadingPreview() {
-    PreviewHome(
-        previewState(
-            sourceUrl = PREVIEW_URL,
-            sniff = SniffPhase.Success(previewResults),
-            download = DownloadPhase.Running(
-                previewTask(
-                    status = TaskStatus.DOWNLOADING,
-                    progress = TaskProgress("downloading", 104_857_600, 524_288_000, 5_242_880, 80, 20.0),
-                ),
-            ),
-        ),
-    )
-}
-
-@Preview(name = "10 下载失败", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 2700)
+/**
+ * 9 触发下载失败：画质表都没拉出来，任务根本没进队列。
+ * 已经进队列的任务成败由「下载」那一页报，这里不再出现进度/完成/取消卡。
+ */
+@Preview(name = "9 触发下载失败", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 2700)
 @Composable
 private fun HomeFailedPreview() {
     PreviewHome(
@@ -1909,67 +1581,11 @@ private fun HomeFailedPreview() {
     )
 }
 
-@Preview(name = "11 下载已取消", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 2700)
-@Composable
-private fun HomeCancelledPreview() {
-    PreviewHome(
-        previewState(
-            sourceUrl = PREVIEW_URL,
-            sniff = SniffPhase.Success(previewResults),
-            download = DownloadPhase.Cancelled(
-                previewTask(
-                    status = TaskStatus.CANCELLED,
-                    progress = TaskProgress("cancelled", 0, 524_288_000, 0, 0, 0.0),
-                ),
-            ),
-        ),
-    )
-}
-
-@Preview(name = "12 下载完成·电脑产物", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 2700)
-@Composable
-private fun HomeDoneEnginePreview() {
-    PreviewHome(
-        previewState(
-            sourceUrl = PREVIEW_URL,
-            sniff = SniffPhase.Success(previewResults),
-            download = DownloadPhase.Success(
-                previewTask(
-                    status = TaskStatus.DONE,
-                    progress = TaskProgress("done", 524_288_000, 524_288_000, 0, 0, 100.0),
-                    outputPath = "E:\\Videos\\BGV\\example-1080p.mp4",
-                ),
-            ),
-        ),
-    )
-}
-
-@Preview(name = "13 下载完成·本机可打开", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 2700)
-@Composable
-private fun HomeDoneLocalPreview() {
-    PreviewHome(
-        previewState(
-            sourceUrl = PREVIEW_URL,
-            sniff = SniffPhase.Success(previewResults),
-            downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
-            localSandboxRoot = PREVIEW_SANDBOX,
-            download = DownloadPhase.Success(
-                previewTask(
-                    status = TaskStatus.DONE,
-                    progress = TaskProgress("local_direct", 524_288_000, 524_288_000, 0, 0, 100.0),
-                    outputDir = PREVIEW_SANDBOX,
-                    namingTemplate = "example-1080p.mp4",
-                ),
-            ),
-        ),
-    )
-}
-
 /**
- * 14 等待 Cookie 授权：本机直链被 403 拒了，任务停在这里——不是失败态。
+ * 10 等待 Cookie 授权：本机直链被 403 拒了，队列里的任务停在这里——不是失败态。
  * 对话框本身由系统另开窗，Preview 里看不全，真机取证见验收文档 §2。
  */
-@Preview(name = "14 等待 Cookie 授权", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 3000)
+@Preview(name = "10 等待 Cookie 授权", showBackground = true, backgroundColor = 0xFFF6F8FA, heightDp = 3000)
 @Composable
 private fun HomeAwaitingCookieConsentPreview() {
     PreviewHome(
@@ -1979,8 +1595,8 @@ private fun HomeAwaitingCookieConsentPreview() {
             sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
             downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
             localSandboxRoot = PREVIEW_SANDBOX,
-            download = DownloadPhase.AwaitingCookieConsent("0192f3a4", previewFormats, "cdn.example.com", 403),
             selectedFormatId = "137+140",
+            consentWait = ConsentWait("0192f3a4", "cdn.example.com", 403, "137+140", false),
         ),
     )
 }

@@ -16,15 +16,22 @@ import com.hpu.browseguard.data.cookie.CookieConsentStore
 import com.hpu.browseguard.data.cookie.CookieVault
 import com.hpu.browseguard.data.cookie.PrefsCookieConsentStore
 import com.hpu.browseguard.data.cookie.WebViewCookieVault
+import com.hpu.browseguard.data.download.DownloadCoordinator
 import com.hpu.browseguard.data.history.BrowseGuardDatabase
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.ReconcileReport
 import com.hpu.browseguard.data.history.RoomHistoryRepository
 import com.hpu.browseguard.data.history.TaskLookup
+import com.hpu.browseguard.data.media.AndroidMediaProbe
+import com.hpu.browseguard.data.media.MediaProbe
 import com.hpu.browseguard.data.output.OutputPublish
+import com.hpu.browseguard.data.output.SafFileMover
 import com.hpu.browseguard.data.output.SafOutputDirectory
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * 组装根：全仓唯一允许 new 具体后端的地方。
@@ -89,6 +96,25 @@ class AppContainer(context: Context) : BackendProvider {
         )
     }
 
+    /** 重命名与移动的搬运工：界面只决定搬到哪儿，怎么复制、删源由这一层负责。 */
+    val fileMover: SafFileMover by lazy { SafFileMover(app, localSandboxRoot, audit) }
+
+    /** 详情面板要报**此刻**的文件属性，而不是记录里那个可能已经滞后的数字。 */
+    val mediaProbe: MediaProbe by lazy { AndroidMediaProbe(app, localSandboxRoot) }
+
+    /**
+     * 活得比任何界面都久的协程作用域。
+     *
+     * 下载进度要写进库，而写它的那个订阅者不能跟着主页一起复位或被切走的 Tab 销毁；
+     * SupervisorJob 让一条任务崩掉不牵连另一条。
+     */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 下载队列：界面按下「开始下载」就把这条流整个交给它。 */
+    val downloads: DownloadCoordinator by lazy {
+        DownloadCoordinator(this, history, applicationScope, audit, cookieConsents)
+    }
+
     /**
      * 冷启动对账：把上次进程遗留的进行中记录落到事实状态。
      *
@@ -109,7 +135,7 @@ class AppContainer(context: Context) : BackendProvider {
                 ),
             )
         }
-        if (report.scanned > 0) {
+        if (report.scanned > 0 || report.orphansRemoved > 0) {
             audit.log(
                 "audit_history_reconcile",
                 mapOf(
@@ -117,6 +143,7 @@ class AppContainer(context: Context) : BackendProvider {
                     "interrupted" to report.interrupted.toString(),
                     "recovered" to report.recovered.toString(),
                     "skipped" to report.skipped.toString(),
+                    "orphans" to report.orphansRemoved.toString(),
                 ),
             )
         }

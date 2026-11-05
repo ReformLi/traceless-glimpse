@@ -7,6 +7,8 @@ import com.hpu.browseguard.data.backend.LocalDirectDownloader
 import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.StartRequest
+import com.hpu.browseguard.data.backend.LOCAL_TABLE_TASK_ID
+import com.hpu.browseguard.data.backend.isLocalTaskId
 import com.hpu.browseguard.data.backend.localTaskId
 import com.hpu.browseguard.fakes.FakeAuditLogger
 import com.hpu.browseguard.shared.model.CookiePolicy
@@ -315,6 +317,8 @@ class LocalDirectDownloaderTest {
     @Test
     fun localTaskIdCarriesTheLocalNamespacePrefix() {
         assertTrue(localTaskId("https://m.example.com/clip.mp4").startsWith("local_"))
+        // 画质表占位 id 同样会被回填到历史行的 taskId：不认它，冷启动对账会当成远端句柄挂着不动。
+        assertTrue(isLocalTaskId(LOCAL_TABLE_TASK_ID))
     }
 
     /** `headersHint` 协议上已脱敏，但那是引擎侧的约定；本机落地前自己再筛一遍。 */

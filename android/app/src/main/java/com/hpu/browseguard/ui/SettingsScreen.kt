@@ -74,7 +74,13 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
     val homeState by homeViewModel.state.collectAsStateWithLifecycle()
     // 与历史页共用同一个 Activity 级 ViewModel：计数和清空都走同一条 Room Flow。
     val historyViewModel: HistoryViewModel = viewModel(
-        factory = HistoryViewModel.factory(container.history),
+        factory = HistoryViewModel.factory(
+            container.history,
+            container.downloads,
+            container.fileMover,
+            container.mediaProbe,
+            container.localSandboxRoot,
+        ),
     )
     val historyState by historyViewModel.state.collectAsStateWithLifecycle()
     val clearing by historyViewModel.clearing.collectAsStateWithLifecycle()

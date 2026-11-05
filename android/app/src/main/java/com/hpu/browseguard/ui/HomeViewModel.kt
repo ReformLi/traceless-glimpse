@@ -25,6 +25,9 @@ import com.hpu.browseguard.data.backend.toBackendFailure
 import com.hpu.browseguard.data.cookie.CookieConsentStore
 import com.hpu.browseguard.data.cookie.DenyAllCookieConsent
 import com.hpu.browseguard.data.cookie.cookieHostOf
+import com.hpu.browseguard.data.download.ConsentWait
+import com.hpu.browseguard.data.download.DownloadCoordinator
+import com.hpu.browseguard.data.download.QueuedTask
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.formatSummary
 import com.hpu.browseguard.data.output.OutputPublish
@@ -88,7 +91,12 @@ interface FormatPickable {
     val formats: List<FormatInfo>
 }
 
-/** 嗅探 → 选画质 → 下载 → 进度 / 取消 的下载流程阶段。 */
+/**
+ * 画质表阶段。
+ *
+ * 主页只管到「把这条任务交给下载队列」为止：真正的下载进度与终态由
+ * [DownloadCoordinator] 写库，下载管理页读那张表——所以这里没有 Running/Success 了。
+ */
 sealed interface DownloadPhase {
     data object Idle : DownloadPhase
 
@@ -101,38 +109,6 @@ sealed interface DownloadPhase {
         override val formats: List<FormatInfo>,
     ) : DownloadPhase, FormatPickable
 
-    /**
-     * 本机直链被站点用 401/403 拒了，而这一站的 Cookie 授权还没点头。
-     *
-     * 这不是失败：下载没开始、`.part` 没写、历史行不动。它停在界面上等一次
-     * 显式授权（M6-5 D1）——纯后台任务没有前台弹窗时，就是这个态在替用户记住
-     * 「差一次同意」，回来点同意即自动重试。
-     */
-    data class AwaitingCookieConsent(
-        override val taskId: String,
-        override val formats: List<FormatInfo>,
-        val host: String,
-        val status: Int,
-    ) : DownloadPhase, FormatPickable
-
-    data class Running(val task: Task, val cancelRequested: Boolean = false) : DownloadPhase
-
-    /**
-     * 下载已结束；本地产物还可能正在复制到 SAF 目录。
-     * [publishing] 期间「打开文件」不可点，避免打开一个马上要被移走的 staging 文件。
-     */
-    data class Success(
-        val task: Task,
-        val publishedPath: String? = null,
-        val publishedName: String? = null,
-        val publishing: Boolean = false,
-        val publishWarning: String? = null,
-        /** HLS 的 `.ts` 没能转成 MP4：产物还在，但是 `.ts`。 */
-        val remuxFallback: Boolean = false,
-        /** 失败原因是音轨缺失/为空：文案要明确「原格式含音频」，别让用户以为没声音。 */
-        val remuxAudioFallback: Boolean = false,
-    ) : DownloadPhase
-    data class Cancelled(val task: Task) : DownloadPhase
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : DownloadPhase
 }
 
@@ -175,6 +151,15 @@ data class HomeUiState(
     /** 自动降级/失败后的可见提示；`null` 表示没有要说的。 */
     val sniffNotice: String? = null,
     /**
+     * 差一次 Cookie 授权的下载任务。
+     *
+     * 下载已经交给队列，这一条是队列回过头来问主页的：主页复位回输入状态之后，
+     * 仍然要能替用户接住这一句「同意吗」。
+     */
+    val consentWait: ConsentWait? = null,
+    /** 交给下载队列后的一次性轻提示；界面读完就该由 [HOME_HINT_CONSUMED] 那次更新清掉。 */
+    val queuedHint: String? = null,
+    /**
      * 手机侧唯一允许的写盘根（应用专属外部存储的 Download 目录）。
      *
      * 与 [outputDir] 不是一回事：那份是引擎进程在电脑上解析的白名单，只能授权电脑侧写盘。
@@ -190,11 +175,13 @@ data class HomeUiState(
      * 有任务正跑着（等画质表、下载中、等授权）：换执行者会把两条链路的事实搅在一起，
      * 界面据此禁用开关。等授权也算在内——那张画质表本身就是重试要用的东西。
      */
+    /**
+     * 画质表这一段还在跑：换执行者会把两条链路的事实搅在一起，界面据此禁用开关。
+     *
+     * 已经交给下载队列的任务不算在内——它已经不归这个页面管了。
+     */
     val downloadInFlight: Boolean
-        get() = download is DownloadPhase.Preparing ||
-            download is DownloadPhase.Running ||
-            (download is DownloadPhase.Success && download.publishing) ||
-            download is DownloadPhase.AwaitingCookieConsent
+        get() = download is DownloadPhase.Preparing
 
     /** 合并需要 FFmpeg，本地直链这一支没有——不是「暂不支持」，是压根没有执行者。 */
     val mergeAvailable: Boolean
@@ -215,11 +202,15 @@ data class HomeUiState(
      * 本地直链的「画质表」由嗅探结果合成，不需要引擎在线；引擎下载才要等自检。
      * 等授权时不再让重挑画质——那张表本身就是重试要用的东西。
      */
+    /**
+     * 嗅探成功后才谈得上选画质；画质表正在拉时不允许重复发起。
+     *
+     * 本地直链的「画质表」由嗅探结果合成，不需要引擎在线；引擎下载才要等自检。
+     */
     val canPickFormats: Boolean
         get() = sniff is SniffPhase.Success &&
             download !is DownloadPhase.Preparing &&
             download !is FormatPickable &&
-            download !is DownloadPhase.Running &&
             (downloadExecutor == DownloadExecutor.LOCAL_DIRECT || engineReady)
 
     val selectedFormat: FormatInfo?
@@ -250,6 +241,8 @@ class HomeViewModel(
     private val history: HistoryRepository,
     /** 只有域名与授权位，Cookie 值永远不进这一层（也不进界面对象）。 */
     private val consent: CookieConsentStore = DenyAllCookieConsent,
+    /** 按下「开始下载」之后，这条任务就归它了：进度、终态、SAF 复制都不回这个页面。 */
+    private val downloads: DownloadCoordinator,
 ) : ViewModel() {
 
     private var sniffJob: Job? = null
@@ -310,6 +303,21 @@ class HomeViewModel(
 
     init {
         refreshConnection()
+        // 队列里排队等授权的任务由这里接住：主页已经复位，只有这个页面还能问用户「同意吗」。
+        viewModelScope.launch {
+            downloads.consentWaits.collect { waits -> applyConsentWaits(waits.firstOrNull()) }
+        }
+    }
+
+    private fun applyConsentWaits(wait: ConsentWait?) {
+        _state.update {
+            if (it.consentWait == wait) it else it.copy(consentWait = wait)
+        }
+    }
+
+    /** Snackbar 读过一次就该消失，别让下一次回到主页再播一遍。 */
+    fun consumeQueuedHint() {
+        _state.update { it.copy(queuedHint = null) }
     }
 
     fun refreshConnection() {
@@ -341,6 +349,9 @@ class HomeViewModel(
         val snapshot = _state.value
         if (snapshot.downloadExecutor == executor) return
         if (snapshot.downloadInFlight) return
+        // 等一次 Cookie 授权时也不切：那一条任务已经按旧执行者排进队列，
+        // 点头之后要按原样续跑，中途换腿会让「同意并继续」答非所问。
+        if (snapshot.consentWait != null) return
         settings.downloadExecutor = executor
         // 切到本地会把用户勾着的合并静默取消，审计行要留下「为什么没合并」。
         if (executor == DownloadExecutor.LOCAL_DIRECT && snapshot.mergeSelected) {
@@ -820,100 +831,17 @@ class HomeViewModel(
                 }
             }
 
-            is DownloadEvent.Started -> {
-                val format = _state.value.selectedFormat
-                val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
-                attachHistoryTask(event.task.id)
-                record { historyId ->
-                    markDownloading(
-                        id = historyId,
-                        taskId = event.task.id,
-                        format = format?.let(::formatSummary),
-                        // 本地直链的产物路径现在就能算出来（`.part` 也在同目录），
-                        // 引擎产物在电脑上，落盘路径只有 done 时才有。
-                        outputPath = if (isLocal) localOutputPath(event.task) else null,
-                    )
-                }
-                _state.update { it.copy(download = DownloadPhase.Running(event.task)) }
-            }
-
-            // 只有已经是 Running 才采纳轮询结果，并把界面上的「取消已请求」标记带过去
-            is DownloadEvent.Progress -> _state.update { state ->
-                val previous = state.download as? DownloadPhase.Running ?: return@update state
-                state.copy(download = DownloadPhase.Running(event.task, previous.cancelRequested))
-            }
-
-            is DownloadEvent.Terminal -> {
-                attachHistoryTask(event.task.id)
+            is DownloadEvent.Failed -> {
                 autoStartSelection = false
                 browserDownloadActive = false
-                val terminal = event.task.toFinalPhase()
-                val phase = if (event.remuxFallback && terminal is DownloadPhase.Success) {
-                    terminal.copy(
-                        remuxFallback = true,
-                        remuxAudioFallback = event.remuxAudioFallback,
-                    )
-                } else {
-                    terminal
-                }
-                val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
-                if (phase is DownloadPhase.Success && isLocal) {
-                    // 本地产物还要经过一次可选复制；先让界面进入「保存中」，别提前宣告落盘位置。
-                    _state.update { it.copy(download = phase.copy(publishing = true)) }
-                    publishLocalSuccess(phase.task)
-                } else {
-                    writeDownloadTerminal(event.task, phase)
-                    _state.update { it.copy(download = phase) }
-                }
+                val phase = event.failure.toDownloadPhase()
+                record { markFailed(it, phase.code, phase.message) }
+                _state.update { it.copy(download = phase) }
             }
 
-            is DownloadEvent.Failed -> {
-                val awaiting = event.failure.asCookieConsentWait()
-                if (awaiting != null) {
-                    // 差一次同意，不是失败：历史行原样留着，`.part` 本来也没写过。
-                    _state.update { it.copy(download = awaiting) }
-                } else {
-                    autoStartSelection = false
-                    browserDownloadActive = false
-                    val phase = event.failure.toDownloadPhase()
-                    record { markFailed(it, phase.code) }
-                    _state.update { it.copy(download = phase) }
-                }
-            }
+            // 开下以后的事件归下载队列；画质表这条流不会收到它们。
+            is DownloadEvent.Started, is DownloadEvent.Progress, is DownloadEvent.Terminal -> Unit
         }
-    }
-
-    /**
-     * 这一条 401/403 是不是「只是没授权」？三个条件同时成立才算：
-     * 下载交给本机、这一站还没授权、站点确实回了需要凭据的两个状态码。
-     *
-     * 已经授权过的站点不在此列——那时 403 是真的 403，不能再拿弹窗糊过去。
-     */
-    private fun BackendFailure.asCookieConsentWait(): DownloadPhase.AwaitingCookieConsent? {
-        val snapshot = _state.value
-        if (snapshot.downloadExecutor != DownloadExecutor.LOCAL_DIRECT) return null
-        val local = this as? BackendFailure.Local ?: return null
-        if (local.reason != LocalReason.LINK_UNLOADABLE) return null
-        val status = local.status ?: return null
-        if (status != HttpURLConnection.HTTP_UNAUTHORIZED && status != HttpURLConnection.HTTP_FORBIDDEN) {
-            return null
-        }
-        val picking = snapshot.download as? FormatPickable ?: return null
-        val mediaUrl = picking.mediaUrlFor(snapshot.selectedFormatId) ?: return null
-        val host = cookieHostOf(mediaUrl)
-        if (host.isBlank() || consent.isGranted(host)) return null
-        resumeFormatId = snapshot.selectedFormatId
-        audit.log("cookie_consent_required", mapOf("host" to host, "status" to status.toString()))
-        return DownloadPhase.AwaitingCookieConsent(picking.taskId, picking.formats, host, status)
-    }
-
-    /** 本机画质表的 id 就是直链的哈希，所以能从嗅探结果里原样找回去。 */
-    private fun FormatPickable.mediaUrlFor(formatId: String?): String? {
-        val id = formatId ?: formats.singleOrNull()?.formatId ?: return null
-        return (_state.value.sniff as? SniffPhase.Success)
-            ?.results
-            ?.firstOrNull { localTaskId(it.mediaUrl) == id }
-            ?.mediaUrl
     }
 
     /** 授权续跑的第一步：重放嗅探拿到 Cookie 后，替用户把「挑画质」这一步点掉。 */
@@ -923,92 +851,36 @@ class HomeViewModel(
     }
 
     /**
-     * 用户点了「同意并继续」：记授权，然后接着把那一步做完。
+     * 用户点了「同意并继续」：记授权，然后把那一步接上。
      *
-     * 内置浏览器那一页一直活着、Cookie 也已经在容器里，同意后直接重试下载；
-     * 离屏嗅探则相反——那一页从没被允许存 Cookie，必须先重放一次嗅探（这次允许存），
-     * 画质表出来后直接续上下载。两条路都只让用户点一次同意。
+     * 内置浏览器那一页一直活着、Cookie 也已经在容器里，队列用同一个请求原地重下就行；
+     * 离屏嗅探相反——那一页从没被允许存 Cookie，必须先重放一次嗅探（这次允许存），
+     * 画质表出来后自动续上下载。两条路都只让用户点一次同意。
      */
     fun grantCookieConsent() {
-        val awaiting = _state.value.download as? DownloadPhase.AwaitingCookieConsent ?: return
-        consent.grant(awaiting.host)
-        _state.update { it.copy(download = DownloadPhase.Selecting(awaiting.taskId, awaiting.formats)) }
-        when {
-            browserDownloadActive -> startDownload()
-            _state.value.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW -> startSniff()
-            else -> startDownload()
+        val wait = _state.value.consentWait ?: return
+        consent.grant(wait.host)
+        _state.update { it.copy(consentWait = null) }
+        if (!wait.needsSniffReplay) {
+            downloads.resume(wait.recordId)
+            return
+        }
+        resumeFormatId = wait.formatId
+        viewModelScope.launch {
+            downloads.abandonForSniffReplay(wait.recordId)
+            startSniff()
         }
     }
 
-    /** 用户点了「拒绝」：回到原有出口 `LINK_UNLOADABLE`，措辞与改造前一致。 */
+    /** 用户点了「拒绝」：这一行如实写成失败，原因说清楚是「没给授权」而不是「下不动」。 */
     fun denyCookieConsent() {
-        val awaiting = _state.value.download as? DownloadPhase.AwaitingCookieConsent ?: return
+        val wait = _state.value.consentWait ?: return
         resumeFormatId = null
         autoStartSelection = false
         browserDownloadActive = false
-        audit.log("cookie_consent_denied", mapOf("host" to awaiting.host))
-        val phase = LocalFailures.linkUnloadable(awaiting.status).toDownloadPhase()
-        record { markFailed(it, phase.code) }
-        _state.update { it.copy(download = phase) }
-    }
-
-    private fun writeDownloadTerminal(task: Task, phase: DownloadPhase) {
-        val format = _state.value.selectedFormat?.let(::formatSummary)
-        when (phase) {
-            is DownloadPhase.Success -> {
-                val isLocal = _state.value.downloadExecutor == DownloadExecutor.LOCAL_DIRECT
-                record { markDone(it, outputPath = if (isLocal) localOutputPath(task) else task.outputPath, format = format) }
-            }
-
-            is DownloadPhase.Cancelled -> record { markCancelled(it) }
-            is DownloadPhase.Failed -> record { markFailed(it, phase.code) }
-            else -> Unit
-        }
-    }
-
-    /**
-     * 本地下载完成后的最终落点：选了 SAF 就复制过去，没选就留在应用目录。
-     *
-     * 复制失败不篡改下载结果——文件还在 staging，记录写 staging 路径并让界面显示警告；
-     * 只有复制成功才把历史路径改成 `content://`。
-     */
-    private fun publishLocalSuccess(task: Task) {
-        val staging = localOutputPath(task)
-        val format = _state.value.selectedFormat?.let(::formatSummary)
-        val historyRow = historyId
-        viewModelScope.launch {
-            val result = if (staging == null) {
-                OutputPublish.Failed("本地产物路径缺失，未保存")
-            } else {
-                backends.publishOutput(File(staging))
-            }
-            val recordPath = when (result) {
-                is OutputPublish.Published -> result.uri
-                else -> staging
-            }
-            historyRow?.let { id ->
-                viewModelScope.launch { history.markDone(id, outputPath = recordPath, format = format) }
-            }
-            _state.update { state ->
-                val success = state.download as? DownloadPhase.Success ?: return@update state
-                state.copy(
-                    download = when (result) {
-                        is OutputPublish.Published -> success.copy(
-                            publishedPath = result.uri,
-                            publishedName = result.name,
-                            publishing = false,
-                        )
-
-                        OutputPublish.NotConfigured -> success.copy(publishing = false)
-
-                        is OutputPublish.Failed -> success.copy(
-                            publishing = false,
-                            publishWarning = result.reason,
-                        )
-                    },
-                )
-            }
-        }
+        audit.log("cookie_consent_denied", mapOf("host" to wait.host))
+        _state.update { it.copy(consentWait = null) }
+        viewModelScope.launch { downloads.deny(wait.recordId, wait.status) }
     }
 
     fun selectFormat(formatId: String) {
@@ -1035,6 +907,8 @@ class HomeViewModel(
         if (snapshot.namingTemplateError != null) return
         // 用户自己按下的「开始下载」：授权续跑的意图到此作废，别让它挂到下一条任务上。
         resumeFormatId = null
+        // 画质表只能由一次嗅探带出来，那时一定已经落过一行；没有这一行就没有进度可写。
+        val recordId = historyId ?: return
 
         downloadJob?.cancel()
         val request = when (snapshot.downloadExecutor) {
@@ -1051,7 +925,7 @@ class HomeViewModel(
                 val sandboxRoot = snapshot.localSandboxRoot
                 if (link == null) {
                     // 找不到对应直链 = 状态与画质表已脱节（中途重新嗅探过）。说清楚，不让按钮变哑。
-                    record { markFailed(it, null) }
+                    record { markFailed(it, null, "嗅探结果已过期，请重新嗅探") }
                     _state.update {
                         it.copy(
                             download = LocalFailures.unsupportedLink("嗅探结果已过期，请重新嗅探")
@@ -1061,7 +935,7 @@ class HomeViewModel(
                     return
                 }
                 if (sandboxRoot == null) {
-                    record { markFailed(it, null) }
+                    record { markFailed(it, null, "手机外部存储不可用") }
                     _state.update {
                         it.copy(download = LocalFailures.outputDirRejected("手机外部存储不可用").toDownloadPhase())
                     }
@@ -1080,55 +954,42 @@ class HomeViewModel(
                 )
             }
         }
-        downloadJob = viewModelScope.launch {
-            backends.download(snapshot.downloadExecutor).start(request).collect { event -> applyDownloadEvent(event) }
-        }
-        // 隐藏深嗅已经把直链交出去：WebView 立刻回收，下载由独立的流继续跑。
-        val session = _state.value
-        if (session.browserSessionActive && !session.isWebViewVisible) {
-            _state.update {
-                it.copy(
-                    browserSessionActive = false,
-                    browserPageVisible = false,
-                    deepSniff = DeepSniffPhase.Off,
-                )
-            }
-        }
-    }
-
-    /** 取消只发协议请求，终态仍由 [startDownload] 那条流写入——避免两处同时改状态。 */
-    fun cancelDownload() {
-        val snapshot = _state.value
-        val running = snapshot.download as? DownloadPhase.Running ?: return
-        if (running.cancelRequested) return
-        _state.update { it.copy(download = running.copy(cancelRequested = true)) }
-        viewModelScope.launch {
-            backends.download(snapshot.downloadExecutor).cancel(running.task.id)?.let { failure ->
-                val phase = failure.toDownloadPhase()
-                record { markFailed(it, phase.code) }
-                _state.update { state ->
-                    if (state.download is DownloadPhase.Running) {
-                        state.copy(download = phase)
-                    } else {
-                        state
-                    }
-                }
-            }
+        downloads.enqueue(
+            QueuedTask(
+                recordId = recordId,
+                executor = snapshot.downloadExecutor,
+                request = request,
+                formatSummary = format.let(::formatSummary),
+                formatId = format.formatId,
+                // 离屏 WebView 嗅探 + 本机直链：那一页没被允许存 Cookie，授权后得重放一次嗅探。
+                needsSniffReplay = snapshot.downloadExecutor == DownloadExecutor.LOCAL_DIRECT &&
+                    snapshot.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+                    !browserDownloadActive,
+            ),
+        )
+        // 主页到此为止：进度与终态归下载管理页，这个页面立刻回到输入状态等着贴下一条链接。
+        autoStartSelection = false
+        browserDownloadActive = false
+        browserProductName = null
+        historyId = null
+        historyTaskId = null
+        _state.update {
+            it.copy(
+                sniff = SniffPhase.Idle,
+                download = DownloadPhase.Idle,
+                selectedFormatId = null,
+                queuedHint = QUEUED_HINT,
+                // 隐藏深嗅已经把直链交出去：WebView 立刻回收，下载由队列那条流自己跑。
+                browserSessionActive = if (it.isWebViewVisible) it.browserSessionActive else false,
+                browserPageVisible = it.browserPageVisible && it.isWebViewVisible,
+                deepSniff = DeepSniffPhase.Off,
+            )
         }
     }
 
     /** 历史页「重新下载」：回到首页并填入原始链接，后续仍交给用户确认嗅探与画质。 */
     fun adoptSourceUrl(url: String) {
         editSourceUrl(url)
-    }
-
-    fun resetDownload() {
-        downloadJob?.cancel()
-        resumeFormatId = null
-        autoStartSelection = false
-        browserDownloadActive = false
-        browserProductName = null
-        _state.update { it.copy(download = DownloadPhase.Idle, selectedFormatId = null) }
     }
 
     private suspend fun connect() {
@@ -1149,6 +1010,9 @@ class HomeViewModel(
         /** 降级后本地也失败时的提示后缀；测试与真机审计都认这几字。 */
         const val LOCAL_ALSO_FAILED = "手机本地嗅探也失败，请检查网络或电脑引擎"
 
+        /** 交给下载队列那一下的轻提示文案；测试与界面都认这一句。 */
+        const val QUEUED_HINT = "已加入下载队列，请在下载管理查看"
+
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
         fun factory(
             settings: EngineSettings,
@@ -1157,6 +1021,7 @@ class HomeViewModel(
             audit: AuditLogger,
             history: HistoryRepository,
             consent: CookieConsentStore,
+            downloads: DownloadCoordinator,
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -1164,7 +1029,7 @@ class HomeViewModel(
                     require(modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                         "HomeViewModel.Factory 不认识的类型：$modelClass"
                     }
-                    return HomeViewModel(settings, backends, engineInfo, audit, history, consent) as T
+                    return HomeViewModel(settings, backends, engineInfo, audit, history, consent, downloads) as T
                 }
             }
     }
@@ -1194,16 +1059,6 @@ private fun Task.toSniffFailure(): SniffPhase.Failed = SniffPhase.Failed(
     code = error?.code?.name,
     retryable = error?.retryable ?: false,
 )
-
-private fun Task.toFinalPhase(): DownloadPhase = when (status) {
-    TaskStatus.DONE -> DownloadPhase.Success(this)
-    TaskStatus.CANCELLED -> DownloadPhase.Cancelled(this)
-    else -> DownloadPhase.Failed(
-        message = error?.message ?: "任务结束于 ${status.displayWithWire()}",
-        code = error?.code?.name,
-        retryable = error?.retryable ?: false,
-    )
-}
 
 private fun EngineFailure.reason(): String = when (this) {
     is EngineFailure.Protocol -> "HTTP $httpStatus ${error.code}：${error.message}"

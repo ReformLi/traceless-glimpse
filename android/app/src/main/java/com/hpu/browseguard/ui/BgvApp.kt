@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
+import com.hpu.browseguard.ui.components.ConfirmDialog
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
@@ -65,6 +66,7 @@ fun BgvApp(container: AppContainer) {
             container.audit,
             container.history,
             container.cookieConsents,
+            container.downloads,
         ),
     )
 
@@ -86,6 +88,22 @@ fun BgvApp(container: AppContainer) {
 
     BackHandler(enabled = destination != AppDestination.HOME) {
         destination = AppDestination.HOME
+    }
+
+    // 授权门是队列回过头来问用户的，跟在哪个 Tab 无关：弹窗挂根容器，
+    // 浏览器、下载页、设置页都能看到，点「同意」后队列按原任务原地续跑。
+    val consentWait by remember(homeViewModel) {
+        homeViewModel.state.map { it.consentWait }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = null)
+    consentWait?.let { phase ->
+        ConfirmDialog(
+            title = stringResource(R.string.cookie_consent_title, phase.host),
+            message = stringResource(R.string.cookie_consent_body),
+            confirmLabel = stringResource(R.string.cookie_consent_agree),
+            dismissLabel = stringResource(R.string.cookie_consent_reject),
+            onConfirm = homeViewModel::grantCookieConsent,
+            onDismiss = homeViewModel::denyCookieConsent,
+        )
     }
 
     Scaffold(

@@ -8,6 +8,8 @@ import com.hpu.browseguard.shared.model.TaskStatus
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Room 落地的历史仓库。
@@ -24,9 +26,21 @@ class RoomHistoryRepository(
     private val audit: AuditLogger = NoopAuditLogger,
 ) : HistoryRepository {
 
+    /**
+     * 一行的「读旧值 → 改 → 写回」必须整体串行。
+     *
+     * 授权续跑会把嗅探腿（`viewModelScope`）与下载腿（应用级作用域）的写入压在同几十毫秒里：
+     * 不加锁时嗅探腿拿的是下载开始前的旧快照、却最后才落回，把已经写好的结尾连产物路径
+     * 一起抹掉——真机实测文件已在盘上，下载页却永远停在「嗅探中」。
+     */
+    private val rowGate = Mutex()
+
+    /** 进程启动时刻：比它新的文件属于本次运行，孤儿扫描一律不碰。 */
+    private val startedAtMs = now()
+
     override val records: Flow<List<DownloadRecord>> = dao.observeAll()
 
-    override suspend fun beginSniff(id: String, url: String) {
+    override suspend fun beginSniff(id: String, url: String) = rowGate.withLock {
         val ts = now()
         dao.upsert(
             DownloadRecord(
@@ -51,6 +65,7 @@ class RoomHistoryRepository(
                 status = RecordStatus.READY,
                 format = format ?: it.format,
                 errorCode = null,
+                errorMessage = null,
             )
         }
     }
@@ -68,58 +83,98 @@ class RoomHistoryRepository(
                 format = format ?: it.format,
                 outputPath = outputPath ?: it.outputPath,
                 errorCode = null,
+                errorMessage = null,
             )
         }
     }
 
-    override suspend fun markDone(id: String, outputPath: String?, format: String?) {
+    override suspend fun markDone(id: String, outputPath: String?, format: String?, sizeBytes: Long?, note: String?) {
         mutate(id) {
             it.copy(
                 status = RecordStatus.DONE,
                 outputPath = outputPath ?: it.outputPath,
                 format = format ?: it.format,
+                sizeBytes = sizeBytes ?: it.sizeBytes,
                 errorCode = null,
+                errorMessage = null,
+                note = note,
             )
         }
     }
 
-    override suspend fun markFailed(id: String, errorCode: String?) {
-        if (keepDone(id, "failed")) return
-        mutate(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode) }
+    override suspend fun markProgress(
+        id: String,
+        downloadedBytes: Long,
+        bytesTotal: Long,
+        speedBps: Long,
+        note: String?,
+    ) = rowGate.withLock {
+        // 迟到的心跳不该在完成行上留下假进度或「正在转封装」。
+        if (dao.findById(id)?.status == RecordStatus.DONE) return@withLock
+        dao.updateProgress(id, downloadedBytes, bytesTotal, speedBps, note)
+    }
+
+    override suspend fun updateArtifact(id: String, outputPath: String, title: String?, sizeBytes: Long?) {
+        dao.updateArtifact(id, outputPath, sizeBytes, title, now())
+    }
+
+    override suspend fun markFailed(id: String, errorCode: String?, errorMessage: String?) {
+        mutate(id) { it.copy(status = RecordStatus.FAILED, errorCode = errorCode, errorMessage = errorMessage) }
     }
 
     override suspend fun markCancelled(id: String) {
-        if (keepDone(id, "cancelled")) return
         mutate(id) { it.copy(status = RecordStatus.CANCELLED) }
     }
 
-    /**
-     * 已完成是终态：后来的失败或取消不能把它改写成「没成」——产物还在盘上，
-     * 历史页却说失败，用户只会以为文件丢了（MuMu 实测：撤销 Cookie 授权后重试被拒，
-     * 上一次成功的记录被就地刷成 FAILED，而 `protected.mp4` 仍在 Download 目录里）。
-     * 拒绝改写要留一行审计，不做静默降级。
-     */
-    private suspend fun keepDone(id: String, refused: String): Boolean {
-        if (dao.findById(id)?.status != RecordStatus.DONE) return false
-        audit.log("history_done_kept", mapOf("id" to id, "refused" to refused))
-        return true
+    override suspend fun abandon(id: String): Boolean = rowGate.withLock {
+        val current = dao.findById(id) ?: return@withLock false
+        if (current.status == RecordStatus.DONE) {
+            audit.log("history_done_kept", mapOf("id" to id, "refused" to "abandon"))
+            return@withLock false
+        }
+        val path = current.outputPath
+        if (path != null) {
+            // 这一行已经写过产物落点（沙盒、公开目录或电脑上的引擎产物）：
+            // 退成「已取消」而不是消失，用户才知道那个文件是谁留下的。
+            dao.upsert(current.copy(status = RecordStatus.CANCELLED, updatedAt = now()))
+            audit.log("history_abandon_kept", mapOf("id" to id, "reason" to "artifact_written"))
+            return@withLock false
+        }
+        dao.deleteById(id)
+        audit.log("history_abandon_dropped", mapOf("id" to id, "status" to current.status.name.lowercase()))
+        true
     }
 
-    override suspend fun delete(id: String): Boolean {
+    /**
+     * 删除的落点判断只信 [DeletionPolicy]：公开目录要不要连文件一起删是用户点的头，
+     * 不是这里替他决定的。想删却没删成（还有别的记录指着同一份产物、授权已失效）
+     * 必须留一行审计——用户以为文件没了、其实还占着空间，比反过来更容易被误会。
+     */
+    override suspend fun delete(id: String, choice: DeleteChoice): Boolean {
         val record = dao.findById(id) ?: return false
-        // 重试同一链接会复用产物名：别的记录还指着这个文件时，只删行不删文件。
-        val shared = record.outputPath?.let { path ->
-            dao.findByOutputPath(path).any { it.id != id }
-        } ?: false
-        val removed = if (shared) false else record.outputPath?.let(::deleteOutput) ?: false
+        val path = record.outputPath
+        val location = locationOf(path, sandboxRoot)
+        val shared = path != null && dao.findByOutputPath(path).any { it.id != id }
+        val wantFile = DeletionPolicy.deletesFile(choice, location)
+        val removed = wantFile && !shared && path != null && deleteOutput(path)
         dao.deleteById(id)
+        if (wantFile && !removed) {
+            audit.log(
+                "history_file_kept",
+                mapOf("id" to id, "reason" to if (shared) "shared_reference" else "file_not_removed"),
+            )
+        }
         return removed
     }
 
     override suspend fun deleteAll(): Int {
         val all = dao.getAll()
-        // 全部记录都要走，任何产物都不再存在第二份引用，可以逐个清理。
-        all.mapNotNull { it.outputPath }.distinct().forEach(::deleteOutput)
+        // 只有应用专属目录里的产物能被「清空历史」带走；SAF 公开目录一律原样留着。
+        all.asSequence()
+            .filter { it.outputPath != null && locationOf(it.outputPath, sandboxRoot) == RecordLocation.PRIVATE }
+            .mapNotNull { it.outputPath }
+            .distinct()
+            .forEach(::deleteOutput)
         dao.deleteAll()
         return all.size
     }
@@ -167,13 +222,54 @@ class RoomHistoryRepository(
             interrupted = interrupted,
             recovered = recovered,
             skipped = skipped,
+            orphansRemoved = sweepOrphans(dao.getAll()),
         )
     }
 
-    private suspend fun mutate(id: String, transform: (DownloadRecord) -> DownloadRecord) {
-        val current = dao.findById(id) ?: return
-        dao.upsert(transform(current).copy(updatedAt = now()))
+    /**
+     * 孤儿文件清扫：应用专属目录里存在、却没有任何记录引用它的产物，直接物理删除。
+     *
+     * 「下载管理器」得替用户把沙盒管好——串行闸修好之前那几支被抹掉结尾的下载，
+     * 文件一直静静占着空间，界面上连一行指它的记录都没有。三条边界：
+     * - 只碰沙盒根目录这一层的普通文件，公开目录（SAF）与电脑上的引擎产物一律不动；
+     * - 只认下载会写的后缀（含 `.part` 断点），别的文件不是我们生成的，不猜；
+     * - 只删本次进程启动之前就躺在那儿的文件：正在下的那一支可能刚写出 `.part`，
+     *   而它的行要到 `Started` 事件才回填路径，靠时间戳把它挡在扫描之外。
+     */
+    private fun sweepOrphans(all: List<DownloadRecord>): Int {
+        val root = sandboxRoot?.let(::File) ?: return 0
+        val listed = root.listFiles()?.toList() ?: return 0
+        val referenced = all.mapNotNull { record -> record.outputPath?.let(::insideSandbox)?.path }.toSet()
+        var removed = 0
+        listed
+            .filter { it.isFile && it.extension.lowercase() in ORPHAN_SUFFIXES }
+            .filter { canonical(it) !in referenced }
+            .filter { it.lastModified() < startedAtMs }
+            .forEach { file ->
+                // 体积要在 delete() 之前取：删完再读只会回 0，「清了多少字节」就成了假账。
+                val bytes = file.length()
+                if (file.delete()) {
+                    removed++
+                    audit.log("history_orphan_removed", mapOf("file" to file.name, "bytes" to bytes.toString()))
+                }
+            }
+        return removed
     }
+
+    private fun canonical(file: File): String = runCatching { file.canonicalPath }.getOrDefault(file.path)
+
+    private suspend fun mutate(id: String, transform: (DownloadRecord) -> DownloadRecord) =
+        rowGate.withLock {
+            val current = dao.findById(id) ?: return@withLock
+            val next = transform(current).copy(updatedAt = now())
+            // 已完成是终态：任何「把这一行退回中间态」的迟到写入都不许落回。
+            // 只改 taskId 这类不动状态的回填照常通过，因为它读的是刚取到的行。
+            if (current.status == RecordStatus.DONE && next.status != RecordStatus.DONE) {
+                audit.log("history_done_kept", mapOf("id" to id, "refused" to next.status.name.lowercase()))
+                return@withLock
+            }
+            dao.upsert(next)
+        }
 
     private fun deleteOutput(path: String): Boolean =
         if (path.startsWith("content://")) deleteDocument(path) else deleteInsideSandbox(path)
@@ -199,6 +295,11 @@ class RoomHistoryRepository(
         } catch (e: IOException) {
             null
         }
+    }
+
+    private companion object {
+        /** 本机下载只往沙盒里写这些后缀（`.part` 是断点），其余文件不是我们生成的，不猜。 */
+        val ORPHAN_SUFFIXES = setOf("mp4", "ts", "mkv", "webm", "mov", "m4v", "mp3", "m4a", "part")
     }
 }
 
@@ -230,6 +331,7 @@ internal fun resolveColdStart(record: DownloadRecord, task: Task?, now: Long): D
         TaskStatus.FAILED -> record.copy(
             status = RecordStatus.FAILED,
             errorCode = task.error?.code?.name,
+            errorMessage = task.error?.message,
             updatedAt = now,
         )
 

@@ -33,7 +33,7 @@ sealed interface OutputPublish {
     /** 没有选 SAF 目录：产物留在应用专属目录，行为与接入前一致。 */
     data object NotConfigured : OutputPublish
 
-    data class Published(val uri: String, val name: String) : OutputPublish
+    data class Published(val uri: String, val name: String, val sizeBytes: Long?) : OutputPublish
 
     /** 复制失败：应用目录里的文件仍在，调用方必须保留它并让用户看见警告。 */
     data class Failed(val reason: String) : OutputPublish
@@ -115,35 +115,22 @@ class SafOutputDirectory(
         } catch (e: Exception) {
             null
         } ?: return@withContext OutputPublish.Failed("所选文件夹已不可用，请在设置中重新选择")
-        if (!tree.canWrite()) {
-            return@withContext OutputPublish.Failed("所选文件夹的授权已失效，请在设置中重新选择")
+
+        // 复制与重名规则交给 SafCopy：下载发布和「移动到公开目录」必须是同一套行为。
+        when (val copied = SafCopy.intoTree(app, tree, source)) {
+            is SafCopyOutcome.Published -> {
+                // 复制成功才动 staging：失败路径必须留着原文件。
+                source.delete()
+                File(source.path + ".part").delete()
+                audit.log("audit_output_publish", mapOf("result" to "ok", "name" to copied.name))
+                OutputPublish.Published(copied.uri, copied.name, copied.sizeBytes)
+            }
+
+            is SafCopyOutcome.Failed -> {
+                audit.log("audit_output_publish", mapOf("result" to "failed", "reason" to copied.reason))
+                OutputPublish.Failed(copied.reason)
+            }
         }
-
-        val name = uniqueFileName(source.name) { tree.findFile(it) != null }
-        val document = try {
-            tree.createFile(mimeOf(name), name)
-        } catch (e: Exception) {
-            null
-        } ?: return@withContext OutputPublish.Failed("无法在所选文件夹创建文件")
-
-        try {
-            val out = app.contentResolver.openOutputStream(document.uri)
-                ?: throw IOException("无法写入所选文件夹")
-            out.use { sink -> source.inputStream().use { it.copyTo(sink) } }
-        } catch (e: Exception) {
-            document.delete()
-            audit.log(
-                "audit_output_publish",
-                mapOf("result" to "failed", "reason" to (e.message ?: "io")),
-            )
-            return@withContext OutputPublish.Failed(e.message ?: "写入所选文件夹失败")
-        }
-
-        // 复制成功才动 staging：失败路径必须留着原文件。
-        source.delete()
-        File(source.path + ".part").delete()
-        audit.log("audit_output_publish", mapOf("result" to "ok", "name" to name))
-        OutputPublish.Published(document.uri.toString(), name)
     }
 
     private fun readLocation(): OutputLocation = OutputLocation(
@@ -165,21 +152,6 @@ class SafOutputDirectory(
         const val KEY_DISPLAY_NAME = "saf_display_name"
     }
 }
-
-/** 同名文件已存在时追加序号，绝不覆盖用户已有文件。 */
-internal fun uniqueFileName(name: String, exists: (String) -> Boolean): String {
-    if (!exists(name)) return name
-    val dot = name.lastIndexOf('.')
-    val base = if (dot > 0) name.substring(0, dot) else name
-    val extension = if (dot > 0) name.substring(dot) else ""
-    for (index in 1 until MAX_NAME_ATTEMPTS) {
-        val candidate = "$base ($index)$extension"
-        if (!exists(candidate)) return candidate
-    }
-    return "$base-${System.currentTimeMillis()}$extension"
-}
-
-private const val MAX_NAME_ATTEMPTS = 1_000
 
 internal fun mimeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
     "mp4", "m4v" -> "video/mp4"

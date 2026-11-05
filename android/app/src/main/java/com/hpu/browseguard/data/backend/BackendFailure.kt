@@ -12,18 +12,21 @@ import kotlinx.serialization.json.JsonObject
  */
 sealed interface BackendFailure {
 
+    /** 每一句都要能当面读给用户听：协议失败抄引擎的 `message`，本地失败说清自己判了什么。 */
+    val message: String
+
     /** 引擎按 PROTOCOL §5 回了错误对象，字段原样取自响应。 */
     data class Protocol(
         val code: ErrorCode,
         val retryable: Boolean,
-        val message: String,
+        override val message: String,
         val detail: JsonObject?,
     ) : BackendFailure
 
     /** 客户端本地判定：超时、连不上、引擎回空数组——协议里没有对应的码可言。 */
     data class Local(
         val reason: LocalReason,
-        val message: String,
+        override val message: String,
         val retryable: Boolean = true,
         /**
          * 站点回的真实 HTTP 状态（只有 [LocalReason.LINK_UNLOADABLE] 才有值）。

@@ -7,6 +7,8 @@ import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
+import com.hpu.browseguard.data.download.ConsentWait
+import com.hpu.browseguard.data.download.DownloadCoordinator
 import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.fakes.FakeAuditLogger
@@ -43,6 +45,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -73,7 +76,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun sniffingStatusIsMirroredIntoTheUi() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -93,7 +96,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun formatPreparingStatusIsMirroredAndASingleRowIsSelected() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
         val sniffed = listOf(sniffResult())
         fakes.reachSniffSuccess(vm, sniffed)
@@ -118,7 +121,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun sniffLocalFailureNeverReadsAsSuccessAndCarriesNoProtocolCode() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -132,8 +135,8 @@ class HomeViewModelBehaviorTest {
     }
 
     @Test
-    fun downloadLocalFailureNeverReadsAsSuccessAndCarriesNoProtocolCode() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+    fun localDownloadFailureLandsOnTheHistoryRowWithoutAProtocolCode() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         val link = sniffResult()
         fakes.reachSniffSuccess(vm, listOf(link))
@@ -151,19 +154,24 @@ class HomeViewModelBehaviorTest {
         assertEquals(listOf(FakeBackendProvider.DEFAULT_SANDBOX), local.allowedRoots)
 
         fakes.provider.downloadBackend.emitStart(
-            // 401/403 现在先落在「等待授权」态（M6-5），这条钉的是纯本地失败的出口，所以用 503。
+            // 401/403 先走「等待授权」那条出口，这条钉的是纯本地失败的归宿，所以用 503。
             DownloadEvent.Failed(LocalFailures.linkUnloadable(503)),
         )
 
-        assertFalse("本地失败不得落成成功态", vm.state.value.download is DownloadPhase.Success)
-        val failed = vm.state.value.download as DownloadPhase.Failed
-        assertNull("站点 503 也不是引擎的码", failed.code)
-        assertEquals(LocalFailures.linkUnloadable(503).message, failed.message)
+        val row = fakes.history.rows.single()
+        assertEquals("失败要写在下载页那一行上", RecordStatus.FAILED, row.status)
+        assertNull("客户端本地判定不得借 §5 协议码", row.errorCode)
+        assertEquals(LocalFailures.linkUnloadable(503).message, row.errorMessage)
+        assertEquals(
+            "主页在触发那一刻就复位了：失败不再回到这张页面",
+            DownloadPhase.Idle,
+            vm.state.value.download,
+        )
     }
 
     @Test
     fun switchingToLocalClearsAndAuditsTheIgnoredMerge() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
         assertTrue("引擎模式默认勾选合并", vm.state.value.mergeSelected)
 
@@ -176,7 +184,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun theBlockedMergeToggleLeavesAnAuditRowAndNeverToggles() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
 
         vm.toggleMerge(true)
@@ -192,7 +200,7 @@ class HomeViewModelBehaviorTest {
      */
     @Test
     fun engineConnectFailureFallsBackToLocalSniffAndDownload() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -227,7 +235,7 @@ class HomeViewModelBehaviorTest {
     /** 引擎嗅探超时只说明这一轮慢：降级嗅探，但下载仍可留给引擎。 */
     @Test
     fun engineTimeoutFallsBackButKeepsEngineForDownload() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -244,7 +252,7 @@ class HomeViewModelBehaviorTest {
     /** 协议不符/传输层非连接问题不降级：换了腿也不会让协议对上。 */
     @Test
     fun nonConnectivityFailuresDoNotTriggerFallback() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -267,7 +275,17 @@ class HomeViewModelBehaviorTest {
             downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
         )
         val provider = FakeBackendProvider()
-        val vm = HomeViewModel(settings, provider, FakeEngineInfo(healthResult = null), FakeAuditLogger(), FakeHistoryRepository())
+        val history = FakeHistoryRepository()
+        val audit = FakeAuditLogger()
+        val vm = HomeViewModel(
+            settings,
+            provider,
+            FakeEngineInfo(healthResult = null),
+            audit,
+            history,
+            FakeCookieConsentStore(),
+            DownloadCoordinator(provider, history, this, audit),
+        )
 
         assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
         assertTrue("本机嗅探不需要引擎自检", vm.state.value.canSniff)
@@ -286,7 +304,16 @@ class HomeViewModelBehaviorTest {
     fun offlineEngineStillLetsTheDefaultEngineModeStartAndFallBack() = runTest(dispatcher) {
         val provider = FakeBackendProvider()
         val audit = FakeAuditLogger()
-        val vm = HomeViewModel(FakeEngineSettings(), provider, FakeEngineInfo(healthResult = null), audit, FakeHistoryRepository())
+        val history = FakeHistoryRepository()
+        val vm = HomeViewModel(
+            FakeEngineSettings(),
+            provider,
+            FakeEngineInfo(healthResult = null),
+            audit,
+            history,
+            FakeCookieConsentStore(),
+            DownloadCoordinator(provider, history, this, audit),
+        )
 
         assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
         assertTrue("引擎不可达时嗅探按钮不能灰着：降级要靠这次点击触发", vm.state.value.canSniff)
@@ -302,7 +329,7 @@ class HomeViewModelBehaviorTest {
     /** 降级后本地也失败：提示必须升级为「检查网络或引擎」，不能只留一句本地超时。 */
     @Test
     fun aLocalFailureAfterFallbackSaysToCheckNetworkOrEngine() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -324,7 +351,7 @@ class HomeViewModelBehaviorTest {
     /** 一次用户动作只写一行历史：嗅探 → 待下载 → 下载中 → 完成，状态全程跟得上。 */
     @Test
     fun sniffAndDownloadWriteOneHistoryRowThroughAllStages() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
         fakes.reachSniffSuccess(vm, listOf(sniffResult()))
 
@@ -355,7 +382,7 @@ class HomeViewModelBehaviorTest {
     /** 本地失败没有协议码：历史里也不能借一个来写。 */
     @Test
     fun localSniffFailureIsPersistedWithoutAProtocolCode() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.editSourceUrl("https://example.com/watch")
@@ -367,59 +394,49 @@ class HomeViewModelBehaviorTest {
         assertNull("客户端判定不得借 §5 协议码", row.errorCode)
     }
 
-    /** 没选 SAF：本地产物留在应用目录，界面与历史都指向 staging，不显示假警告。 */
+    /** 没选 SAF：本地产物留在应用目录，历史指向 staging，不产生假警告。 */
     @Test
     fun localSuccessWithoutSafKeepsStagingPath() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         val task = fakes.reachLocalSuccess(vm)
-
-        val phase = vm.state.value.download as DownloadPhase.Success
-        assertFalse("复制流程结束后不能再挡着打开文件", phase.publishing)
-        assertNull(phase.publishedPath)
-        assertNull(phase.publishWarning)
 
         val row = fakes.history.rows.single()
         assertEquals(RecordStatus.DONE, row.status)
         assertEquals(localOutputPath(task), row.outputPath)
         assertEquals(localOutputPath(task), fakes.provider.publishRequests.single().path)
+        assertTrue("没复制就不该有复制失败的审计行", fakes.audit.of("audit_publish_failed").isEmpty())
+        assertEquals(DownloadPhase.Idle, vm.state.value.download)
     }
 
-    /** 选了 SAF 且复制成功：历史与界面都改成 content://，staging 不再是最终落点。 */
+    /** 选了 SAF 且复制成功：记录改成 content://，产物大小一并回填。 */
     @Test
-    fun localSuccessPublishedToSafRecordsTheContentUri() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
-        fakes.provider.publishResult = OutputPublish.Published("content://tree/doc/clip.mp4", "clip.mp4")
+    fun localSuccessPublishedToSafRecordsTheContentUriAndSize() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        fakes.provider.publishResult = OutputPublish.Published("content://tree/doc/clip.mp4", "clip.mp4", 4_096L)
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSuccess(vm)
-
-        val phase = vm.state.value.download as DownloadPhase.Success
-        assertEquals("content://tree/doc/clip.mp4", phase.publishedPath)
-        assertEquals("clip.mp4", phase.publishedName)
-        assertFalse(phase.publishing)
-        assertNull(phase.publishWarning)
 
         val row = fakes.history.rows.single()
         assertEquals(RecordStatus.DONE, row.status)
         assertEquals("content://tree/doc/clip.mp4", row.outputPath)
+        assertEquals("完成时要顺手回填真实大小", 4_096L, row.sizeBytes)
     }
 
-    /** 复制失败不篡改下载结果：记录仍指向 staging，警告必须让用户看见。 */
+    /** 复制失败不篡改下载结果：记录仍指向 staging，原因留在审计行里。 */
     @Test
-    fun localSuccessKeepsStagingAndWarnsWhenSafCopyFails() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+    fun localSuccessKeepsStagingAndAuditsWhenSafCopyFails() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         fakes.provider.publishResult = OutputPublish.Failed("所选文件夹的授权已失效，请在设置中重新选择")
         val vm = fakes.connectedViewModel()
         val task = fakes.reachLocalSuccess(vm)
 
-        val phase = vm.state.value.download as DownloadPhase.Success
-        assertFalse(phase.publishing)
-        assertNull("复制失败不能冒充已保存", phase.publishedPath)
-        assertTrue("警告原文必须透传：${phase.publishWarning}", phase.publishWarning!!.contains("授权已失效"))
-
         val row = fakes.history.rows.single()
         assertEquals("文件还在 staging，记录不能丢", RecordStatus.DONE, row.status)
         assertEquals(localOutputPath(task), row.outputPath)
+        val audit = fakes.audit.of("audit_publish_failed").single()
+        assertTrue("原因要能查：${audit.fields["reason"]}", audit.fields["reason"]!!.contains("授权已失效"))
+        assertEquals(row.id, audit.fields["id"])
     }
 
     /**
@@ -428,80 +445,81 @@ class HomeViewModelBehaviorTest {
      */
     @Test
     fun a403FromAnUngrantedHostWaitsForConsentInsteadOfFailing() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         val link = sniffResult()
         fakes.reachLocalSelecting(vm, link)
 
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
 
-        val awaiting = vm.state.value.download as? DownloadPhase.AwaitingCookieConsent
-            ?: error("403 且未授权必须停在等待授权态：${vm.state.value.download}")
+        val awaiting = vm.state.value.consentWait
+            ?: error("403 且未授权必须挂出一次授权等待：${vm.state.value.download}")
         assertEquals("cdn.example.com", awaiting.host)
         assertEquals(403, awaiting.status)
         assertEquals(
-            "画质表要留着，点同意之后直接接上同一条",
-            listOf(localTaskId(link.mediaUrl)),
-            awaiting.formats.map { it.formatId },
+            "续跑要挑回哪条画质，等待态自己就得带着它",
+            localTaskId(link.mediaUrl),
+            awaiting.formatId,
         )
-        assertEquals(localTaskId(link.mediaUrl), vm.state.value.selectedFormatId)
-        assertTrue("等待授权算在途：换执行者会把这张表换掉", vm.state.value.downloadInFlight)
+        assertFalse("引擎嗅探那页本来就带着 Cookie，不需要重放", awaiting.needsSniffReplay)
+        assertEquals("差一次同意不是失败：历史不能落成 FAILED", RecordStatus.READY, fakes.history.rows.single().status)
+        assertFalse(fakes.history.calls.contains("markFailed"))
         assertFalse("没点头不许偷偷记授权", fakes.consent.isGranted("cdn.example.com"))
-        assertFalse("差一次同意不是失败：历史不能落成 FAILED", fakes.history.calls.contains("markFailed"))
         assertEquals("403", fakes.audit.of("cookie_consent_required").single().fields["status"])
     }
 
     /** 401 与 403 是同一条出路：都说明这一站要先有登录状态。 */
     @Test
     fun a401IsTheSameMissingLoginAsA403() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
 
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(401)))
 
-        val awaiting = vm.state.value.download as? DownloadPhase.AwaitingCookieConsent
+        val awaiting = vm.state.value.consentWait
             ?: error("401 也该等一次授权：${vm.state.value.download}")
         assertEquals(401, awaiting.status)
     }
 
-    /** 点「拒绝」回到改造前的出口：措辞、无 §5 码、历史写失败，一个都不变。 */
+    /** 点「拒绝」：这一行如实写失败，措辞说清是「没给授权」，且不带 §5 码。 */
     @Test
-    fun denyingFallsBackToTheOriginalLinkUnloadableExit() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+    fun denyingWritesTheRefusalIntoTheRecordWithoutBorrowingACode() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
 
         vm.denyCookieConsent()
 
-        val failed = vm.state.value.download as DownloadPhase.Failed
-        assertNull("站点 403 不是引擎的码", failed.code)
-        assertEquals(LocalFailures.linkUnloadable(403).message, failed.message)
-        assertTrue("用户自己拒了，这一行就该写失败", fakes.history.calls.contains("markFailed"))
+        val row = fakes.history.rows.single()
+        assertEquals(RecordStatus.FAILED, row.status)
+        assertNull("站点 403 不是引擎的码", row.errorCode)
+        assertTrue("原因要说清是没授权：${row.errorMessage}", row.errorMessage!!.contains("未授权使用页面 Cookie"))
+        assertNull("问过了就不能再挂着", vm.state.value.consentWait)
         assertFalse("拒绝就是拒绝：不许留下授权", fakes.consent.isGranted("cdn.example.com"))
         assertEquals("cdn.example.com", fakes.audit.of("cookie_consent_denied").single().fields["host"])
     }
 
     /**
-     * 成功之后撤销授权、再点一次下载并被拒：界面照样报 403，但那次成功的记录不动——
-     * 产物还在盘上，历史页指着一份完好的文件说「失败」是把用户往错的方向带。
+     * 成功之后再来一次并被拒：那次成功的记录不动——
+     * 产物还在盘上，下载页指着一份完好的文件说「失败」是把用户往错的方向带。
      */
     @Test
     fun aDeclinedRetryNeverRewritesACompletedRecord() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         val task = fakes.reachLocalSuccess(vm)
-        val link = sniffResult()
+        val doneId = fakes.history.rows.single().id
 
-        fakes.reachLocalSelectingAfter(vm, link)
+        fakes.reachLocalSelecting(vm, sniffResult())
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
         vm.denyCookieConsent()
 
-        assertTrue("界面上仍要说清这次没成", vm.state.value.download is DownloadPhase.Failed)
-        val row = fakes.history.rows.single()
-        assertEquals("重试被拒不许改写已完成的记录", RecordStatus.DONE, row.status)
-        assertEquals(localOutputPath(task), row.outputPath)
+        val done = fakes.history.rows.single { it.id == doneId }
+        assertEquals("重试被拒不许改写已完成的记录", RecordStatus.DONE, done.status)
+        assertEquals(localOutputPath(task), done.outputPath)
+        assertEquals("被拒的那一行仍要如实写失败", 1, fakes.history.rows.count { it.status == RecordStatus.FAILED })
     }
 
     /**
@@ -511,6 +529,7 @@ class HomeViewModelBehaviorTest {
     @Test
     fun agreeingReRunsTheLocalSniffAndStartsTheDownloadWithoutAskingAgain() = runTest(dispatcher) {
         val fakes = Fakes(
+            this,
             settings = FakeEngineSettings(
                 downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
@@ -521,6 +540,11 @@ class HomeViewModelBehaviorTest {
         fakes.reachLocalSniffSuccess(vm, link)
         fakes.reachLocalSelectingAfter(vm, link)
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+        assertEquals(
+            "离屏那一页没被允许存 Cookie：同意之后必须先重放嗅探",
+            true,
+            vm.state.value.consentWait?.needsSniffReplay,
+        )
 
         vm.grantCookieConsent()
 
@@ -538,25 +562,34 @@ class HomeViewModelBehaviorTest {
 
         val starts = fakes.provider.downloadBackend.startRequests
         assertEquals("画质表回来后直接续上下载", 2, starts.size)
-        assertTrue("续跑的仍是本机直链那一条", starts.last() is StartRequest.ViaLocal)
+        val local = starts.last() as? StartRequest.ViaLocal
+            ?: error("续跑的仍是本机直链那一条：${starts.last()}")
+        assertEquals("重放时替用户点掉的就是原来那条画质", link.mediaUrl, local.link.mediaUrl)
+        assertTrue("作废那一行走的是「删行」而不是挂个已取消", "abandon" in fakes.history.calls)
         assertEquals(
-            "重放时替用户点掉的就是原来那条画质",
-            localTaskId(link.mediaUrl),
-            vm.state.value.selectedFormatId,
+            "续跑后列表里只剩重放这一条：没有产物、没有新信息的幽灵行不该留给用户看",
+            1,
+            fakes.history.rows.size,
+        )
+        val revived = fakes.history.rows.single()
+        assertTrue(
+            "活下来的必须是重放出来的那一行",
+            revived.status == RecordStatus.READY || revived.status == RecordStatus.DOWNLOADING,
         )
     }
 
     /** 已经授权过的站点再回 403 是真的读不到：不能再拿弹窗糊第二次。 */
     @Test
     fun anAlreadyGrantedHostGetsThePlainFailureNotAnotherDialog() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         fakes.consent.grant("cdn.example.com")
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
 
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
 
-        assertTrue("授权过了就是真失败", vm.state.value.download is DownloadPhase.Failed)
+        assertTrue("授权过了就是真失败", fakes.history.rows.single().status == RecordStatus.FAILED)
+        assertNull(vm.state.value.consentWait)
         assertTrue(fakes.audit.of("cookie_consent_required").isEmpty())
         assertTrue(fakes.history.calls.contains("markFailed"))
     }
@@ -564,7 +597,7 @@ class HomeViewModelBehaviorTest {
     /** 授权管的是「手机自己直连」那一条；交给电脑引擎时不问，也不该问。 */
     @Test
     fun theEngineExecutorNeverAsksForCookieConsent() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
         fakes.reachSniffSuccess(vm, listOf(sniffResult()))
         vm.pickFormats()
@@ -573,18 +606,19 @@ class HomeViewModelBehaviorTest {
 
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
 
-        assertTrue("引擎下载这一支不弹窗：${vm.state.value.download}", vm.state.value.download is DownloadPhase.Failed)
+        assertEquals("引擎下载这一支不弹窗", null, vm.state.value.consentWait)
         assertTrue(fakes.audit.of("cookie_consent_required").isEmpty())
+        assertEquals(RecordStatus.FAILED, fakes.history.rows.single().status)
     }
 
-    /** 等待授权时那张表是重试要用的东西：换执行者必须被挡下。 */
+    /** 等待授权时那一条任务是按旧执行者排进队列的：换执行者必须被挡下。 */
     @Test
     fun switchingTheExecutorIsRefusedWhileWaitingForConsent() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
-        assertTrue(vm.state.value.download is DownloadPhase.AwaitingCookieConsent)
+        assertNotNull(vm.state.value.consentWait)
 
         vm.selectDownloadExecutor(DownloadExecutor.ENGINE)
 
@@ -594,22 +628,16 @@ class HomeViewModelBehaviorTest {
     /** 冷启动才消费「默认直接显示网页」：关着时停在输入页，开着才直接进浏览器。 */
     @Test
     fun coldStartOnlyOpensTheWebViewWhenThePreferenceSaysSo() = runTest(dispatcher) {
-        val hidden = HomeViewModel(
-            FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = false),
-            FakeBackendProvider(),
-            FakeEngineInfo(),
-            FakeAuditLogger(),
-            FakeHistoryRepository(),
-        )
+        val hidden = Fakes(
+            this,
+            settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = false),
+        ).connectedViewModel()
         assertFalse("偏好关闭时停在输入地址的主页面", hidden.state.value.isWebViewVisible)
 
-        val shown = HomeViewModel(
-            FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = true),
-            FakeBackendProvider(),
-            FakeEngineInfo(),
-            FakeAuditLogger(),
-            FakeHistoryRepository(),
-        )
+        val shown = Fakes(
+            this,
+            settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = true),
+        ).connectedViewModel()
         assertTrue("偏好开启时冷启动直接进浏览器", shown.state.value.isWebViewVisible)
         assertTrue("页面也要直接露出", shown.state.value.browserPageVisible)
     }
@@ -618,6 +646,7 @@ class HomeViewModelBehaviorTest {
     @Test
     fun leavingTheWebViewAndSwitchingBackToLocalAlwaysLandsOnTheInputPage() = runTest(dispatcher) {
         val fakes = Fakes(
+            this,
             settings = FakeEngineSettings(
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
                 showPageByDefault = true,
@@ -644,7 +673,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun openingTheWebViewIsIgnoredOutsideLocalMode() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
         vm.openBrowser(showPage = true)
@@ -655,7 +684,7 @@ class HomeViewModelBehaviorTest {
     /** 简单嗅探空手而归 → 自动起隐藏 WebView 继续深嗅，主页仍可见。 */
     @Test
     fun aSimpleSniffWithoutResultsEscalatesToAHiddenWebView() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
         val vm = fakes.connectedViewModel()
         vm.editSourceUrl("https://example.com/watch")
         vm.sniff()
@@ -674,7 +703,7 @@ class HomeViewModelBehaviorTest {
     /** 隐藏深嗅抓到直链：结果回填主页，会话标记为已就绪。 */
     @Test
     fun hiddenDeepSniffCandidatesBecomeHomeResults() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
         val vm = fakes.connectedViewModel()
         val link = sniffResult()
         enterHiddenDeepSniff(fakes, vm)
@@ -688,7 +717,7 @@ class HomeViewModelBehaviorTest {
     /** 隐藏深嗅也没有命中：停在主页，等用户把页面露出来点播放。 */
     @Test
     fun hiddenDeepSniffWithoutCandidatesAsksForTheVisiblePage() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
         val vm = fakes.connectedViewModel()
         enterHiddenDeepSniff(fakes, vm)
 
@@ -703,6 +732,7 @@ class HomeViewModelBehaviorTest {
     @Test
     fun startingADownloadFromTheHiddenSessionDropsTheWebView() = runTest(dispatcher) {
         val fakes = Fakes(
+            this,
             settings = FakeEngineSettings(
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
                 downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
@@ -727,7 +757,7 @@ class HomeViewModelBehaviorTest {
     /** 隐藏深嗅进行中允许切到电脑引擎，切完会话立刻结束（WebView 由界面销毁）。 */
     @Test
     fun switchingToTheEngineClosesTheHiddenSession() = runTest(dispatcher) {
-        val fakes = Fakes(settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
         val vm = fakes.connectedViewModel()
         enterHiddenDeepSniff(fakes, vm)
 
@@ -741,7 +771,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun theMutePreferenceIsPersistedAndMirrored() = runTest(dispatcher) {
-        val fakes = Fakes()
+        val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
         assertTrue("默认静音", vm.state.value.muteWhileSniffing)
 
@@ -761,14 +791,26 @@ class HomeViewModelBehaviorTest {
     }
 
     private class Fakes(
+        private val scope: TestScope,
         val settings: FakeEngineSettings = FakeEngineSettings(),
         val provider: FakeBackendProvider = FakeBackendProvider(),
         val audit: FakeAuditLogger = FakeAuditLogger(),
         val history: FakeHistoryRepository = FakeHistoryRepository(),
         val consent: FakeCookieConsentStore = FakeCookieConsentStore(),
     ) {
+        /**
+         * 真的协调器，不是替身。
+         *
+         * 主页瘦身后它是进度与终态的唯一写入者，也接管了 401/403 的授权等待；
+         * 用假对象就等于把这条腿的接线全部跳过了。
+         * 挂在 `backgroundScope` 上：一条没下完的流本来就该活过这一次点击，
+         * 放在 TestScope 里会让 runTest 等到天荒地老。
+         */
+        val downloads: DownloadCoordinator =
+            DownloadCoordinator(provider, history, scope.backgroundScope, audit, consent, progressIntervalMs = 0L)
+
         fun connectedViewModel(): HomeViewModel {
-            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit, history, consent)
+            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit, history, consent, downloads)
             assertEquals(Connection.Connected::class.java, vm.state.value.connection.javaClass)
             return vm
         }
@@ -795,6 +837,8 @@ class HomeViewModelBehaviorTest {
                 DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
             )
             vm.startDownload()
+            assertEquals("开下后主页立刻回到输入态", DownloadPhase.Idle, vm.state.value.download)
+            assertEquals(HomeViewModel.QUEUED_HINT, vm.state.value.queuedHint)
         }
 
         /** 嗅探（电脑引擎那条腿）→ 画质表 → 开下，一次铺完。 */
@@ -803,7 +847,11 @@ class HomeViewModelBehaviorTest {
             reachLocalSelectingAfter(vm, link)
         }
 
-        /** 本地直链一路走到成功终态；SAF 复制是否成功由 [FakeBackendProvider.publishResult] 决定。 */
+        /**
+         * 本地直链一路走到成功终态；SAF 复制是否成功由 [FakeBackendProvider.publishResult] 决定。
+         *
+         * 断言落在历史行上——终态已不归主页状态机，界面上此时只剩一句轻提示。
+         */
         suspend fun reachLocalSuccess(vm: HomeViewModel): Task {
             val link = sniffResult()
             reachSniffSuccess(vm, listOf(link))
@@ -815,7 +863,7 @@ class HomeViewModelBehaviorTest {
             provider.downloadBackend.emitStart(DownloadEvent.Started(task(TaskStatus.DOWNLOADING)))
             val terminal = task(TaskStatus.DONE)
             provider.downloadBackend.emitStart(DownloadEvent.Terminal(terminal))
-            assertTrue(vm.state.value.download is DownloadPhase.Success)
+            assertEquals(RecordStatus.DONE, history.rows.single().status)
             return terminal
         }
     }
