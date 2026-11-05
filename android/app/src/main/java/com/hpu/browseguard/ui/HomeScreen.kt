@@ -108,9 +108,9 @@ fun HomeRoute(
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    // 显式选了「本机嗅探」就是内置浏览器；电脑不可达的自动降级仍留在旧首页，
+    // 只有用户显式展开 WebView 才进浏览器；电脑不可达的自动降级仍留在旧首页，
     // 让离屏嗅探的结果有地方可看。
-    if (state.browserMode) {
+    if (state.isWebViewVisible) {
         BrowserRoute(container, viewModel)
         return
     }
@@ -123,6 +123,7 @@ fun HomeRoute(
         onDismissSniffNotice = viewModel::dismissSniffNotice,
         onSelectDownloadExecutor = viewModel::selectDownloadExecutor,
         onEditSourceUrl = viewModel::editSourceUrl,
+        onOpenBrowser = { viewModel.openBrowser(showPage = true) },
         onSniff = viewModel::sniff,
         onPickFormats = viewModel::pickFormats,
         onSelectFormat = viewModel::selectFormat,
@@ -146,6 +147,7 @@ fun HomeScreen(
     onDismissSniffNotice: () -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onEditSourceUrl: (String) -> Unit,
+    onOpenBrowser: () -> Unit,
     onSniff: () -> Unit,
     onPickFormats: () -> Unit,
     onSelectFormat: (String) -> Unit,
@@ -188,6 +190,7 @@ fun HomeScreen(
             onRefreshConnection = onRefresh,
             onSelectSniffExecutor = onSelectSniffExecutor,
             onEditSourceUrl = onEditSourceUrl,
+            onOpenBrowser = onOpenBrowser,
             onSniff = onSniff,
             onPickFormats = onPickFormats,
         )
@@ -357,6 +360,7 @@ private fun SniffWorkCard(
     onRefreshConnection: () -> Unit,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
     onEditSourceUrl: (String) -> Unit,
+    onOpenBrowser: () -> Unit,
     onSniff: () -> Unit,
     onPickFormats: () -> Unit,
 ) {
@@ -482,6 +486,11 @@ private fun SniffWorkCard(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             FilledTonalButton(onClick = onSniff, enabled = sniffEnabled) {
                 Text(stringResource(R.string.sniff_action))
+            }
+            if (state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
+                OutlinedButton(onClick = onOpenBrowser, enabled = editable) {
+                    Text(stringResource(R.string.browser_show_page))
+                }
             }
             when (val phase = state.sniff) {
                 is SniffPhase.Running -> Text(
@@ -1687,6 +1696,7 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
             onDismissSniffNotice = {},
             onSelectDownloadExecutor = {},
             onEditSourceUrl = {},
+            onOpenBrowser = {},
             onSniff = {},
             onPickFormats = {},
             onSelectFormat = {},

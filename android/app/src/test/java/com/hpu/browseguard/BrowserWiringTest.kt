@@ -28,7 +28,7 @@ class BrowserWiringTest {
         val provider = File("$SRC_ROOT/data/backend/CookieProvider.kt").readText()
         val downloader = File("$SRC_ROOT/data/backend/LocalDirectDownloader.kt").readText()
 
-        assertTrue("抓到的媒体要收进左下角悬浮球", screen.contains("FloatingActionButton("))
+        assertTrue("抓到的媒体要收进悬浮球", screen.contains("FloatingActionButton("))
         assertTrue("悬浮球必须能打开结果弹窗", screen.contains("SniffResultsDialog("))
         assertTrue("每条候选都要能复制链接", screen.contains("R.string.browser_candidate_copy"))
         assertTrue("排序必须用带发现先后那条 Comparator", controllerUsesOrder())
@@ -47,6 +47,43 @@ class BrowserWiringTest {
             screen.contains("if (!pageVisible)") && screen.contains("BrowserHiddenCover("),
         )
         assertTrue("顶栏要有「显示网页」入口", screen.contains("R.string.browser_show_page"))
+    }
+
+    /** M10.5：外跳、权限与表单保存都要在 WebView 初始化处关闭，不能等页面自觉。 */
+    @Test
+    fun webViewCarriesItsSafetyArmor() {
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
+
+        assertTrue(
+            "非 http(s) scheme 必须原地丢弃",
+            screen.contains("""if (scheme != "http" && scheme != "https") return true"""),
+        )
+        assertTrue("摄像头/麦克风等权限一律拒绝", screen.contains("request?.deny()"))
+        assertTrue("地理位置请求也要拒绝", screen.contains("callback?.invoke(origin, false, false)"))
+        assertTrue("禁止脚本自动开窗", screen.contains("javaScriptCanOpenWindowsAutomatically = false"))
+        assertTrue("禁止多窗口", screen.contains("setSupportMultipleWindows(false)"))
+        assertTrue("不保存表单", screen.contains("setSaveFormData(false)"))
+        assertTrue("不保存密码", screen.contains("setSavePassword(false)"))
+    }
+
+    /** M10.5：悬浮球在右下角，底部导航在浏览器里也必须常驻。 */
+    @Test
+    fun theFabMovedToBottomEndAndTheTabsStayVisible() {
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
+        val app = File("$SRC_ROOT/ui/BgvApp.kt").readText()
+
+        assertTrue("悬浮球要固定在右下角", screen.contains("Alignment.BottomEnd"))
+        assertTrue("浏览器里不再把底栏条件隐藏", app.contains("bottomBar = {") && !app.contains("if (!browserActive)"))
+    }
+
+    /** M10.5：退出网页后主页面要常驻「显示网页」入口，否则用户进得去出不来。 */
+    @Test
+    fun homeOffersAWayBackIntoTheWebView() {
+        val home = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
+
+        assertTrue("主页面要有「显示网页」按钮", home.contains("onOpenBrowser"))
+        assertTrue("文案复用浏览器的「显示网页」", home.contains("R.string.browser_show_page"))
+        assertTrue("只有本机模式才给这个入口", home.contains("state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW"))
     }
 
     /** 默认值与顺序（M10）：本机在前且是默认，隐藏网页的偏好要能落盘。 */

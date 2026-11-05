@@ -132,15 +132,17 @@ data class HomeUiState(
     val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
     /** 嗅探交给电脑引擎还是手机 WebView；默认本机，界面可显式切换。 */
     val sniffExecutor: SniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-    /** 浏览器里默认直接露出网页；关闭时先隐藏，只留地址栏与「显示网页」。 */
+    /** 浏览器里默认直接露出网页；只在 App 冷启动时决定初值。 */
     val showPageByDefault: Boolean = false,
     /**
-     * 显示「地址栏 + WebView + 嗅探面板」的内置浏览器。
+     * 是否显示内置浏览器（地址栏 + WebView + 嗅探球）。
      *
-     * 只有用户显式选了本机嗅探才为真；电脑不可达时的自动降级仍走离屏嗅探，
+     * 只有用户显式选了本机嗅探才可能为真；电脑不可达时的自动降级仍走离屏嗅探，
      * 免得浏览器停在空白页、而结果落在看不见的另一条腿上。
      */
-    val browserMode: Boolean = false,
+    val isWebViewVisible: Boolean = false,
+    /** 浏览器里的网页是否露出；关闭时 WebView 仍在后台正常渲染，只盖一层提示。 */
+    val browserPageVisible: Boolean = false,
     /** 自动降级/失败后的可见提示；`null` 表示没有要说的。 */
     val sniffNotice: String? = null,
     /**
@@ -262,7 +264,11 @@ class HomeViewModel(
             downloadExecutor = settings.downloadExecutor,
             sniffExecutor = settings.sniffExecutor,
             showPageByDefault = settings.showPageByDefault,
-            browserMode = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW,
+            // 冷启动才消费「默认直接显示网页」；本机模式之外没有浏览器可显示。
+            isWebViewVisible = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+                settings.showPageByDefault,
+            browserPageVisible = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+                settings.showPageByDefault,
             // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
             mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
             localSandboxRoot = backends.localSandboxRoot,
@@ -330,11 +336,11 @@ class HomeViewModel(
         if (snapshot.sniffExecutor == executor) {
             // 已经选了本机但浏览器被关掉：再点一次就是重新打开，不必先去切电脑再切回来。
             if (executor == SniffExecutor.LOCAL_WEBVIEW &&
-                !snapshot.browserMode &&
+                !snapshot.isWebViewVisible &&
                 snapshot.sniff !is SniffPhase.Running &&
                 !snapshot.downloadInFlight
             ) {
-                _state.update { it.copy(browserMode = true) }
+                openBrowser(showPage = false)
             }
             return
         }
@@ -344,7 +350,9 @@ class HomeViewModel(
         _state.update {
             it.copy(
                 sniffExecutor = executor,
-                browserMode = executor == SniffExecutor.LOCAL_WEBVIEW,
+                // 切回本机不继承「默认直接显示网页」：必须回到输入地址的主页面。
+                isWebViewVisible = false,
+                browserPageVisible = false,
                 sniff = SniffPhase.Idle,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
@@ -353,9 +361,21 @@ class HomeViewModel(
         }
     }
 
-    /** 浏览器左上角的「关闭」：退回首页，偏好仍留在本机嗅探。 */
+    /** 主页 / 浏览器左上角的「关闭」：退回输入地址的主页面，偏好仍留在本机嗅探。 */
     fun exitBrowser() {
-        _state.update { it.copy(browserMode = false) }
+        _state.update { it.copy(isWebViewVisible = false) }
+    }
+
+    /** 主页「显示网页」入口：本机模式才展开 WebView；[showPage] 决定是否直接露出页面。 */
+    fun openBrowser(showPage: Boolean) {
+        val snapshot = _state.value
+        if (snapshot.sniffExecutor != SniffExecutor.LOCAL_WEBVIEW) return
+        _state.update { it.copy(isWebViewVisible = true, browserPageVisible = showPage) }
+    }
+
+    /** 浏览器顶栏与覆盖层的显隐开关；WebView 本身始终活着。 */
+    fun setBrowserPageVisible(visible: Boolean) {
+        _state.update { it.copy(browserPageVisible = visible) }
     }
 
     /** 隐身模式开关：只影响界面默认露不露网页，不改嗅探链路。 */
@@ -393,7 +413,7 @@ class HomeViewModel(
                 downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
                 mergeSelected = if (switching) false else it.mergeSelected,
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-                browserMode = true,
+                isWebViewVisible = true,
                 sourceUrl = pageUrl,
                 sniff = SniffPhase.Success(listOf(result)),
                 download = DownloadPhase.Idle,
@@ -523,7 +543,8 @@ class HomeViewModel(
             it.copy(
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
                 // 自动降级留在旧首页：离屏嗅探正在跑，换成空浏览器只会让结果无处可看。
-                browserMode = false,
+                isWebViewVisible = false,
+                browserPageVisible = false,
                 downloadExecutor = if (switchDownload) DownloadExecutor.LOCAL_DIRECT else it.downloadExecutor,
                 mergeSelected = if (switchDownload) false else it.mergeSelected,
                 download = DownloadPhase.Idle,

@@ -73,10 +73,11 @@ fun BgvApp(container: AppContainer) {
         container.reconcileHistory()
     }
 
-    // 浏览器要吃掉整个屏幕（含状态栏），只订阅这一个布尔值，别跟着下载进度重组。
+    // 浏览器自己处理状态栏 inset；只订阅这一个布尔值，别跟着下载进度重组。
     val browserActive by remember(homeViewModel) {
-        homeViewModel.state.map { it.browserMode }.distinctUntilChanged()
+        homeViewModel.state.map { it.isWebViewVisible }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = false)
+    val browserFullBleed = browserActive && destination == AppDestination.HOME
 
     BackHandler(enabled = destination != AppDestination.HOME) {
         destination = AppDestination.HOME
@@ -84,32 +85,31 @@ fun BgvApp(container: AppContainer) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = if (browserActive) {
+        contentWindowInsets = if (browserFullBleed) {
             WindowInsets(0, 0, 0, 0)
         } else {
             ScaffoldDefaults.contentWindowInsets
         },
+        // 底部导航在浏览器里也必须常驻：否则用户只能靠系统返回退出。
         bottomBar = {
-            if (!browserActive) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 0.dp,
-                ) {
-                    AppDestination.entries.forEach { item ->
-                        NavigationBarItem(
-                            selected = destination == item,
-                            onClick = { destination = item },
-                            icon = { Icon(imageVector = item.icon, contentDescription = null) },
-                            label = { Text(stringResource(item.labelRes)) },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            ),
-                        )
-                    }
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+            ) {
+                AppDestination.entries.forEach { item ->
+                    NavigationBarItem(
+                        selected = destination == item,
+                        onClick = { destination = item },
+                        icon = { Icon(imageVector = item.icon, contentDescription = null) },
+                        label = { Text(stringResource(item.labelRes)) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                    )
                 }
             }
         },

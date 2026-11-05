@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -29,7 +31,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -131,6 +132,7 @@ fun BrowserRoute(
         },
         onCancelDownload = viewModel::cancelDownload,
         onClose = viewModel::exitBrowser,
+        onPageVisibleChange = viewModel::setBrowserPageVisible,
         onSwitchToEngine = { viewModel.selectSniffExecutor(SniffExecutor.ENGINE) },
         onGrantCookieConsent = viewModel::grantCookieConsent,
         onDenyCookieConsent = viewModel::denyCookieConsent,
@@ -145,6 +147,7 @@ internal fun BrowserScreen(
     onDownload: (SniffResult) -> Unit,
     onCancelDownload: () -> Unit,
     onClose: () -> Unit,
+    onPageVisibleChange: (Boolean) -> Unit,
     onSwitchToEngine: () -> Unit,
     onGrantCookieConsent: () -> Unit,
     onDenyCookieConsent: () -> Unit,
@@ -156,9 +159,7 @@ internal fun BrowserScreen(
     var addressInvalid by remember { mutableStateOf(false) }
     var progress by remember { mutableIntStateOf(0) }
     // 隐身模式：WebView 始终铺满、照常渲染与跑 JS，只是上面盖一层不透明提示。
-    var pageVisible by rememberSaveable { mutableStateOf(state.showPageByDefault) }
-    // 只有「设置里的默认值」真的变了才覆盖手动切换；切 Tab 回来不能把用户刚点开的网页又盖回去。
-    var lastPageDefault by rememberSaveable { mutableStateOf(state.showPageByDefault) }
+    val pageVisible = state.browserPageVisible
     var showResults by rememberSaveable { mutableStateOf(false) }
     val initialUrl = remember { addressToUrl(address) }
     val busy = state.downloadInFlight
@@ -190,12 +191,6 @@ internal fun BrowserScreen(
             addressInvalid = false
         }
     }
-    LaunchedEffect(state.showPageByDefault) {
-        if (lastPageDefault != state.showPageByDefault) {
-            lastPageDefault = state.showPageByDefault
-            pageVisible = state.showPageByDefault
-        }
-    }
     DisposableEffect(Unit) {
         onDispose {
             holder.view?.release()
@@ -208,7 +203,7 @@ internal fun BrowserScreen(
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Box(modifier = Modifier.fillMaxSize().navigationBarsPadding()) {
+        Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
                 BrowserTopBar(
                     address = address,
@@ -238,8 +233,8 @@ internal fun BrowserScreen(
                         addressInvalid = false
                     },
                     onTogglePage = {
-                        pageVisible = !pageVisible
-                        if (!pageVisible) focusManager.clearFocus()
+                        onPageVisibleChange(!pageVisible)
+                        if (pageVisible) focusManager.clearFocus()
                     },
                 )
 
@@ -277,7 +272,7 @@ internal fun BrowserScreen(
                     if (!pageVisible) {
                         BrowserHiddenCover(
                             hasPage = sniff.pageUrl.isNotBlank(),
-                            onShow = { pageVisible = true },
+                            onShow = { onPageVisibleChange(true) },
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else if (sniff.pageUrl.isBlank()) {
@@ -304,7 +299,7 @@ internal fun BrowserScreen(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier
-                                .align(Alignment.BottomStart)
+                                .align(Alignment.BottomEnd)
                                 .padding(20.dp),
                         ) {
                             BadgedBox(
@@ -1171,6 +1166,10 @@ private fun createBrowserWebView(
     webSettings.allowContentAccess = false
     webSettings.javaScriptCanOpenWindowsAutomatically = false
     webSettings.setSupportMultipleWindows(false)
+    @Suppress("DEPRECATION")
+    webSettings.setSaveFormData(false)
+    @Suppress("DEPRECATION")
+    webSettings.setSavePassword(false)
     webSettings.useWideViewPort = true
     webSettings.loadWithOverviewMode = true
     webSettings.cacheMode = WebSettings.LOAD_DEFAULT
@@ -1191,6 +1190,18 @@ private fun createBrowserWebView(
 
         override fun onReceivedTitle(view: WebView?, title: String?) {
             controller.onTitle(title.orEmpty())
+        }
+
+        // 页面没有任何需要授权的业务：摄像头、麦克风、地理位置一律拒绝。
+        override fun onPermissionRequest(request: PermissionRequest?) {
+            request?.deny()
+        }
+
+        override fun onGeolocationPermissionsShowPrompt(
+            origin: String?,
+            callback: GeolocationPermissions.Callback?,
+        ) {
+            callback?.invoke(origin, false, false)
         }
     }
 

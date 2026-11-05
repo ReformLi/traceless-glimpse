@@ -588,6 +588,67 @@ class HomeViewModelBehaviorTest {
         assertEquals(DownloadExecutor.LOCAL_DIRECT, vm.state.value.downloadExecutor)
     }
 
+    /** 冷启动才消费「默认直接显示网页」：关着时停在输入页，开着才直接进浏览器。 */
+    @Test
+    fun coldStartOnlyOpensTheWebViewWhenThePreferenceSaysSo() = runTest(dispatcher) {
+        val hidden = HomeViewModel(
+            FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = false),
+            FakeBackendProvider(),
+            FakeEngineInfo(),
+            FakeAuditLogger(),
+            FakeHistoryRepository(),
+        )
+        assertFalse("偏好关闭时停在输入地址的主页面", hidden.state.value.isWebViewVisible)
+
+        val shown = HomeViewModel(
+            FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = true),
+            FakeBackendProvider(),
+            FakeEngineInfo(),
+            FakeAuditLogger(),
+            FakeHistoryRepository(),
+        )
+        assertTrue("偏好开启时冷启动直接进浏览器", shown.state.value.isWebViewVisible)
+        assertTrue("页面也要直接露出", shown.state.value.browserPageVisible)
+    }
+
+    /** 退出网页回主页面；「显示网页」能再进；电脑 → 本机必须回输入页，不被默认偏好污染。 */
+    @Test
+    fun leavingTheWebViewAndSwitchingBackToLocalAlwaysLandsOnTheInputPage() = runTest(dispatcher) {
+        val fakes = Fakes(
+            settings = FakeEngineSettings(
+                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                showPageByDefault = true,
+            ),
+        )
+        val vm = fakes.connectedViewModel()
+        assertTrue(vm.state.value.isWebViewVisible)
+
+        vm.exitBrowser()
+        assertFalse("退出后必须回到主页面", vm.state.value.isWebViewVisible)
+
+        vm.openBrowser(showPage = true)
+        assertTrue(vm.state.value.isWebViewVisible)
+        assertTrue("「显示网页」进入时页面直接露出", vm.state.value.browserPageVisible)
+
+        vm.exitBrowser()
+        vm.selectSniffExecutor(SniffExecutor.ENGINE)
+        assertFalse(vm.state.value.isWebViewVisible)
+        vm.selectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW)
+
+        assertFalse("切回本机不能被冷启动偏好直接拉进网页", vm.state.value.isWebViewVisible)
+        assertEquals(SniffExecutor.LOCAL_WEBVIEW, vm.state.value.sniffExecutor)
+    }
+
+    @Test
+    fun openingTheWebViewIsIgnoredOutsideLocalMode() = runTest(dispatcher) {
+        val fakes = Fakes()
+        val vm = fakes.connectedViewModel()
+
+        vm.openBrowser(showPage = true)
+
+        assertFalse(vm.state.value.isWebViewVisible)
+    }
+
     private class Fakes(
         val settings: FakeEngineSettings = FakeEngineSettings(),
         val provider: FakeBackendProvider = FakeBackendProvider(),
