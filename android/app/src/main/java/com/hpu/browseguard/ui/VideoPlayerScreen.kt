@@ -644,7 +644,8 @@ private fun GestureFeedback(hint: GestureHint, durationMs: Long, modifier: Modif
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
-            .background(Color(0xCC000000), RoundedCornerShape(14.dp))
+            // 半透明黑底白字：视频上最稳的对比度，圆角跟全局卡片令牌走。
+            .background(Color(0xCC000000), MaterialTheme.shapes.medium)
             .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
         Text(

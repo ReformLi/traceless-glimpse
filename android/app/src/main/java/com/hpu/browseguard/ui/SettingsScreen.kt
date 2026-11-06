@@ -2,6 +2,7 @@ package com.hpu.browseguard.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,19 +22,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -61,8 +57,16 @@ import com.hpu.browseguard.data.output.OutputLocation
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.SelfcheckResponse
+import com.hpu.browseguard.ui.components.BgvButton
+import com.hpu.browseguard.ui.components.BgvButtonStyle
+import com.hpu.browseguard.ui.components.BgvCard
+import com.hpu.browseguard.ui.components.BgvCardTitle
+import com.hpu.browseguard.ui.components.BgvInputField
+import com.hpu.browseguard.ui.components.BgvTopBar
 import com.hpu.browseguard.ui.components.ConfirmDialog
+import com.hpu.browseguard.ui.theme.BgvDimens
 import com.hpu.browseguard.ui.theme.BgvTheme
+import com.hpu.browseguard.ui.theme.bgvStatusColors
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -182,29 +186,16 @@ fun SettingsScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
+            .padding(
+                horizontal = BgvDimens.screenPaddingHorizontal,
+                vertical = BgvDimens.screenPaddingVertical,
+            ),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.Filled.Settings,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(26.dp),
-            )
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text(
-                    text = stringResource(R.string.settings_title),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = stringResource(R.string.settings_subtitle),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        BgvTopBar(
+            title = stringResource(R.string.settings_title),
+            subtitle = stringResource(R.string.settings_subtitle),
+            large = true,
+        )
 
         Spacer(Modifier.height(20.dp))
         EngineSection(
@@ -299,14 +290,13 @@ private fun EngineSection(
         }
 
         Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
+        BgvInputField(
             value = state.engineUrlDraft,
             onValueChange = onEditEngineUrl,
-            singleLine = true,
             isError = state.engineUrlInvalid,
-            label = { Text(stringResource(R.string.engine_url_field)) },
+            label = stringResource(R.string.engine_url_field),
             supportingText = if (state.engineUrlInvalid) {
-                { Text(stringResource(R.string.engine_url_invalid)) }
+                stringResource(R.string.engine_url_invalid)
             } else {
                 null
             },
@@ -314,13 +304,12 @@ private fun EngineSection(
         )
 
         Spacer(Modifier.height(10.dp))
-        FilledTonalButton(
+        BgvButton(
+            text = stringResource(R.string.settings_engine_save_test),
             onClick = onSaveEngineUrl,
             enabled = connection !is Connection.Checking,
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(stringResource(R.string.settings_engine_save_test))
-        }
+        )
 
         Spacer(Modifier.height(8.dp))
         Text(
@@ -442,7 +431,7 @@ private fun ExecutionSection(
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Switch(
+            BgvAnimatedSwitch(
                 checked = state.showPageByDefault,
                 onCheckedChange = onShowPageByDefaultChange,
             )
@@ -466,7 +455,7 @@ private fun ExecutionSection(
                 )
             }
             Spacer(Modifier.width(12.dp))
-            Switch(
+            BgvAnimatedSwitch(
                 checked = state.muteWhileSniffing,
                 onCheckedChange = onMuteWhileSniffingChange,
             )
@@ -546,21 +535,23 @@ private fun OutputSection(
 
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FilledTonalButton(onClick = onPick, modifier = Modifier.weight(1f)) {
-                Text(
-                    stringResource(
-                        if (location.configured) {
-                            R.string.settings_output_change
-                        } else {
-                            R.string.settings_output_pick
-                        },
-                    ),
-                )
-            }
+            BgvButton(
+                text = stringResource(
+                    if (location.configured) {
+                        R.string.settings_output_change
+                    } else {
+                        R.string.settings_output_pick
+                    },
+                ),
+                onClick = onPick,
+                modifier = Modifier.weight(1f),
+            )
             if (location.configured) {
-                OutlinedButton(onClick = onReset) {
-                    Text(stringResource(R.string.settings_output_reset))
-                }
+                BgvButton(
+                    text = stringResource(R.string.settings_output_reset),
+                    onClick = onReset,
+                    style = BgvButtonStyle.Secondary,
+                )
             }
         }
 
@@ -623,12 +614,12 @@ private fun CookieSection(
         }
 
         Spacer(Modifier.height(14.dp))
-        OutlinedButton(onClick = onRequestClear, modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = stringResource(R.string.settings_cookie_clear),
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
+        BgvButton(
+            text = stringResource(R.string.settings_cookie_clear),
+            onClick = onRequestClear,
+            style = BgvButtonStyle.Destructive,
+            modifier = Modifier.fillMaxWidth(),
+        )
         Spacer(Modifier.height(6.dp))
         Text(
             text = stringResource(R.string.settings_cookie_hint),
@@ -657,24 +648,17 @@ private fun HistorySection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedButton(
+        BgvButton(
+            text = if (clearing) {
+                stringResource(R.string.settings_history_clearing)
+            } else {
+                stringResource(R.string.settings_history_clear)
+            },
             onClick = onRequestClear,
             enabled = records.isNotEmpty() && !clearing,
+            style = BgvButtonStyle.Destructive,
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = if (clearing) {
-                    stringResource(R.string.settings_history_clearing)
-                } else {
-                    stringResource(R.string.settings_history_clear)
-                },
-                color = if (records.isNotEmpty() && !clearing) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
+        )
         Spacer(Modifier.height(6.dp))
         Text(
             text = stringResource(R.string.settings_history_clear_hint),
@@ -686,21 +670,36 @@ private fun HistorySection(
 
 @Composable
 private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Medium,
-            )
-            Spacer(Modifier.height(14.dp))
-            content()
-        }
+    BgvCard {
+        BgvCardTitle(text = title)
+        content()
     }
+}
+
+/** 开关切换带颜色过渡：轨道色在主色与中性色之间渐变，其余交给 Material 3 默认。 */
+@Composable
+private fun BgvAnimatedSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+) {
+    val trackColor by animateColorAsState(
+        targetValue = if (checked) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        },
+        label = "switchTrack",
+    )
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        enabled = enabled,
+        colors = SwitchDefaults.colors(
+            checkedTrackColor = trackColor,
+            uncheckedTrackColor = trackColor,
+        ),
+    )
 }
 
 @Composable
@@ -738,11 +737,12 @@ private fun Connection.statusText(): String = when (this) {
     is Connection.Failed -> stringResource(R.string.engine_status_failed)
 }
 
+@Composable
 private fun Connection.dotColor(): Color = when (this) {
-    is Connection.Connected -> Color(0xFF16A34A)
-    is Connection.Failed -> Color(0xFFDC2626)
-    Connection.Checking -> Color(0xFFD97706)
-    Connection.Idle -> Color(0xFF9CA3AF)
+    is Connection.Connected -> bgvStatusColors.success
+    is Connection.Failed -> MaterialTheme.colorScheme.error
+    Connection.Checking -> bgvStatusColors.warning
+    Connection.Idle -> bgvStatusColors.idle
 }
 
 @Composable

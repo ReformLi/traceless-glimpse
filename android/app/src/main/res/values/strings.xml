@@ -3,6 +3,7 @@
     <string name="nav_home">首页</string>
     <string name="nav_history">下载</string>
     <string name="nav_settings">设置</string>
+    <string name="action_back">返回</string>
 
     <string name="history_title">下载管理</string>
     <string name="history_subtitle">下载中的进度、完成后的文件、失败的原因都排在下面，可取消、重试或删除</string>

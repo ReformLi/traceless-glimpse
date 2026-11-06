@@ -29,7 +29,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,6 +54,7 @@ import com.hpu.browseguard.data.history.defaultHistoryTitle
 import com.hpu.browseguard.data.history.locationOf
 import com.hpu.browseguard.data.media.ArtifactSnapshot
 import com.hpu.browseguard.data.output.FileNaming
+import com.hpu.browseguard.ui.components.BgvInputField
 
 /**
  * 下载管理页的文件操作意图。
@@ -193,11 +193,10 @@ fun RenameDialog(
         title = { Text(stringResource(R.string.download_rename_title)) },
         text = {
             Column(Modifier.fillMaxWidth()) {
-                OutlinedTextField(
+                BgvInputField(
                     value = text,
                     onValueChange = { text = it },
-                    label = { Text(stringResource(R.string.download_rename_label)) },
-                    singleLine = true,
+                    label = stringResource(R.string.download_rename_label),
                     isError = invalid != null,
                     modifier = Modifier.fillMaxWidth(),
                 )

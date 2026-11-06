@@ -7,7 +7,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,22 +19,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -84,10 +78,18 @@ import com.hpu.browseguard.shared.model.Resolution
 import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.TaskStatus
+import com.hpu.browseguard.ui.components.BgvButton
+import com.hpu.browseguard.ui.components.BgvButtonStyle
+import com.hpu.browseguard.ui.components.BgvCard
+import com.hpu.browseguard.ui.components.BgvCardTitle
+import com.hpu.browseguard.ui.components.BgvInputField
+import com.hpu.browseguard.ui.components.BgvTopBar
 import com.hpu.browseguard.ui.components.ErrorCard
 import com.hpu.browseguard.ui.components.StateView
 import com.hpu.browseguard.ui.components.StateViewKind
+import com.hpu.browseguard.ui.theme.BgvDimens
 import com.hpu.browseguard.ui.theme.BgvTheme
+import com.hpu.browseguard.ui.theme.bgvStatusColors
 import java.net.URI
 import java.util.Locale
 
@@ -163,23 +165,20 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 24.dp),
+                .padding(
+                    horizontal = BgvDimens.screenPaddingHorizontal,
+                    vertical = BgvDimens.screenPaddingVertical,
+                ),
         ) {
-            Text(
-                text = stringResource(R.string.home_title),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(4.dp))
             val (sniffPart, downloadPart) = homeSubtitleRes(state.sniffExecutor, state.downloadExecutor)
-            Text(
-                text = stringResource(
+            BgvTopBar(
+                title = stringResource(R.string.home_title),
+                subtitle = stringResource(
                     R.string.home_subtitle,
                     stringResource(sniffPart),
                     stringResource(downloadPart),
                 ),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                large = true,
             )
 
             state.sniffNotice?.let { notice ->
@@ -235,27 +234,6 @@ fun HomeScreen(
 }
 
 @Composable
-private fun BgvCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp), content = content)
-    }
-}
-
-@Composable
-private fun CardTitle(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Medium,
-    )
-    Spacer(Modifier.height(12.dp))
-}
-
-@Composable
 private fun InfoRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -280,10 +258,11 @@ private fun InfoRow(label: String, value: String) {
  */
 @Composable
 private fun ConnectionStatusPill(connection: Connection, onRefresh: () -> Unit) {
+    val statusColors = bgvStatusColors
     val dot = when (connection) {
-        Connection.Idle, is Connection.Failed -> Color(0xFF9CA3AF)
-        Connection.Checking -> Color(0xFFD97706)
-        is Connection.Connected -> Color(0xFF16A34A)
+        Connection.Idle, is Connection.Failed -> statusColors.idle
+        Connection.Checking -> statusColors.warning
+        is Connection.Connected -> statusColors.success
     }
     val label = when (connection) {
         Connection.Idle -> stringResource(R.string.status_pill_idle)
@@ -436,63 +415,40 @@ private fun SniffWorkCard(
             ) {
                 Text(stringResource(R.string.sniff_paste))
             }
-            TextButton(
-                onClick = {
-                    pasteNotice = null
-                    onEditSourceUrl("")
-                },
-                enabled = editable && state.sourceUrl.isNotEmpty(),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Clear,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(stringResource(R.string.sniff_clear))
-            }
         }
         Spacer(Modifier.height(4.dp))
-        OutlinedTextField(
+        BgvInputField(
             value = state.sourceUrl,
             onValueChange = {
                 pasteNotice = null
                 onEditSourceUrl(it)
             },
-            singleLine = true,
             enabled = editable,
             isError = urlProblem != null,
-            label = { Text(stringResource(R.string.sniff_field)) },
-            placeholder = { Text(stringResource(R.string.sniff_placeholder)) },
-            supportingText = {
-                val support = urlProblem ?: pasteNotice ?: when {
-                    url.isEmpty() -> stringResource(R.string.sniff_url_hint)
-                    else -> stringResource(R.string.sniff_url_ready)
-                }
-                Text(
-                    text = support,
-                    color = if (urlProblem != null) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+            label = stringResource(R.string.sniff_field),
+            placeholder = stringResource(R.string.sniff_placeholder),
+            clearable = true,
+            supportingText = urlProblem ?: pasteNotice ?: when {
+                url.isEmpty() -> stringResource(R.string.sniff_url_hint)
+                else -> stringResource(R.string.sniff_url_ready)
             },
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FilledTonalButton(onClick = onSniff, enabled = sniffEnabled) {
-                Text(stringResource(R.string.sniff_action))
-            }
+            BgvButton(
+                text = stringResource(R.string.sniff_action),
+                onClick = onSniff,
+                enabled = sniffEnabled,
+            )
             if (state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
                 // 常驻入口：隐藏深嗅在跑时禁止改输入，但「显示网页」必须点得动。
-                OutlinedButton(
+                BgvButton(
+                    text = stringResource(R.string.browser_show_page),
                     onClick = onOpenBrowser,
                     enabled = editable || state.deepSniff != DeepSniffPhase.Off,
-                ) {
-                    Text(stringResource(R.string.browser_show_page))
-                }
+                    style = BgvButtonStyle.Secondary,
+                )
             }
             when {
                 state.deepSniff == DeepSniffPhase.Running -> Text(
@@ -585,7 +541,7 @@ private fun OfflineHint(onSwitchToLocal: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        shape = RoundedCornerShape(10.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
@@ -606,7 +562,7 @@ private fun DeepSniffRunningCard(muted: Boolean) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        shape = RoundedCornerShape(10.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -631,7 +587,7 @@ private fun DeepSniffNoResultCard(onShowPage: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        shape = RoundedCornerShape(10.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -646,9 +602,11 @@ private fun DeepSniffNoResultCard(onShowPage: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Spacer(Modifier.height(8.dp))
-            FilledTonalButton(onClick = onShowPage) {
-                Text(stringResource(R.string.deep_sniff_show_page))
-            }
+            BgvButton(
+                text = stringResource(R.string.deep_sniff_show_page),
+                onClick = onShowPage,
+                style = BgvButtonStyle.Secondary,
+            )
         }
     }
 }
@@ -727,7 +685,7 @@ private fun SniffResultsBlock(
         Surface(
             color = MaterialTheme.colorScheme.errorContainer,
             contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            shape = RoundedCornerShape(10.dp),
+            shape = MaterialTheme.shapes.extraSmall,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
@@ -746,9 +704,11 @@ private fun SniffResultsBlock(
 
     Spacer(Modifier.height(14.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        FilledTonalButton(onClick = onPickFormats, enabled = canPickFormats && !allDrm) {
-            Text(stringResource(R.string.format_action))
-        }
+        BgvButton(
+            text = stringResource(R.string.format_action),
+            onClick = onPickFormats,
+            enabled = canPickFormats && !allDrm,
+        )
         if (preparing != null) {
             Text(
                 text = stringResource(R.string.format_preparing) + " " + preparing.status.displayWithWire(),
@@ -773,7 +733,7 @@ private fun SniffResultsBlock(
 private fun SniffResultCard(result: SniffResult) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         ),
@@ -796,7 +756,7 @@ private fun SniffResultCard(result: SniffResult) {
                     Text(
                         text = stringResource(R.string.sniff_no_drm),
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF16A34A),
+                        color = bgvStatusColors.success,
                     )
                 }
             }
@@ -870,23 +830,13 @@ private fun FormatCard(
         }
 
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
+        BgvInputField(
             value = state.namingTemplate,
             onValueChange = onEditNamingTemplate,
-            singleLine = true,
             isError = state.namingTemplateError != null,
-            label = { Text(stringResource(R.string.format_naming_field)) },
-            placeholder = { Text("{title}-{height}p.{ext}") },
-            supportingText = {
-                Text(
-                    text = state.namingTemplateError ?: stringResource(R.string.format_naming_hint),
-                    color = if (state.namingTemplateError != null) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            },
+            label = stringResource(R.string.format_naming_field),
+            placeholder = "{title}-{height}p.{ext}",
+            supportingText = state.namingTemplateError ?: stringResource(R.string.format_naming_hint),
             modifier = Modifier.fillMaxWidth(),
         )
 
@@ -922,9 +872,11 @@ private fun FormatCard(
         }
 
         Spacer(Modifier.height(10.dp))
-        FilledTonalButton(onClick = onStartDownload, enabled = state.canStartDownload) {
-            Text(stringResource(R.string.format_start))
-        }
+        BgvButton(
+            text = stringResource(R.string.format_start),
+            onClick = onStartDownload,
+            enabled = state.canStartDownload,
+        )
     }
 }
 
@@ -936,7 +888,7 @@ private fun FormatOptionCard(
     recommended: Boolean,
     onSelect: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(14.dp)
+    val shape = MaterialTheme.shapes.extraSmall
     val container = when {
         selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
         recommended -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
@@ -1006,7 +958,7 @@ private fun MetaChip(text: String) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.extraSmall,
     ) {
         Text(
             text = text,
@@ -1063,7 +1015,7 @@ private fun EngineSettingsSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
+                .clip(MaterialTheme.shapes.extraSmall)
                 .clickable { expanded = !expanded }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1116,9 +1068,11 @@ private fun EngineSettingsSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                OutlinedButton(onClick = onRefresh) {
-                    Text(stringResource(R.string.engine_reconnect))
-                }
+                BgvButton(
+                    text = stringResource(R.string.engine_reconnect),
+                    onClick = onRefresh,
+                    style = BgvButtonStyle.Secondary,
+                )
             }
             if (connection is Connection.Failed) {
                 Spacer(Modifier.height(8.dp))
@@ -1136,22 +1090,23 @@ private fun EngineSettingsSection(
             )
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
+                BgvInputField(
                     value = state.engineUrlDraft,
                     onValueChange = onEditEngineUrl,
-                    singleLine = true,
                     isError = state.engineUrlInvalid,
-                    label = { Text(stringResource(R.string.engine_url_field)) },
+                    label = stringResource(R.string.engine_url_field),
                     supportingText = if (state.engineUrlInvalid) {
-                        { Text(stringResource(R.string.engine_url_invalid)) }
+                        stringResource(R.string.engine_url_invalid)
                     } else {
                         null
                     },
                     modifier = Modifier.weight(1f),
                 )
-                FilledTonalButton(onClick = onSaveEngineUrl) {
-                    Text(stringResource(R.string.engine_url_save))
-                }
+                BgvButton(
+                    text = stringResource(R.string.engine_url_save),
+                    onClick = onSaveEngineUrl,
+                    style = BgvButtonStyle.Secondary,
+                )
             }
             Spacer(Modifier.height(4.dp))
             Text(
@@ -1200,7 +1155,7 @@ private fun EngineSettingsSection(
             val connected = connection as? Connection.Connected
             if (connected != null) {
                 Spacer(Modifier.height(18.dp))
-                CardTitle(stringResource(R.string.selfcheck_title))
+                BgvCardTitle(stringResource(R.string.selfcheck_title))
                 SelfcheckRows(connected.selfcheck)
             }
         }
@@ -1259,11 +1214,12 @@ private fun engineSummary(state: HomeUiState): String {
 /** 选中的那颗有底色——两颗并排时要一眼看出当前是哪条链路。 */
 @Composable
 private fun ExecutorChoice(text: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    if (selected) {
-        FilledTonalButton(onClick = onClick, enabled = enabled) { Text(text) }
-    } else {
-        OutlinedButton(onClick = onClick, enabled = enabled) { Text(text) }
-    }
+    BgvButton(
+        text = text,
+        onClick = onClick,
+        enabled = enabled,
+        style = if (selected) BgvButtonStyle.Primary else BgvButtonStyle.Secondary,
+    )
 }
 
 /** 降级/失败提示：必须看得见，也要能关掉，不能变成永久占位。 */
@@ -1287,9 +1243,11 @@ private fun NoticeBanner(text: String, onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f),
             )
-            FilledTonalButton(onClick = onDismiss) {
-                Text(stringResource(R.string.sniff_notice_dismiss))
-            }
+            BgvButton(
+                text = stringResource(R.string.sniff_notice_dismiss),
+                onClick = onDismiss,
+                style = BgvButtonStyle.Secondary,
+            )
         }
     }
 }
@@ -1322,11 +1280,12 @@ private fun recommendedFormat(formats: List<FormatInfo>): FormatInfo? {
     ) ?: formats.maxByOrNull { it.bitrateKbps }
 }
 
+@Composable
 private fun Connection.dotColor(): Color = when (this) {
-    is Connection.Connected -> Color(0xFF16A34A)
-    is Connection.Failed -> Color(0xFFDC2626)
-    Connection.Checking -> Color(0xFFD97706)
-    Connection.Idle -> Color(0xFF9CA3AF)
+    is Connection.Connected -> bgvStatusColors.success
+    is Connection.Failed -> MaterialTheme.colorScheme.error
+    Connection.Checking -> bgvStatusColors.warning
+    Connection.Idle -> bgvStatusColors.idle
 }
 
 @Composable

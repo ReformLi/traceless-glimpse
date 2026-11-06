@@ -34,8 +34,6 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -86,10 +84,14 @@ import com.hpu.browseguard.data.history.defaultHistoryTitle
 import com.hpu.browseguard.data.history.locationOf
 import com.hpu.browseguard.data.history.sourceHost
 import com.hpu.browseguard.shared.model.ErrorCode
+import com.hpu.browseguard.ui.components.BgvCard
+import com.hpu.browseguard.ui.components.BgvTopBar
 import com.hpu.browseguard.ui.components.ConfirmDialog
 import com.hpu.browseguard.ui.components.StateView
 import com.hpu.browseguard.ui.components.StateViewKind
+import com.hpu.browseguard.ui.theme.BgvDimens
 import com.hpu.browseguard.ui.theme.BgvTheme
+import com.hpu.browseguard.ui.theme.bgvStatusColors
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
@@ -214,33 +216,41 @@ fun HistoryScreen(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        Column(Modifier.padding(horizontal = 24.dp, vertical = 28.dp)) {
-            Text(
-                text = stringResource(R.string.history_title),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
+        Column(
+            Modifier.padding(
+                horizontal = BgvDimens.screenPaddingHorizontal,
+                vertical = BgvDimens.screenPaddingVertical,
+            ),
+        ) {
+            BgvTopBar(
+                title = stringResource(R.string.history_title),
+                subtitle = stringResource(R.string.history_subtitle),
+                large = true,
             )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = stringResource(R.string.history_subtitle),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.download_summary, state.recordCount, formatBytes(state.usedBytes)),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(14.dp))
-            DownloadFilterBar(state.filter, onSetFilter)
-            if (selecting) {
-                Spacer(Modifier.height(6.dp))
-                DownloadSelectionBar(
-                    selectedCount = selection.size,
-                    onSelectAll = actions.onSelectAll,
-                    onExit = actions.onClearSelection,
-                )
+            // 吸顶悬浮 Tab：容量统计 + 状态过滤钉在列表上方，列表内容从它下面滚过。
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 1.dp,
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        text = stringResource(R.string.download_summary, state.recordCount, formatBytes(state.usedBytes)),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    DownloadFilterBar(state.filter, onSetFilter)
+                    if (selecting) {
+                        Spacer(Modifier.height(6.dp))
+                        DownloadSelectionBar(
+                            selectedCount = selection.size,
+                            onSelectAll = actions.onSelectAll,
+                            onExit = actions.onClearSelection,
+                        )
+                    }
+                }
             }
         }
 
@@ -282,8 +292,13 @@ fun HistoryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 0.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(
+                    start = BgvDimens.screenPaddingHorizontal,
+                    end = BgvDimens.screenPaddingHorizontal,
+                    top = 0.dp,
+                    bottom = 24.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(BgvDimens.listItemSpacing),
             ) {
                 item(key = "swipe-hint") {
                     Text(
@@ -647,7 +662,7 @@ private fun SwipeDeleteRow(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer, MaterialTheme.shapes.medium)
                     .padding(horizontal = 20.dp),
                 contentAlignment = Alignment.CenterEnd,
             ) {
@@ -692,20 +707,15 @@ private fun HistoryCard(
     onRetry: () -> Unit,
 ) {
     val running = record.status == RecordStatus.DOWNLOADING
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(
-            1.dp,
-            if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-        ),
+    // 选中态给一圈主色高亮描边：多选时一眼圈出都圈了谁。
+    BgvCard(
+        border = if (selected) {
+            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            null
+        },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (selected) {
                     Checkbox(
@@ -885,7 +895,7 @@ private val retryableStatuses = setOf(
 @Composable
 private fun StatusChip(status: RecordStatus) {
     val color = when (status) {
-        RecordStatus.DONE -> Color(0xFF16A34A)
+        RecordStatus.DONE -> bgvStatusColors.success
         RecordStatus.FAILED -> MaterialTheme.colorScheme.error
         RecordStatus.INTERRUPTED, RecordStatus.SNIFFING -> MaterialTheme.colorScheme.tertiary
         RecordStatus.DOWNLOADING -> MaterialTheme.colorScheme.primary

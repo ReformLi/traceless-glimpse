@@ -22,7 +22,11 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +59,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -79,6 +84,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalContext
@@ -105,6 +111,7 @@ import com.hpu.browseguard.data.browser.BrowserCandidate
 import com.hpu.browseguard.data.browser.BrowserSniffController
 import com.hpu.browseguard.data.browser.BrowserSniffState
 import com.hpu.browseguard.shared.model.SniffResult
+import com.hpu.browseguard.ui.theme.bgvStatusColors
 import java.io.ByteArrayInputStream
 import java.net.URI
 import java.util.Locale
@@ -318,14 +325,33 @@ internal fun BrowserScreen(
                         )
                     }
                     if (hasResults) {
+                        // 悬浮下载球：新命中到达时缩放脉冲一下，投影抬到 8dp 让球浮在页面上。
+                        val fabScale = remember { Animatable(1f) }
+                        LaunchedEffect(sniff.candidates.size) {
+                            if (sniff.candidates.isNotEmpty()) {
+                                fabScale.snapTo(0.86f)
+                                fabScale.animateTo(
+                                    targetValue = 1f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium,
+                                    ),
+                                )
+                            }
+                        }
                         FloatingActionButton(
                             onClick = { showResults = true },
                             shape = CircleShape,
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary,
+                            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
-                                .padding(20.dp),
+                                .padding(20.dp)
+                                .graphicsLayer {
+                                    scaleX = fabScale.value
+                                    scaleY = fabScale.value
+                                },
                         ) {
                             BadgedBox(
                                 badge = {
@@ -497,7 +523,7 @@ private fun AddressField(
                 Box(
                     modifier = Modifier
                         .size(6.dp)
-                        .background(Color(0xFFD97706), CircleShape),
+                        .background(bgvStatusColors.warning, CircleShape),
                 )
                 Spacer(Modifier.width(6.dp))
             }
@@ -632,7 +658,7 @@ private fun BrowserErrorBanner(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.extraSmall,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -673,7 +699,7 @@ private fun SniffResultsDialog(
             modifier = Modifier
                 .fillMaxWidth(0.94f)
                 .heightIn(max = 600.dp),
-            shape = RoundedCornerShape(24.dp),
+            shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp,
         ) {
@@ -780,7 +806,7 @@ private fun BlobHintCard(
     Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
@@ -838,7 +864,7 @@ private fun BrowserCandidateRow(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
         ),
@@ -894,10 +920,15 @@ private fun BrowserCandidateRow(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Column(horizontalAlignment = Alignment.End) {
+            // 按钮对齐：等宽成组，复制/下载竖排不歪。
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier.width(IntrinsicSize.Max),
+            ) {
                 OutlinedButton(
                     onClick = onCopy,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         text = stringResource(R.string.browser_candidate_copy),
@@ -909,6 +940,7 @@ private fun BrowserCandidateRow(
                     onClick = onDownload,
                     enabled = enabled && candidate.downloadable,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         text = stringResource(R.string.browser_candidate_download),
@@ -925,7 +957,7 @@ private fun FormatTag(text: String) {
     Surface(
         color = MaterialTheme.colorScheme.primaryContainer,
         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.extraSmall,
     ) {
         Text(
             text = text,
