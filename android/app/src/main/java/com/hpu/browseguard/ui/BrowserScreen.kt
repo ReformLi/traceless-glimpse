@@ -1158,14 +1158,14 @@ private fun browserClient(controller: BrowserSniffController, mute: Boolean): We
 
     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
         val url = request?.url?.toString() ?: return true
-        val scheme = request?.url?.scheme?.lowercase(Locale.ROOT) ?: return true
+        val scheme = request.url.scheme?.lowercase(Locale.ROOT) ?: return true
         if (scheme != "http" && scheme != "https") return true
         // 站外广告落地页最常借一次点击/滑动把整页带走；这里按注册域 + 手势收口。
         return controller.onMainFrameNavigation(
             target = url,
             currentPage = view?.url ?: controller.state.value.pageUrl,
-            hasGesture = request?.hasGesture() == true,
-            isRedirect = request?.isRedirect() == true,
+            hasGesture = request.hasGesture(),
+            isRedirect = request.isRedirect(),
         )
     }
 

@@ -124,8 +124,9 @@ Caused by: java.lang.NullPointerException
 
 ## 4. 发布前置（一次性，但每次都要确认没坏）
 
-- `android/app/keystore.properties` 存在且四个字段非空。当前密钥是 `android/browseguard-vid.jks`
-  （`storeFile=../browseguard-vid.jks`、`keyAlias=mykey`），口令由维护者本机填写，仓库里只有空位。
+- 仓库根目录的 `keystore.properties` 存在且四个字段非空。当前密钥是 `android/browseguard-vid.jks`
+  （`storeFile=android/browseguard-vid.jks`、`keyAlias=mykey`；相对路径按仓库根解析，也可写绝对路径），
+  口令由维护者本机填写，仓库里只有空位。
   两者的忽略规则都在 `.gitignore`（`*.jks` 那条本来就挡住了键）。**读不到时构建不失败，只出一个
   未签名包**并打一行提示——所以判据不是"构建成功"，而是第 5 步的 `apksigner verify` 真能验过。
 - 换键之后旧安装无法覆盖，必须先卸载；这是不可逆决定。正式分发前确认这把 key 的 DN 与保存位置，

@@ -12,7 +12,7 @@
 #   room-runtime 2.8.5    → aar 内 proguard.txt 已含 `-keep class * extends androidx.room.RoomDatabase`。
 #   kotlinx-coroutines 1.11.0 → 已含 volatile 字段与 MainDispatcherFactory 相关规则。
 #   AGP 自带 proguard-android-optimize.txt → 已含 values()/valueOf、@JavascriptInterface、
-#     Signature/InnerClasses/*Annotations* 这一整组属性，以及 -dontwarn androidx.**。
+#     *Annotation* 这一整组属性，以及 -dontwarn androidx.**（Signature/InnerClasses 不在内，见 ④）。
 
 
 # ① 协议模型不参与改名。
@@ -42,3 +42,16 @@
 #    （对照表 build/outputs/mapping/release/mapping.txt 在 .gitignore 覆盖范围内，不入库）。
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+
+# ④ 反射元数据与运行时依赖边界。
+#    AGP 的 proguard-android-optimize.txt 只保留 *Annotation*，不保留 Signature /
+#    InnerClasses / EnclosingMethod。kotlinx.serialization 的线名由生成的 descriptor
+#    常量决定，用不到它们；但 Room/Media3/Compose 这些库在反射里读泛型与嵌套类信息时
+#    需要，丢了通常不报编译错，只在特定机型或特定路径上才崩。这里按属性补一次。
+#    kotlinx.serialization 1.12.0 的 consumer 规则
+#    （META-INF/com.android.tools/r8/kotlinx-serialization-r8.pro）已处理 R8 full mode，
+#    协议模型又有 ① 的整类 keep，故不再抄第二份。
+#    Ktor 不在本 APK 的运行时依赖里（:engine-client 走 OkHttp），不写 io.ktor.** 规则；
+#    将来若引入，先看它自带的 consumer 规则，别整包 -keep。
+-keepattributes Signature,InnerClasses,EnclosingMethod

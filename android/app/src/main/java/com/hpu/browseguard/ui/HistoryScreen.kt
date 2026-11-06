@@ -58,6 +58,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +90,7 @@ import com.hpu.browseguard.ui.components.ConfirmDialog
 import com.hpu.browseguard.ui.components.StateView
 import com.hpu.browseguard.ui.components.StateViewKind
 import com.hpu.browseguard.ui.theme.BgvTheme
+import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
 import java.time.LocalDate
@@ -623,17 +626,23 @@ private fun SwipeDeleteRow(
     onRequestDelete: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    val currentOnRequestDelete by rememberUpdatedState(onRequestDelete)
     val dismissState = rememberSwipeToDismissBoxState(
-        // 只「请求」删除：真正的删除要过二次确认，所以这里永远不让行真的滑走。
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) onRequestDelete()
-            false
-        },
         positionalThreshold = { distance -> distance * 0.35f },
     )
+    // 只「请求」删除：真正的删除要过二次确认，所以收到滑走回调后立刻把行弹回原位。
+    // 回调保持稳定：弹框引起重组时不能让 LaunchedEffect 重启、把请求删两次。
+    val onDismiss: (SwipeToDismissBoxValue) -> Unit = remember(dismissState) {
+        { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) currentOnRequestDelete()
+            scope.launch { dismissState.reset() }
+        }
+    }
     SwipeToDismissBox(
         state = dismissState,
         enableDismissFromStartToEnd = false,
+        onDismiss = onDismiss,
         backgroundContent = {
             Box(
                 modifier = Modifier

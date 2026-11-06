@@ -7,20 +7,27 @@ plugins {
 }
 
 /**
- * 签名口令从本机 `android/app/keystore.properties` 读，文件与密钥目录都在 .gitignore 里。
+ * 签名口令从仓库根目录的 `keystore.properties` 读，文件与密钥都在 .gitignore 里。
  *
  * 读不到时不报错、也不签——CI 与别人 clone 下来仍能 `assembleRelease` 出一个未签名包，
  * 只是装不上设备。把「没有密钥」做成构建失败，会让所有不带密钥的验证构建陪绑。
  */
 val keystoreProperties = Properties().apply {
-    val source = file("keystore.properties")
+    val source = rootProject.file("keystore.properties")
     if (source.isFile) source.inputStream().use { load(it) }
 }
 val releaseKeystore = keystoreProperties.takeIf { props ->
     listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !props.getProperty(it).isNullOrEmpty() }
 }
-if (releaseKeystore == null) {
-    logger.lifecycle("未读到可用的 keystore.properties：本次 Release 产出未签名 APK（装不上设备，仅供构建验证）")
+// storeFile 支持绝对路径；相对路径按仓库根目录解析，而不是模块目录。
+val releaseStoreFile = releaseKeystore?.getProperty("storeFile")?.let { rootProject.file(it) }
+val releaseSigning = releaseKeystore?.takeIf { releaseStoreFile?.isFile == true }
+if (releaseSigning == null) {
+    if (releaseKeystore == null) {
+        logger.lifecycle("未读到可用的 keystore.properties：本次 Release 产出未签名 APK（装不上设备，仅供构建验证）")
+    } else {
+        logger.lifecycle("keystore.properties 的 storeFile 不存在（${releaseStoreFile?.absolutePath}）：本次 Release 产出未签名 APK")
+    }
 }
 
 android {
@@ -43,9 +50,9 @@ android {
     }
 
     signingConfigs {
-        releaseKeystore?.let { props ->
+        releaseSigning?.let { props ->
             create("release") {
-                storeFile = file(props.getProperty("storeFile"))
+                storeFile = releaseStoreFile
                 storePassword = props.getProperty("storePassword")
                 keyAlias = props.getProperty("keyAlias")
                 keyPassword = props.getProperty("keyPassword")
@@ -69,7 +76,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            releaseKeystore?.let { signingConfig = signingConfigs.getByName("release") }
+            releaseSigning?.let { signingConfig = signingConfigs.getByName("release") }
         }
     }
     compileOptions {
