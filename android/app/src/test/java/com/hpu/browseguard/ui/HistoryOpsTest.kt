@@ -389,6 +389,6 @@ class HistoryOpsTest {
 
     private companion object {
         const val URL = "https://example.com/watch"
-        val SANDBOX = File(File(System.getProperty("java.io.tmpdir")), "bgv-sandbox").path
+        val SANDBOX = File(requireNotNull(System.getProperty("java.io.tmpdir")), "bgv-sandbox").path
     }
 }

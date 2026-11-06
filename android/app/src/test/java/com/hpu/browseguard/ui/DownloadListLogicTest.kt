@@ -106,7 +106,7 @@ class DownloadListLogicTest {
     /** 改名/移动只对「手机上真有这个产物」的行开放，判定不碰文件系统。 */
     @Test
     fun onlyFinishedPhoneSideArtifactsAreFileOperable() {
-        val sandbox = File(System.getProperty("java.io.tmpdir"), "bgv-sandbox").path
+        val sandbox = File(requireNotNull(System.getProperty("java.io.tmpdir")), "bgv-sandbox").path
 
         assertTrue(fileOperable(row("done", RecordStatus.DONE, at = 1, path = File(sandbox, "a.mp4").path), sandbox))
         assertTrue(

@@ -8,7 +8,7 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [DownloadRecord::class], version = 4, exportSchema = false)
+@Database(entities = [DownloadRecord::class], version = 5, exportSchema = false)
 @TypeConverters(RecordConverters::class)
 abstract class BrowseGuardDatabase : RoomDatabase() {
     abstract fun downloadRecords(): DownloadRecordDao
@@ -53,9 +53,22 @@ abstract class BrowseGuardDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v4 → v5：给产物记下「看到哪儿了」。
+         *
+         * 断点续播是个事实，不是界面状态：进程被杀、划掉任务栏、明天再看都得接得上，
+         * 所以这两列进库而不是留在播放器里。默认 0 = 没看过，老记录一条都不必重下。
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE download_records ADD COLUMN lastPlayedPositionMs INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE download_records ADD COLUMN mediaDurationMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun build(context: Context): BrowseGuardDatabase =
             Room.databaseBuilder(context, BrowseGuardDatabase::class.java, "browseguard.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

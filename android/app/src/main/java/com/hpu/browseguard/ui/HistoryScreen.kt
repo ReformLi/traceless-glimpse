@@ -96,7 +96,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 @Composable
-fun HistoryRoute(container: AppContainer, onRetry: (String) -> Unit) {
+fun HistoryRoute(container: AppContainer, onRetry: (String) -> Unit, onPlay: (String) -> Unit) {
     val viewModel: HistoryViewModel = viewModel(
         factory = HistoryViewModel.factory(
             container.history,
@@ -129,6 +129,7 @@ fun HistoryRoute(container: AppContainer, onRetry: (String) -> Unit) {
             onDropMissing = viewModel::dropMissingRecord,
             onReportShown = viewModel::consumeReport,
         ),
+        onPlay = onPlay,
     )
 }
 
@@ -143,6 +144,7 @@ fun HistoryScreen(
     onCancel: (String) -> Unit,
     actions: DownloadFileActions = DownloadFileActions(),
     report: OperationReport? = null,
+    onPlay: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -182,10 +184,16 @@ fun HistoryScreen(
     }
 
     /**
-     * 打开产物。撞到「文件已不在」时不给一句死信，而是换成对账对话框：
+     * 打开产物：手机侧的成品交给内置播放器（全屏 + 断点续播），其余情形交给系统应用。
+     *
+     * 撞到「文件已不在」时不给一句死信，而是换成对账对话框：
      * 要么按原链接重下，要么把这条行删掉——用户此刻要的正是这两件事之一。
      */
     fun openArtifact(record: DownloadRecord) {
+        if (playableInApp(record, sandboxRoot)) {
+            onPlay(record.id)
+            return
+        }
         val path = record.outputPath ?: return
         val problem = openLocalFile(context, path)
         if (problem == OpenFileProblem.NotFound) {
@@ -775,6 +783,30 @@ private fun HistoryCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                // 看过的行给出断点：这一条小进度条说的是「上次看到哪儿」，不是下载进度。
+                watchedFraction(record)?.let { fraction ->
+                    val percent = watchedPercent(record)
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { fraction },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                        )
+                        if (percent != null) {
+                            Text(
+                                text = stringResource(R.string.history_watched, percent),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
                 noteLabel(record)?.let { note ->
                     // 产物完好但容器不标准（`.ts` 降级）：这一行小字是用户打不开文件时唯一的线索。
                     Spacer(Modifier.height(6.dp))
@@ -1001,6 +1033,7 @@ private fun ActionRow(
 private fun detailLine(record: DownloadRecord): String = listOfNotNull(
     record.format?.takeIf { it.isNotBlank() },
     record.sizeBytes?.takeIf { it > 0L }?.let(::formatBytes),
+    durationLabel(record.mediaDurationMs),
 ).joinToString(" · ")
 
 private fun DownloadFilter.labelRes(): Int = when (this) {

@@ -31,6 +31,11 @@ enum class RecordStatus {
  * [note] 是这一行**当前那件需要单独说明的事**（键见 [RecordNotes]，界面按键取文案）：
  * 下载中的「分片下完了、正在转封装」和完成时的「产物没转成 MP4」都不算错误，
  * 但没有这一句，用户看到的就是一个卡在 100% 的任务和一个打不开的文件。
+ *
+ * [lastPlayedPositionMs]/[mediaDurationMs] 是内置播放器留下的**观看事实**：
+ * 前者永远是「可以直接从这里接着看」的位置（看完与起播抖动的归一见 [PlaybackResume]），
+ * 后者是播放器自己那条总时长，0 表示还不知道。
+ * 这两个数只该出现在已完成的行上——没下完的文件没有可看的东西。
  */
 @Entity(tableName = "download_records")
 data class DownloadRecord(
@@ -50,6 +55,8 @@ data class DownloadRecord(
     val downloadedBytes: Long = 0,
     val bytesTotal: Long = 0,
     val speedBps: Long = 0,
+    val lastPlayedPositionMs: Long = 0,
+    val mediaDurationMs: Long = 0,
 )
 
 /**

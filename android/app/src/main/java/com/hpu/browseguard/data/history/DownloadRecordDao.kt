@@ -73,6 +73,16 @@ interface DownloadRecordDao {
         updatedAt: Long,
     )
 
+    /**
+     * 观看进度只改这两个数，同样不碰 `updatedAt`：
+     * 看片看到一半不该把这条记录从「昨天 20:14」顶到列表最上面。
+     */
+    @Query(
+        "UPDATE download_records SET lastPlayedPositionMs = :positionMs, " +
+            "mediaDurationMs = :durationMs WHERE id = :id"
+    )
+    suspend fun updatePlayback(id: String, positionMs: Long, durationMs: Long)
+
     @Query("SELECT * FROM download_records WHERE outputPath = :path")
     suspend fun findByOutputPath(path: String): List<DownloadRecord>
 

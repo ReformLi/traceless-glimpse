@@ -5,6 +5,8 @@ import com.hpu.browseguard.data.history.RecordLocation
 import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.history.locationOf
 import com.hpu.browseguard.data.output.ArtifactChange
+import com.hpu.browseguard.data.playback.PlaybackSource
+import com.hpu.browseguard.data.playback.playbackSourceOf
 import java.util.Locale
 
 /** 下载管理页的状态过滤栏。 */
@@ -85,6 +87,40 @@ fun fileOperable(record: DownloadRecord, sandboxRoot: String?): Boolean =
             RecordLocation.MISSING,
             -> false
         }
+
+/**
+ * 这一行能不能交给内置播放器：已完成、且产物就在这台手机上（私有目录或 SAF）。
+ *
+ * 和 [fileOperable] 同一条口径——正在下的那一行已经写了目标路径，但文件还是个 `.part`，
+ * 播放器拿到它只会报一句看不懂错。文件真被删掉了由播放器自己报错，界面上有「用其他应用打开」。
+ */
+fun playableInApp(record: DownloadRecord, sandboxRoot: String?): Boolean =
+    record.status == RecordStatus.DONE && playbackSourceOf(record, sandboxRoot) is PlaybackSource.Playable
+
+/**
+ * 「已看多少」那一条：只有确实看过、且总时长读得出来时才有意义。
+ *
+ * 续播点在「快看完」和「刚起播」两种情况下都被 [PlaybackResume] 归成 0（见其 KDoc），
+ * 那个 0 既不是 0% 也不是 100%——它说的是「下次从头播」，所以这里返回 null，界面省略这一项。
+ */
+private fun watchedPair(record: DownloadRecord): Pair<Long, Long>? {
+    if (record.status != RecordStatus.DONE) return null
+    val total = record.mediaDurationMs.takeIf { it > 0L } ?: return null
+    val position = record.lastPlayedPositionMs.takeIf { it > 0L } ?: return null
+    return position.coerceAtMost(total) to total
+}
+
+/** 进度条用的比例。 */
+fun watchedFraction(record: DownloadRecord): Float? =
+    watchedPair(record)?.let { (position, total) -> position.toFloat() / total.toFloat() }
+
+/**
+ * 百分比文案用的整数：整数除法向下取整，不足 1% 与 [watchedFraction] 的 null 同样省略。
+ *
+ * 刻意不走浮点：`36_000 / 120_000` 这种整除关系一旦先变成 Float，`0.29999…` 就能把 30% 显示成 29%。
+ */
+fun watchedPercent(record: DownloadRecord): Int? =
+    watchedPair(record)?.let { (position, total) -> ((position * 100) / total).toInt() }?.takeIf { it > 0 }
 
 /** 文件操作的措辞：界面按它挑那一句「已删除 / 已移动 / 已改名」。 */
 enum class OperationVerb { DELETE, MOVE, RENAME }

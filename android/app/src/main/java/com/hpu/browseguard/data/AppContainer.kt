@@ -106,9 +106,10 @@ class AppContainer(context: Context) : BackendProvider {
      * 活得比任何界面都久的协程作用域。
      *
      * 下载进度要写进库，而写它的那个订阅者不能跟着主页一起复位或被切走的 Tab 销毁；
+     * 播放器关掉那一刻的进度回写也用它——ViewModelStore 被清空时不该把最后一笔账一起取消。
      * SupervisorJob 让一条任务崩掉不牵连另一条。
      */
-    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** 下载队列：界面按下「开始下载」就把这条流整个交给它。 */
     val downloads: DownloadCoordinator by lazy {
@@ -135,7 +136,7 @@ class AppContainer(context: Context) : BackendProvider {
                 ),
             )
         }
-        if (report.scanned > 0 || report.orphansRemoved > 0) {
+        if (report.scanned > 0 || report.orphansRemoved > 0 || report.ghostsRemoved > 0) {
             audit.log(
                 "audit_history_reconcile",
                 mapOf(
@@ -144,6 +145,7 @@ class AppContainer(context: Context) : BackendProvider {
                     "recovered" to report.recovered.toString(),
                     "skipped" to report.skipped.toString(),
                     "orphans" to report.orphansRemoved.toString(),
+                    "ghosts" to report.ghostsRemoved.toString(),
                 ),
             )
         }

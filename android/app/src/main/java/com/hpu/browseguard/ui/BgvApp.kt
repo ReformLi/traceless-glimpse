@@ -55,6 +55,8 @@ enum class AppDestination(
 @Composable
 fun BgvApp(container: AppContainer) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
+    // 播放的是哪一行，而不是哪个界面：进程被系统回收再回来，播放器还能接上同一份进度。
+    var playingId by rememberSaveable { mutableStateOf<String?>(null) }
     val tabStates = rememberSaveableStateHolder()
 
     // 首页 VM 提到根容器：历史页的「重新下载」要直接往同一个状态机里填链接。
@@ -106,56 +108,68 @@ fun BgvApp(container: AppContainer) {
         )
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = if (browserFullBleed) {
-            WindowInsets(0, 0, 0, 0)
-        } else {
-            ScaffoldDefaults.contentWindowInsets
-        },
-        // 底部导航在浏览器里也必须常驻：否则用户只能靠系统返回退出。
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp,
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            contentWindowInsets = if (browserFullBleed) {
+                WindowInsets(0, 0, 0, 0)
+            } else {
+                ScaffoldDefaults.contentWindowInsets
+            },
+            // 底部导航在浏览器里也必须常驻：否则用户只能靠系统返回退出。
+            bottomBar = {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                ) {
+                    AppDestination.entries.forEach { item ->
+                        NavigationBarItem(
+                            selected = destination == item,
+                            onClick = { destination = item },
+                            icon = { Icon(imageVector = item.icon, contentDescription = null) },
+                            label = { Text(stringResource(item.labelRes)) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        )
+                    }
+                }
+            },
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
             ) {
-                AppDestination.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = destination == item,
-                        onClick = { destination = item },
-                        icon = { Icon(imageVector = item.icon, contentDescription = null) },
-                        label = { Text(stringResource(item.labelRes)) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                    )
-                }
-            }
-        },
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-        ) {
-            tabStates.SaveableStateProvider(destination.name) {
-                when (destination) {
-                    AppDestination.HOME -> HomeRoute(container, homeViewModel)
-                    AppDestination.HISTORY -> HistoryRoute(
-                        container = container,
-                        onRetry = { url ->
-                            homeViewModel.adoptSourceUrl(url)
-                            destination = AppDestination.HOME
-                        },
-                    )
+                tabStates.SaveableStateProvider(destination.name) {
+                    when (destination) {
+                        AppDestination.HOME -> HomeRoute(container, homeViewModel)
+                        AppDestination.HISTORY -> HistoryRoute(
+                            container = container,
+                            onRetry = { url ->
+                                homeViewModel.adoptSourceUrl(url)
+                                destination = AppDestination.HOME
+                            },
+                            onPlay = { recordId -> playingId = recordId },
+                        )
 
-                    AppDestination.SETTINGS -> SettingsRoute(container, homeViewModel)
+                        AppDestination.SETTINGS -> SettingsRoute(container, homeViewModel)
+                    }
                 }
             }
+        }
+
+        // 播放器盖住整屏，包括底栏：看片那一屏不该有 Tab 可点，返回键先关播放器再退 Tab。
+        playingId?.let { recordId ->
+            PlayerRoute(
+                container = container,
+                recordId = recordId,
+                onClose = { playingId = null },
+            )
         }
     }
 }

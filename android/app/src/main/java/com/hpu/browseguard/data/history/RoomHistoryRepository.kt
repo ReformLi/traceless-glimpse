@@ -126,6 +126,20 @@ class RoomHistoryRepository(
         mutate(id) { it.copy(status = RecordStatus.CANCELLED) }
     }
 
+    /**
+     * 观看进度只认已完成的行：别的状态没有可看的产物，写进去就是给用户一个假续播点。
+     * 归一放在这个写入边界做一次，任何调用方都绕不过 [PlaybackResume]。
+     */
+    override suspend fun markPlayed(id: String, positionMs: Long, durationMs: Long) = rowGate.withLock {
+        val current = dao.findById(id) ?: return@withLock
+        if (current.status != RecordStatus.DONE) {
+            audit.log("playback_progress_refused", mapOf("id" to id, "status" to current.status.name.lowercase()))
+            return@withLock
+        }
+        val (resume, total) = PlaybackResume.stored(positionMs, durationMs)
+        dao.updatePlayback(id, resume, total)
+    }
+
     override suspend fun abandon(id: String): Boolean = rowGate.withLock {
         val current = dao.findById(id) ?: return@withLock false
         if (current.status == RecordStatus.DONE) {
@@ -217,13 +231,32 @@ class RoomHistoryRepository(
                 TaskLookup.Unknown -> skipped++
             }
         }
+        val ghostsRemoved = dropArtifactlessCancellations()
         return ReconcileReport(
             scanned = active.size,
             interrupted = interrupted,
             recovered = recovered,
             skipped = skipped,
             orphansRemoved = sweepOrphans(dao.getAll()),
+            ghostsRemoved = ghostsRemoved,
         )
+    }
+
+    /**
+     * 清掉旧版本留下的「已取消 + 无产物」幽灵行。
+     *
+     * 现在的 [abandon] 对没有产物的行直接删行，但这条规矩立起来之前，取消动作会把空行
+     * 永久留在下载列表里：没有文件、没有信息，用户只会看到一排毫无意义的「已取消」。
+     * 放在冷启动对账顺手做，比写一次性迁移稳——用户从老版本升上来第一次打开就干净了。
+     */
+    private suspend fun dropArtifactlessCancellations(): Int {
+        val ghosts = dao.findByStatuses(listOf(RecordStatus.CANCELLED))
+            .filter { it.outputPath.isNullOrBlank() }
+        ghosts.forEach { record ->
+            dao.deleteById(record.id)
+            audit.log("history_ghost_removed", mapOf("id" to record.id))
+        }
+        return ghosts.size
     }
 
     /**

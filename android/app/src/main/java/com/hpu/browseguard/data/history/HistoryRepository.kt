@@ -12,6 +12,8 @@ data class ReconcileReport(
     val skipped: Int = 0,
     /** 应用专属目录里没人引用、这次直接清掉的文件数。 */
     val orphansRemoved: Int = 0,
+    /** 旧版本遗留的「已取消 + 无产物」幽灵行数。 */
+    val ghostsRemoved: Int = 0,
 )
 
 /** 单条任务回查的裁决，必须把「任务不存在」与「引擎答不上来」分开。 */
@@ -86,6 +88,15 @@ interface HistoryRepository {
 
     /** 同 [markFailed]：已完成的记录不因后来的取消而改写。 */
     suspend fun markCancelled(id: String)
+
+    /**
+     * 播放进度回写：只有**已完成**的行有可看的产物，其余状态一律不写。
+     *
+     * 传播放器当时那两个原始值（当前位置、总时长），落库前由 [PlaybackResume] 归一：
+     * 「其实看完了」和「才刚起播」都写成 0，界面拿到的续播点因此永远可以直接用。
+     * 这一句不碰 `updatedAt`——看片看到一半不该把记录顶到列表最上面。
+     */
+    suspend fun markPlayed(id: String, positionMs: Long, durationMs: Long)
 
     /**
      * 作废一行：授权续跑换了新行，旧行不会再有产物。

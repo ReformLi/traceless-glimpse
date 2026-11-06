@@ -22,6 +22,7 @@ import com.hpu.browseguard.data.history.ArtifactPresence
 import com.hpu.browseguard.data.history.DeleteChoice
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.HistoryRepository
+import com.hpu.browseguard.data.history.PlaybackResume
 import com.hpu.browseguard.data.history.ReconcileReport
 import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.history.TaskLookup
@@ -451,6 +452,15 @@ class FakeHistoryRepository : HistoryRepository {
         calls += "markCancelled"
         if (state.value.any { it.id == id && it.status == RecordStatus.DONE }) return
         update(id) { it.copy(status = RecordStatus.CANCELLED) }
+    }
+
+    override suspend fun markPlayed(id: String, positionMs: Long, durationMs: Long) {
+        calls += "markPlayed"
+        val row = state.value.firstOrNull { it.id == id } ?: return
+        // 与 RoomHistoryRepository 同一条契约：进度只落在已完成的行上，且写的是归一后的续播点。
+        if (row.status != RecordStatus.DONE) return
+        val (resume, total) = PlaybackResume.stored(positionMs, durationMs)
+        update(id) { it.copy(lastPlayedPositionMs = resume, mediaDurationMs = total) }
     }
 
     override suspend fun abandon(id: String): Boolean {

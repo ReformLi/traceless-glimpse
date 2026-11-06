@@ -115,6 +115,10 @@ dependencies {
     implementation(libs.androidx.documentfile)
     implementation(libs.androidx.webkit)
 
+    // 全屏播放 + 断点续播；刻意不引 media3-exoplayer-ffmpeg/rtmp/cast 这些扩展包。
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)

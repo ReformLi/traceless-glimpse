@@ -452,6 +452,34 @@ class RoomHistoryRepositoryTest {
         )
     }
 
+    /**
+     * 老版本留下的「已取消 + 无产物」幽灵行，冷启动一次清干净。
+     *
+     * 有产物的取消行是那份文件的署名——它告诉用户「这个视频是哪次取消留下的」，不能跟着一起清。
+     */
+    @Test
+    fun coldStartDropsGhostCancellationsButKeepsTheOnesThatSignedAFile() = runTest {
+        val sandbox = folder.newFolder("Download")
+        val signed = File(sandbox, "clip-d.mp4").apply { writeText("mine"); setLastModified(1_000) }
+        val dao = FakeDao()
+        dao.rows["ghost"] = record("ghost", RecordStatus.CANCELLED, null)
+        dao.rows["blank"] = record("blank", RecordStatus.CANCELLED, "  ")
+        dao.rows["signed"] = record("signed", RecordStatus.CANCELLED, signed.absolutePath)
+        dao.rows["done"] = record("done", RecordStatus.DONE, "/sandbox/other.mp4")
+        val audit = FakeAuditLogger()
+        val repo = RoomHistoryRepository(dao, sandbox.absolutePath, now = { 5_000 }, audit = audit)
+
+        val report = repo.reconcile(engineReachable = false) { error("这几行都是终态，不该回查") }
+
+        assertEquals(2, report.ghostsRemoved)
+        assertNull(dao.rows["ghost"])
+        assertNull("空白路径和 null 一样算没有产物", dao.rows["blank"])
+        assertEquals(RecordStatus.CANCELLED, dao.rows.getValue("signed").status)
+        assertTrue("被一行取消记录指着的文件不是孤儿", signed.exists())
+        assertEquals(0, report.orphansRemoved)
+        assertEquals("每一行幽灵都要留下为什么被删", 2, audit.of("history_ghost_removed").size)
+    }
+
     /** 作废 = 删掉那条没有产物的幽灵行；写过产物落点的行只退成「已取消」。 */
     @Test
     fun abandoningDropsTheGhostRowButKeepsTheOneThatRecordedAnArtifact() = runTest {
@@ -472,6 +500,45 @@ class RoomHistoryRepositoryTest {
         assertEquals(1, audit.of("history_abandon_dropped").size)
         assertEquals(1, audit.of("history_abandon_kept").size)
         assertEquals("终态守卫的审计口径不变", 1, audit.of("history_done_kept").size)
+    }
+
+    /** 观看进度只落在已完成的行上、写的是归一后的续播点，而且不许把记录顶到列表最上面。 */
+    @Test
+    fun playbackProgressLandsOnlyOnCompletedRowsAndNeverMovesTheRow() = runTest {
+        val dao = FakeDao()
+        dao.rows["done"] = record("done", RecordStatus.DONE, "/sandbox/clip.mp4")
+        dao.rows["running"] = record("running", RecordStatus.DOWNLOADING, null)
+        val audit = FakeAuditLogger()
+        val repo = RoomHistoryRepository(dao, null, now = { 9_000 }, audit = audit)
+
+        repo.markPlayed("done", 45_000, 120_000)
+        repo.markPlayed("running", 45_000, 120_000)
+        repo.markPlayed("missing", 45_000, 120_000)
+
+        val done = dao.rows.getValue("done")
+        assertEquals(45_000L, done.lastPlayedPositionMs)
+        assertEquals(120_000L, done.mediaDurationMs)
+        assertEquals("看片不该改「什么时候下的」那一次排序", 2L, done.updatedAt)
+        assertEquals("没下完的行没有可看的产物", 0L, dao.rows.getValue("running").lastPlayedPositionMs)
+        assertEquals("被拒绝的回写得说清楚为什么", 1, audit.of("playback_progress_refused").size)
+    }
+
+    /** 看完与刚起播都归零：库里的数永远是「打开就该从这里播」。 */
+    @Test
+    fun playbackWriteStoresNothingToResumeForFinishedAndJustStartedPositions() = runTest {
+        val dao = FakeDao()
+        dao.rows["a"] = record("a", RecordStatus.DONE, "/sandbox/a.mp4")
+        dao.rows["b"] = record("b", RecordStatus.DONE, "/sandbox/b.mp4")
+        dao.rows["c"] = record("c", RecordStatus.DONE, "/sandbox/c.mp4")
+        val repo = RoomHistoryRepository(dao, null, now = { 9_000 })
+
+        repo.markPlayed("a", 118_000, 120_000)
+        repo.markPlayed("b", 900, 120_000)
+        repo.markPlayed("c", 1_000, 0)
+
+        assertEquals("剩两秒等于看完了", 0L, dao.rows.getValue("a").lastPlayedPositionMs)
+        assertEquals("起播抖动不当成用户看过的地方", 0L, dao.rows.getValue("b").lastPlayedPositionMs)
+        assertEquals("时长都不知道时不猜看完", 0L, dao.rows.getValue("c").mediaDurationMs)
     }
 
     private fun record(
@@ -577,6 +644,11 @@ class RoomHistoryRepositoryTest {
                 title = title ?: current.title,
                 updatedAt = updatedAt,
             )
+            publish()
+        }
+
+        override suspend fun updatePlayback(id: String, positionMs: Long, durationMs: Long) {
+            rows[id] = rows[id]!!.copy(lastPlayedPositionMs = positionMs, mediaDurationMs = durationMs)
             publish()
         }
 
