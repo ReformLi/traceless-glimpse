@@ -1,6 +1,7 @@
 package com.hpu.browseguard
 
 import java.io.File
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -153,7 +154,11 @@ class BrowserWiringTest {
         assertTrue("主文档不能拦，否则手动打开广告域就是白屏", screen.contains("!current.isForMainFrame"))
         assertTrue("命中后返回空响应而不是继续出网", screen.contains("emptyAdResponse()"))
         assertTrue("被拦的资源要留一行", controller.contains("""audit.log("adblock_hit""""))
-        assertTrue("同一域名每页只记一次", controller.contains("blockedHosts.add(host)"))
+        assertTrue("同一域名每页只记一次", controller.contains("adLedger.report(host)"))
+        assertTrue("页起点打在真正发起 loadUrl 的地方，不能等 onPageStarted", screen.contains("controller.onLoadRequested(url)"))
+        assertTrue("初始那一次导航同样要开页", screen.contains("controller.onLoadRequested(first)"))
+        assertTrue("文档开始时同样按地址认页", controller.contains("adLedger.openPage(url)"))
+        assertFalse("候选重置不许顺手抹掉本页已报的域名", controller.contains("blockedHosts"))
     }
 
     private fun controllerUsesOrder(): Boolean {

@@ -47,6 +47,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -101,12 +102,17 @@ fun PlayerRoute(container: AppContainer, recordId: String, onClose: () -> Unit) 
     // 每次打开播放器都配一套自己的 ViewModelStore，关掉就清空。
     // 用 Activity 那个 store 的话，同一条记录第二次打开会复用上次的 ViewModel，
     // 续播点还是上次打开时读到的旧值——用户看到的后果是「没从断点续播」。
-    val owner = remember(recordId) { PlayerViewModelOwner() }
-    DisposableEffect(owner) {
-        onDispose { owner.viewModelStore.clear() }
-    }
-    CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
-        PlayerRouteScoped(container, recordId, onClose)
+    //
+    // 外面再套一层 key(recordId)：换记录（甚至同一条记录重新进场）时整棵子树作废重建，
+    // 不给 Compose 按槽位复用上一个播放器 Composition 的机会。
+    key(recordId) {
+        val owner = remember(recordId) { PlayerViewModelOwner() }
+        DisposableEffect(owner) {
+            onDispose { owner.viewModelStore.clear() }
+        }
+        CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+            PlayerRouteScoped(container, recordId, onClose)
+        }
     }
 }
 
@@ -186,6 +192,12 @@ private fun VideoPlayer(
         }
     }
 
+    // Activity 的 Home 回调和 ON_STOP 是从组合外面摸播放器的两条路，它们可能比这一屏晚一步被调到。
+    // 组合里直接用 [player]，组合外只准通过这只把手摸；离场置空后，摸到的是 null 而不是
+    // 一个已经 release、看起来还活着的实例。
+    var livePlayer by remember(uri) { mutableStateOf<ExoPlayer?>(player) }
+    val latestPlayer by rememberUpdatedState(livePlayer)
+
     val activity = remember(context) { context.findActivity() }
     val pipHost = activity as? MainActivity
     val audioManager = remember(context) { context.getSystemService(AudioManager::class.java) }
@@ -231,6 +243,9 @@ private fun VideoPlayer(
             player.removeListener(listener)
             playerView?.player = null
             player.release()
+            // 松手之后谁都摸不到它了：释放过的实例留在把手里，只会让晚一步的回调
+            // 对着一个不再播东西的播放器做决定。
+            livePlayer = null
         }
     }
 
@@ -291,13 +306,14 @@ private fun VideoPlayer(
     }
 
     // 播放中按 Home/最近任务才进小窗；暂停状态退到后台没有可看的画面，交给系统正常最小化。
-    DisposableEffect(player, pipHost) {
+    DisposableEffect(pipHost) {
         if (pipHost == null) {
             onDispose { }
         } else {
             pipHost.onUserLeavePlayer = {
-                if (player.isPlaying) {
-                    val video = player.videoSize
+                val current = latestPlayer
+                if (current != null && current.isPlaying) {
+                    val video = current.videoSize
                     val width = video.width.takeIf { it > 0 } ?: 16
                     val height = video.height.takeIf { it > 0 } ?: 9
                     val params = PictureInPictureParams.Builder()
@@ -319,7 +335,7 @@ private fun VideoPlayer(
     // 切到后台：暂停就是回写进度的扳机（见 onIsPlayingChanged），不该让声音在背后继续放。
     // 小窗里 Activity 也处于后台态，此时暂停会把小窗播成静帧。
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
-        if (activity?.isInPictureInPictureMode != true) player.pause()
+        if (activity?.isInPictureInPictureMode != true) livePlayer?.pause()
     }
 
     openProblem?.let { problem ->

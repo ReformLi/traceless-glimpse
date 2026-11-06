@@ -3089,3 +3089,68 @@ WebView 与抽屉那几条只能在真机钉的接线，用 `BrowserWiringTest` 
 | 全仓 127 处绝对路径 | `E:\code\android\BrowseGuardVid\…` → `TracelessGlimpse` | 11-03 改名遗留：每条链接、每条可复制命令都指到不存在的目录 |
 | `docs/PROTOCOL.md` | **不改** | 里面那行 `remux` 是引擎侧 PostAction 白名单；App 本机转封装不经协议，改它反而制造「协议里能找到本机行为」的错觉 |
 
+---
+
+## 31. M12.5：AdBlock 日志按页认地址 + R8 Release 设备腿（2026-11-06）
+
+本轮只动两处：广告拦截的取证行去重、播放器离场的强制销毁，然后**第一次**把 R8 包真装真跑。
+底层下载逻辑（`LocalDirectDownloader` / `HlsDownloader` / `TsRemuxer`）一行未动，UI 布局与业务逻辑按用户要求未改。
+
+### 31.1 缺口一：从「第几次导航」改成「哪个地址」
+
+上一轮的页起点定在「我方发起 loadUrl 清集合 + `onPageStarted` 若不是同一地址就再清一次」。
+真机复现出它没盖住的另一半：**重新加载同一地址时，Chromium 重新验证主文档，子资源请求有的先落地、
+有的排在 `onPageStarted` 之后**，清账看导航次数就会把先落地的那批重报一遍。
+MuMu 实测（旧逻辑）：`刷新` 一次广告页 → 同域 **2 行**（`20:28:28.916` 与 `20:28:28.920`，两个网络线程各一行）。
+
+改法是 `AdBlockLedger.openPage(url)`：地址变了才清账，同址不动。`onLoadRequested` 与 `onPageStarted`
+都打这里，谁先到算谁开张。裁决要的「每域每页一行」由此成立，代价是**同址重载不再补行**——
+审计要证明的是「这页拦了这个域」，不是拦了几次。
+
+JVM 侧 `AdBlockLedgerTest` 6 项钉边界（多请求一行、preload 抢跑、reload 横跨、换地址补行、
+非我方发起的导航、`about:blank` 不抢账）；`BrowserWiringTest` 加了 4 条接线钉子并反向断言
+`blockedHosts` 这个旧字段已经不在源码里。
+
+### 31.2 缺口四：播放器实例摸不到第二次
+
+`VideoPlayerScreen` 三处收口：`key(recordId)` 包住 `PlayerRoute`（防 Compose 复用旧 Composition）、
+`player` 换成可空把手 `livePlayer` + `rememberUpdatedState`、`onDispose` 里
+`playerView?.player = null` → `player.release()` → `livePlayer = null`。
+PiP 的 `DisposableEffect` 只键 `pipHost`，不再键 `player`，否则新旧两个 lambda 会互相覆盖回调。
+`PlayerWiringTest` 2 项把这些字符串钉住（手势落系统 + 离场强制销毁）。
+
+### 31.3 缺口五：R8 包第一次上设备
+
+`keystore.properties` 已在仓库根，但 `storePassword`/`keyPassword` 实测长度为 0，构建照旧只出
+`app-release-unsigned.apk`。走 §3 的测试签名先例：`zipalign -f -p 4` + `apksigner` 用
+`~/.android/debug.keystore`，证书 SHA-256 `73866dbc…` 与设备上的 debug 包一致，于是
+`adb install -r -d` 免卸载，14 条记录与 7 个 mp4 全部保住。
+判据不是「构建成功」而是 `apksigner verify --print-certs` 真出证书 + `dumpsys package` 的
+`flags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ]`（**没有 DEBUGGABLE**）。
+
+设备腿（MuMu 15 / SM-S9080 / Android 15，900×1600）：
+
+| 腿 | 现场证据 |
+| --- | --- |
+| 冷启动 | pid 9581 起来，17 条记录、3.0 MB 占用照旧，`AndroidRuntime` 无本项目异常 |
+| 深嗅 | 广告页里的 `<video>` 被抓成候选：`webview_candidate host=… ext=mp4`、结果面板「MP4 / 未知画质 / 127.0.0.1」 |
+| 广告拦截 | 同域 3 张图 → `adblock_hit host=ad.doubleclick.net` **1 行**；刷新同址（主文档确实 304 重验）**不补行**；换 `?v=2` → 补 1 行；另一页两域 → 各 1 行 |
+| 下载 | 结果面板点「下载」→ 下载管理首行「已完成 / mp4 · 1.4 MB」 |
+| 播放 | 「打开文件」→ `playback_opened … kind=file`，画面时间码 17.167 → 34.625 → 51.167 → 59.958 持续推进 |
+| 续播 | 中段 BACK 退出再开：`playback_opened … resume=25221` |
+| 反序列化 | `JsonDecodingException` / `SerializationException` **0 命中** |
+| 实例回收 | 连续 4 轮「打开—BACK」无闪退，进程线程数 53 → 54 不线性上涨 |
+
+mapping 按 §1 第 3 步当场重归档为 `release-artifacts/mapping-v1.1.0-code1.txt.gz`，
+源 `mapping.txt` 与解压回来的 sha256 前缀同为 `f612f7b8`。
+
+### 31.4 本轮自报的三条
+
+1. **§6 的 HLS 音频判据没在 R8 包上复跑**——本轮只走 mp4 直链。R8 下的转封装仍是未验证面，
+   下次发版前必须补一条 HLS 链接的 R8 设备腿。
+2. **取证工具自己制造了一条幽灵行**：`adb input text` 往这个 Compose 输入框注字会丢字符，
+   打出一条残缺的 `http://127.:8000/m12_long.mp4`（`127.` 是合法单标签主机名，校验器放行属正常），
+   下载连不上停在待下载。改走浏览器地址栏注入才可靠。**App 侧无缺陷，但台账多了一行，删除需点名授权。**
+3. **BACK 回到旧播放器的原始现象本轮没能重现**，`key(recordId)` + 强制 release 属「防御已就位、
+   观察未结案」，按裁决继续单独立项观察。
+

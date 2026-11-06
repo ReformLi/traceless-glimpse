@@ -90,7 +90,7 @@ class BrowserSniffController(
     private val seen: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
     private val probed: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val blobSeen: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
-    private val blockedHosts: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+    private val adLedger = AdBlockLedger()
 
     private val _state = MutableStateFlow(BrowserSniffState())
     val state: StateFlow<BrowserSniffState> = _state.asStateFlow()
@@ -108,7 +108,6 @@ class BrowserSniffController(
         seen.clear()
         blobSeen.clear()
         probed.clear()
-        blockedHosts.clear()
         _state.update {
             it.copy(
                 candidates = emptyList(),
@@ -121,8 +120,20 @@ class BrowserSniffController(
         }
     }
 
+    /**
+     * 调用方在真正 `loadUrl` 之前打这一点。
+     *
+     * 广告拦截的报账集合按地址认页，这里要抢在 [onPageStarted] 之前：后者比 WebView
+     * 自己的 preload 请求晚一步，只靠它会把抢跑的那批记到上一页。详见 [AdBlockLedger]。
+     */
+    fun onLoadRequested(url: String) {
+        adLedger.openPage(url)
+    }
+
     fun onPageStarted(url: String) {
-        if (url.startsWith("http")) reset(url)
+        if (!url.startsWith("http")) return
+        adLedger.openPage(url)
+        reset(url)
     }
 
     fun onPageFinished(url: String) {
@@ -214,9 +225,10 @@ class BrowserSniffController(
     /**
      * 广告资源被拦的报账。同一域名每页只留一行：
      * 一个页面常会向同一个广告域打几十个请求，逐条写会把 logcat 的取证行冲掉。
+     * 「一页」从调用方发起 `loadUrl` 时算起，不是从 `onPageStarted` 算起。
      */
     fun onAdBlocked(host: String) {
-        if (blockedHosts.add(host)) audit.log("adblock_hit", mapOf("host" to host))
+        if (adLedger.report(host)) audit.log("adblock_hit", mapOf("host" to host))
     }
 
     /**

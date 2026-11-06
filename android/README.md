@@ -5,7 +5,7 @@
 切到本机后，`data/backend/` 里不出现 `EngineClient`、`TaskCreateRequest`、`DownloadRequest`、`encode(`，
 这条由 `TaskNeverGoesOnTheWireTest.localSideStaysOffTheWire` 扫源码钉住：本机的活不借引擎的协议发言。
 
-## 现状（M12 收官）
+## 现状（M12.5 收官）
 
 - 已接入 Gradle 构建，是 `settings.gradle.kts` 里的 `:android:app`，协议模型直接复用 `:shared`（KMP）单一来源，不重复定义。
 - UI 是 Jetpack Compose + Material 3（`buildFeatures.compose = true`），不是模板时代的 Views 栈。
@@ -86,7 +86,7 @@ com.hpu.browseguard
 # 出 debug 包（产物在 android/app/build/outputs/apk/debug/app-debug.apk）
 .\gradlew.bat :android:app:assembleDebug
 
-# 本模块 JVM 单测：413 项，不需要设备
+# 本模块 JVM 单测：421 项，不需要设备
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 ```
 
@@ -111,5 +111,5 @@ com.hpu.browseguard
 - blob/MSE 不伪造可下载的 `SniffResult`。
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
 
-里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9）；
+里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿）；
 M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。

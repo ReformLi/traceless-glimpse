@@ -211,6 +211,8 @@ internal fun BrowserScreen(
         addressInvalid = false
         address = url
         focusManager.clearFocus()
+        // 页上下文从这里开张，不能等 onPageStarted：见 AdBlockLedger。
+        controller.onLoadRequested(url)
         holder.view?.loadUrl(url)
     }
 
@@ -297,7 +299,9 @@ internal fun BrowserScreen(
                                 onProgress = { progress = it },
                             ).also { view ->
                                 holder.view = view
-                                view.loadUrl(initialUrl ?: BLANK_PAGE)
+                                val first = initialUrl ?: BLANK_PAGE
+                                controller.onLoadRequested(first)
+                                view.loadUrl(first)
                             }
                         },
                     )

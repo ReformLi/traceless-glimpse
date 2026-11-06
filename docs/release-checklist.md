@@ -112,6 +112,7 @@ Caused by: java.lang.NullPointerException
 |---|---|---|---|---|---|
 | 1.0 / 1（2026-11-03 09:02，M6-6 测试签名） | `d486c26851138b865dededee6811fd5bb2d2e7bb550a68fa2b42975486f5ad68` | 3,206,651 | 旧 mapping（sha256 `7922724d…`，已被下行取代） | MuMu SM-S9080 / Android 15 十四腿全过，反序列化异常 0 命中 | [acceptance-m6-6.md](acceptance-m6-6.md) |
 | 1.0 / 1（2026-11-03 10:33，定名「无痕掠影」重建，**未签名**） | 待签名后补 | 3,194,363（`app-release-unsigned.apk`） | `release-artifacts/mapping-v1.0-code1.txt.gz`（原 36,442,414 B，sha256 `7f6ae9fc519ed91d2c7e590261ea032cee1b4ab7d92e439e48cf1bbc7de2959e`） | 未跑设备腿（本机无签名口令，未出可安装包） | 本文件 §3 备注 |
+| 1.1.0 / 1（2026-11-06 20:33，M12.5 **测试签名** R8 包） | `d5ef93af3a0940e7bf7444ce3277b861448c28ec3c257b04b664c2c20abf4979` | 5,304,748（签前 unsigned 5,284,313） | `release-artifacts/mapping-v1.1.0-code1.txt.gz`（源 `mapping.txt` sha256 前缀 `f612f7b8`，往返校验一致） | MuMu SM-S9080 / Android 15：冷启动无闪退、深嗅出候选、下载「已完成 1.4 MB」、下载管理→打开文件播放、续播 `resume=25221`、`adblock_hit` 每域每页一行；`JsonDecodingException`/`SerializationException` 0 命中 | 本文件 §7 + `docs/smoke-report.md` §31 |
 
 三条备注（2026-11-03 定名重建；**这份台账的有效性问题见 §7，下次发版先读 §7**）：
 
@@ -130,6 +131,11 @@ Caused by: java.lang.NullPointerException
   口令由维护者本机填写，仓库里只有空位。
   两者的忽略规则都在 `.gitignore`（`*.jks` 那条本来就挡住了键）。**读不到时构建不失败，只出一个
   未签名包**并打一行提示——所以判据不是"构建成功"，而是第 5 步的 `apksigner verify` 真能验过。
+  **2026-11-06 复核**：根目录这份 `keystore.properties` 已就位，但 `storePassword`/`keyPassword`
+  两项长度实测为 0，构建照旧产出 `app-release-unsigned.apk`。本轮 R8 设备腿因此走 §3 的**测试签名**
+  路线（`zipalign` + `apksigner` 用 `~/.android/debug.keystore`，证书 DN `CN=Android Debug`、
+  SHA-256 `73866dbc…`，与设备上的 debug 包同证书，`adb install -r -d` 免卸载保数据）。
+  **正式签名的 Release 仍只能由维护者本机填口令后自己打**；测试签名包不得分发。
 - 换键之后旧安装无法覆盖，必须先卸载；这是不可逆决定。正式分发前确认这把 key 的 DN 与保存位置，
   口令不要只留在本机一个明文文件里。
 - 签名方案实测：`enableV2Signing=true` 在 minSdk 29 下**不会**产出 v2 pair（apksigner CLI 重签同样不出），
@@ -151,14 +157,18 @@ GRADLE_USER_HOME=D:/Android/GradleUserHome ./gradlew.bat \
 cd engine && ./.venv/Scripts/python.exe -m pytest -q
 ```
 
-JVM 侧 **475 tests**（app 413 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
+JVM 侧 **483 tests**（app 421 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
 注意 `:shared` 是 KMP 模块，任务名是 `jvmTest` 不是 `testDebugUnitTest`。引擎桩套件 235 passed
 是 M9 的记录，本轮（只改构建与界面警告）未复跑。引擎 `-m real` 套件不要与桩套件并发跑，
 也不要在重启引擎时跑，否则会出现假失败。
 
-上面这组数字是 **2026-11-06 11:55（M12 收官）`--rerun-tasks` 现场复跑**的结果。上一版基线是 464 项
-（app 402，M11），app 从 402 涨到 413 是 M12 的 `PlayerGestureMathTest`（6 项，快进换算/亮度音量边界）、
-`AdBlockRulesTest`（4 项，后缀匹配与误杀反例）与 `BrowserWiringTest` 新增的拦截接线钉子（1 项）。
+上面这组数字是 **2026-11-06 20:32（M12.5 收官）现场复跑**的结果。上一版基线是 475 项（app 413，M12），
+app 从 413 涨到 421 是 M12.5 的 `AdBlockLedgerTest`（6 项，一页一域一行的边界）与 `PlayerWiringTest`
+（2 项，手势落系统 + 离场强制销毁的接线钉子）。
+
+再往前一版是 464 项（app 402，M11）：app 从 402 涨到 413 是 M12 的 `PlayerGestureMathTest`（6 项，
+快进换算/亮度音量边界）、`AdBlockRulesTest`（4 项，后缀匹配与误杀反例）与 `BrowserWiringTest`
+新增的拦截接线钉子（1 项）。
 M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删掉的取证层形状测试，判定链一项未少——
 数字对不上时先分清是「删了」还是「判定链弱了」。
 
@@ -206,26 +216,42 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
 
 ## 7. 当前台账缺口（登记，别在发版时假装没有）
 
-- **mapping 归档与当前源码对不上**：`release-artifacts/mapping-v1.0-code1.txt.gz` 是 2026-11-03 M6-6 出的，
-  之后又经历 M7–M12 多轮改动。按本文件 §1 第 3 步的规矩，**下次出 Release 必须先重归档**，
-  否则拿这份 mapping 还原新崩栈会安静地给出另一个函数的名字（比没有 mapping 更糟）。
-- **归档名与 `versionName` 已不一致**：旧档叫 `v1.0-code1`，当前 `versionName` 是 `1.1.0`（`versionCode` 仍为 1）。
-  下次按 `mapping-v1.1.0-code1.txt.gz` 归档，别复用旧名；§2 的脚本已改成这个目标名。
-- **可安装包只到 M6-6 那一版**：M8/M9 的真机验收跑的是 debug 包；M10 的浏览器隐身/悬浮球/生命周期改造、
-  M11 的下载管理/文件操作/内置播放器（Media3）、M12 的手势/倍速/画中画与广告拦截同样只在 debug 包上验收过。
-  **R8 下的音频链路、播放器与 `shouldInterceptRequest` 尚未跑过设备腿**，第 6 步必须覆盖。
-- **APK 体积基线（unsigned）**：M11-2（`a107dc0`）3,793,903 B → M11-3B（`924c350`）5,271,453 B，
-  增加 1,477,550 B（+1.41 MB），来自 media3 ExoPlayer/UI；预算 2 MB，下次发版对比这个数。
-  M12（`38fac08`）只加 UI 与拦截规则，未新增依赖，体积增量预计仍在同一档。
-- **`adblock_hit` 的去重窗口不是「每页严格一行」**（M12 真机复现）：页面初始 HTML 里同一广告域连发多个资源时，
-  第一个 `shouldInterceptRequest` 会赶在 `onPageStarted`（即 `reset()` 清集合）之前到达，
-  于是同一域名留下两行而不是 1 行。实测：同一域 3 张图 → 2 行；同一域每 1.5 秒发一次共 4 次 → 1 行。
-  **拦截本身不受影响**（三张图全部拿到 200 空体），只是取证行数会偏多，读日志时别把它当成「拦了两次」。
+- **mapping 归档**：M12.5 已按 §1 第 3 步重归档为 `release-artifacts/mapping-v1.1.0-code1.txt.gz`
+  （2026-11-06 20:33 那次 `assembleRelease` 的 `mapping.txt`，源与档 sha256 往返一致，归档名与
+  `versionName=1.1.0` 对齐）。旧的 `mapping-v1.0-code1.txt.gz` 保留但只对 M6-6 那版有效。
+  **这条规矩不变**：下次改代码再出 Release，必须先重归档再看设备腿，否则还原崩栈会给出另一个函数名。
+- **R8 设备腿只跑了「直链—下载—播放」这一半**（M12.5 补齐）：2026-11-06 用测试签名包在 MuMu 上过完
+  冷启动、深嗅出候选、下载已完成、下载管理→打开文件、ExoPlayer 画面推进、续播 `resume=25221`、
+  `adblock_hit` 每域每页一行，`JsonDecodingException`/`SerializationException` 0 命中，全程无闪退。
+  **§6 的 HLS→TS 转封装音频判据本轮没在 R8 包上复跑**（只跑过 mp4 直链），下次发版前必须补一条
+  HLS 链接的 R8 设备腿；M8/M9 的音频结论仍来自 debug 包。
+- **APK 体积基线（unsigned）**：M11-2（`a107dc0`）3,793,903 B → M11-3B（`924c350`）5,271,453 B →
+  M12.5（2026-11-06）5,284,313 B。相对 M11-3B 只涨 12,860 B，M12/M12.5 未新增依赖，与当初的预判一致；
+  预算 2 MB 一档内，下次发版继续对比这个数。
+- **`adblock_hit` 现在按地址认页**（M12.5 裁决落地）：`AdBlockLedger` 用「地址变了才重开账」而不是
+  「第几次导航」，同时挡住两类跨界——preload 抢在 `onPageStarted` 之前、reload 时子资源横跨
+  `onPageStarted` 前后。R8 包实测：同域 3 张图 → 1 行；点刷新重新加载同一地址（主文档确实 304 重验）→
+  **不再补行**；换一个新地址 → 每个域各补 1 行。代价登记清楚：**同一页重载不再留第二行**，
+  读日志时「一行」代表「这页拦过这个域」，不代表只拦了一次。
 - **画中画只在播放中申请**（设计如此，登记以免被当成 bug）：`onUserLeaveHint` 要求 `player.isPlaying`，
   播完或暂停后按 Home 只是普通退后台。MuMu 取证时第一次就是因为片子刚好放完没进小窗，倒回中段才复现成功。
-- **亮度手势的设备侧读数有限**：MuMu 的 `screencap` 不反映 `window.attributes.screenBrightness`，
-  `dumpsys window` 也不打印该字段，所以亮度只能靠界面上的「亮度 23%」提示条取证；
-  音量可以外部读数（`cmd media_session volume --get`，实测 0→25 与手势位移比例吻合）。
-  实体机复核亮度仍欠一次。
-- **测试台账上还有两条 `READY` 幽灵行**（`http://127.0.0.1:8733/deep.html`、`http://127.0.0.1:8000/m12_long.mp4`）：
-  都是取消/作废的下载留下的待下载行，属于用户可见记录，**删除需要点名授权**，不在自动清理范围内。
+  M12.5 裁决维持现状。
+- **亮度手势的设备侧读数有限**（M12.5 裁决：接受现状，记 TODO）：代码已是
+  `window.attributes.screenBrightness = value` 这种可直接复核的赋值形状，`PlayerWiringTest` 钉住了它；
+  但 MuMu 的 `screencap` 不反映该字段、`dumpsys window` 也不打印，所以真机上仍只能靠界面上的
+  「亮度 23%」提示条取证。音量可以外部读数（`cmd media_session volume --get`，实测 0→25 与手势位移比例吻合）。
+  **TODO：实体机复核亮度一次。**
+- **BACK 退出播放器后回到旧播放器的观察项**（M12.5 裁决：单独立项观察，防御已加）：
+  `VideoPlayerScreen` 现在用 `key(recordId)` 包住 `PlayerRoute`，离场 `onDispose` 里强制
+  `playerView?.player = null` → `player.release()` → `livePlayer = null`，PiP 回调只键 `pipHost`
+  并通过 `rememberUpdatedState` 读把手。R8 包上连续 4 次「打开—BACK」无闪退、进程线程数 53→54 不涨，
+  续播点照常回写；**但「BACK 回到上一个播放器画面」这个原始现象本轮没在真机上重现出来**，
+  所以这条只能算防御已就位、观察未结案。
+- **测试签名包不得分发**：本轮 R8 设备腿用的是 `~/.android/debug.keystore` 签的包（证书 `CN=Android Debug`）。
+  它只证明 R8 后的代码能跑，不代表正式发布包；正式包仍需维护者本机填口令后按 §1 打。
+- **测试台账上的 `READY` 幽灵行**（M12.5 复核）：本轮在「全部」列表直接看到两条待下载行——
+  `127.0.0.1 · m12_long.mp4`（旧有）和 `127. · m12_long.mp4`（本轮取证时 `adb input text` 丢字，
+  把地址打成残缺的 `http://127.:8000/m12_long.mp4`；`127.` 是合法单标签主机名，校验器按规则放行，
+  下载连不上才停在待下载，**不是校验缺陷**）。上一版登记的 `127.0.0.1:8733/deep.html` 那行本轮没有逐行复看，
+  列表里 `127.0.0.1 · deep.html` 仍在、状态未确认。**这些都属用户可见记录，删除需要点名授权**，
+  不在自动清理范围内。
