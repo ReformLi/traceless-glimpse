@@ -5,7 +5,7 @@
 切到本机后，`data/backend/` 里不出现 `EngineClient`、`TaskCreateRequest`、`DownloadRequest`、`encode(`，
 这条由 `TaskNeverGoesOnTheWireTest.localSideStaysOffTheWire` 扫源码钉住：本机的活不借引擎的协议发言。
 
-## 现状（M11 收官）
+## 现状（M12 收官）
 
 - 已接入 Gradle 构建，是 `settings.gradle.kts` 里的 `:android:app`，协议模型直接复用 `:shared`（KMP）单一来源，不重复定义。
 - UI 是 Jetpack Compose + Material 3（`buildFeatures.compose = true`），不是模板时代的 Views 栈。
@@ -50,6 +50,21 @@
   `PlayerRoute` 挂在 Scaffold 之外做全屏；退出时回写进度，右上角菜单可交给外部应用打开。
 - APK 体积：M11-2 基线 release-unsigned 3,793,903 B → M11-3B 5,271,453 B，**+1.41 MB**（预算 2 MB）。
 
+## 播放器体验与广告拦截（M12）
+
+- 手势层是 `PlayerView` 上方的透明 Box，只在非画中画、非失败态挂载。横向位移按 **90 秒/整屏**
+  换算成快进/快退目标（`PlayerGestureMath.seekTargetMs`，夹在 0 与时长之间），松手才真正 `seekTo`；
+  纵向位移左半屏调 `window.screenBrightness`、右半屏调 `STREAM_MUSIC`，拖动中给居中的瞬时提示。
+  轴向用 touchSlop 比横纵位移大小定，进度走 `rememberUpdatedState`——把 positionMs 当 key 会打断正在进行的拖动。
+- 倍速是控制条上的开关按钮（0.5 / 0.75 / 1.0 / 1.25 / 1.5 / 2.0），面板展开时控制条不自动收起，
+  非 1.0x 时按钮带底色，一眼能看出现在不是常速。
+- 画中画：Manifest 声明 `supportsPictureInPicture`，`onUserLeaveHint` **只在 `player.isPlaying` 时**
+  按视频比例申请小窗；`ON_STOP` 的暂停逻辑排除画中画态，所以退到后台画面进小窗、音频不断；回到全屏控制层恢复。
+- WebView 广告拦截在 `shouldInterceptRequest`：硬编码域名黑名单 `AdBlockRules` 按「相等或 `.` 后缀」匹配
+  （`contains` 会把 `notdoubleclick.net` 误杀），命中直接返回 200 空体 `WebResourceResponse`。
+  **主文档不拦**——用户在地址栏主动打开的域必须能看到结果，白屏比广告更难解释。
+  审计行 `adblock_hit host=<域名>` 只记域名，同一域名每页去重（去重窗口的边界见 `../docs/release-checklist.md` §7）。
+
 ## Cookie：默认关，按域名授权
 
 未授权前连 WebView 自己的 CookieStore 都不碰；授权后 Cookie 值只注入同站点的本机下载请求，
@@ -71,7 +86,7 @@ com.hpu.browseguard
 # 出 debug 包（产物在 android/app/build/outputs/apk/debug/app-debug.apk）
 .\gradlew.bat :android:app:assembleDebug
 
-# 本模块 JVM 单测：402 项，不需要设备
+# 本模块 JVM 单测：413 项，不需要设备
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 ```
 
@@ -97,4 +112,4 @@ com.hpu.browseguard
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
 
 里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9）；
-M10/M11 的改动与验收按提交记录追溯（`fc78073` … `924c350`），发版判据见 `../docs/release-checklist.md`。
+M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。
