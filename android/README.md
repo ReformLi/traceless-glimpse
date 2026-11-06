@@ -5,13 +5,13 @@
 切到本机后，`data/backend/` 里不出现 `EngineClient`、`TaskCreateRequest`、`DownloadRequest`、`encode(`，
 这条由 `TaskNeverGoesOnTheWireTest.localSideStaysOffTheWire` 扫源码钉住：本机的活不借引擎的协议发言。
 
-## 现状（M9 收官）
+## 现状（M11 收官）
 
 - 已接入 Gradle 构建，是 `settings.gradle.kts` 里的 `:android:app`，协议模型直接复用 `:shared`（KMP）单一来源，不重复定义。
 - UI 是 Jetpack Compose + Material 3（`buildFeatures.compose = true`），不是模板时代的 Views 栈。
-- 存储用 Room（历史记录），网络用 OkHttp，`WebView` 走 androidx.webkit。
+- 存储用 Room（历史记录 + 播放进度，DB v5），网络用 OkHttp，`WebView` 走 androidx.webkit，播放用 Media3 ExoPlayer。
 - `minSdk 29`（PRD NFR-05 Android 10+）、`targetSdk 36`、`compileSdk 36.1`、AGP 9.1.0 / Gradle 9.3.1。
-- `versionName = "1.0.0"`、`versionCode = 1`。出包与归档流程见 `../docs/release-checklist.md`。
+- `versionName = "1.1.0"`、`versionCode = 1`。出包与归档流程见 `../docs/release-checklist.md`。
 
 ## 两套后端并存
 
@@ -38,6 +38,18 @@
 降级理由全部登记在 `RemuxAudioGuard.AUDIO_FALLBACK_REASONS`，有一条 JVM 门禁扫源码里的
 `"...audio..."` 字面量，新增理由没进登记表就测试失败——防止现场出现「不知道为什么会降级」的文案。
 
+## 下载管理、文件操作与播放（M11）
+
+- 下载页是文件台账：打开、分享、重命名、删除（记录 / 记录+文件）、批量选择。存在性与位置探测在
+  `data/media/AndroidMediaProbe.kt`，删除策略在 `data/history/RecordDeletion.kt`。
+- 跨重启对账：产物缺失的记录会被标出并给对账入口；冷启动还会物理清理沙盒孤儿，
+  `audit_history_reconcile` 汇总行把 `orphans` 与 `ghosts` 分开计数。
+- Room v5 新增 `mediaDurationMs` 与 `lastPlayedPositionMs`。归一规则在 `PlaybackResume`：
+  起播 2 秒内不记；距结尾 15 秒内或达到 97% 视为看完、归零重看；其余从断点续播。
+- 播放器只引 `media3-exoplayer` + `media3-ui`（**不引 FFmpeg / RTMP / Cast 扩展**），
+  `PlayerRoute` 挂在 Scaffold 之外做全屏；退出时回写进度，右上角菜单可交给外部应用打开。
+- APK 体积：M11-2 基线 release-unsigned 3,793,903 B → M11-3B 5,271,453 B，**+1.41 MB**（预算 2 MB）。
+
 ## Cookie：默认关，按域名授权
 
 未授权前连 WebView 自己的 CookieStore 都不碰；授权后 Cookie 值只注入同站点的本机下载请求，
@@ -48,13 +60,9 @@
 
 ```
 com.hpu.browseguard
-├── app/            # 应用入口、导航、依赖注入
-├── core/           # model / net / security / storage / common
-├── data/           # EngineClient、backend/（本机执行者）、browser/、cookie/、history/、output/
-├── di/             # AppContainer 装配
-├── engine/         # bridge（协议适配）/ embedded（内置轻量下载）
-├── feature/        # browse / download / agent / library / settings
-└── ui/             # Compose 界面：BgvApp / HomeScreen / BrowserScreen / HistoryScreen / SettingsScreen
+├── MainActivity.kt
+├── data/     # EngineClient、backend/（本机执行者）、browser/、cookie/、download/、history/、media/、output/、playback/
+└── ui/       # Compose：BgvApp / HomeScreen / BrowserScreen / HistoryScreen / DownloadList / VideoPlayerScreen / SettingsScreen
 ```
 
 ## 构建与测试
@@ -63,7 +71,7 @@ com.hpu.browseguard
 # 出 debug 包（产物在 android/app/build/outputs/apk/debug/app-debug.apk）
 .\gradlew.bat :android:app:assembleDebug
 
-# 本模块 JVM 单测：283 项，不需要设备
+# 本模块 JVM 单测：402 项，不需要设备
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 ```
 
@@ -88,4 +96,5 @@ com.hpu.browseguard
 - blob/MSE 不伪造可下载的 `SniffResult`。
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
 
-里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9）。
+里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9）；
+M10/M11 的改动与验收按提交记录追溯（`fc78073` … `924c350`），发版判据见 `../docs/release-checklist.md`。

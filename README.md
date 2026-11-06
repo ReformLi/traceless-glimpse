@@ -8,7 +8,7 @@
 ## 三端架构
 
 1. **桌面本地引擎**（主力）：本地 HTTP 服务，监听 `127.0.0.1:8730`，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
-2. **Android App**：`com.hpu.browseguard`，既是引擎客户端，也能完全离线自足——内置浏览器嗅探 + 本机直连下载 + TS→MP4 转封装（见下节）。
+2. **Android App**：`com.hpu.browseguard`，既是引擎客户端，也能完全离线自足——内置浏览器嗅探 + 本机直连下载 + TS→MP4 转封装 + 内置播放器（断点续播）（见下节）。
 3. **CLI / MCP Server**：`bgv` 命令与 MCP 工具，供技术用户与 AI 客户端调用。
 
 三端通过 `docs/PROTOCOL.md` 定义的 HTTP/JSON 协议通信；协议模型在 `shared/`（Kotlin Multiplatform）单一来源实现。
@@ -33,7 +33,7 @@
 # Gradle 项目结构（应列出 :shared / :android:app / :engine-client / :cli / :mcp）
 .\gradlew.bat projects
 
-# Android：出 debug 包 + 跑本模块 JVM 单测（283 项，不需要设备）
+# Android：出 debug 包 + 跑本模块 JVM 单测（402 项，不需要设备）
 .\gradlew.bat :android:app:assembleDebug
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 
@@ -110,6 +110,15 @@ Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文�
 
 降级理由是一个可枚举集合，新增理由忘记登记会让 JVM 门禁测试直接转红；每条理由对应一句不误导的文案。
 逐轮取证见 `docs/smoke-report.md` §27–§29，需求条目见 `docs/PRD.md` §6.9，实现细节见 `android/README.md`。
+
+## 下载管理与播放
+
+下载页把历史记录当成可操作的文件台账：打开、分享、重命名、删除（记录 / 记录+文件），支持批量选择；
+库里已经不存在的产物会被对账标出，冷启动还会物理清理沙盒里的孤儿文件。删除用户可见记录必须二次确认。
+
+完成记录默认用内置 ExoPlayer 全屏播放（`media3-exoplayer` + `media3-ui`，**不引 FFmpeg / RTMP / Cast 扩展**）。
+退出时回写进度：起播 2 秒内不记；距结尾 15 秒内或达到 97% 视为看完、归零重看；其余从断点续播。
+列表直接展示时长与观看进度，播放器右上角保留「用其他应用打开」兜底。
 
 ## 隐私：Cookie 只留在手机
 

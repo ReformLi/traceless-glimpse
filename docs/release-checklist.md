@@ -15,7 +15,7 @@
 | 3 | **归档 mapping（不可跳过）** | 见 §2 | `release-artifacts/mapping-v<versionName>-code<versionCode>.txt.gz` 存在且 §2 的往返校验通过 |
 | 4 | 记 APK 尺寸与 sha256 | `sha256sum android/app/build/outputs/apk/release/app-release.apk` | 写进 §3 台账；下次发版对比尺寸异常增减 |
 | 5 | 签名校验 | `"D:/Android/AndroidSDK/build-tools/36.0.0/apksigner.bat" verify --verbose --print-certs <apk>` | 首行必须是 `Verifies`；`Number of signers: 1`；v3=true |
-| 6 | 装 Release 包跑设备腿 | 卸载 debug → `adb install -r` → 三 Tab + 引擎/本机两条主流程 + 取消 + 历史 + 设置；音频链路另按 §6 | `adb logcat -d` 里 `JsonDecodingException` / `SerializationException` **0 命中**；§6 的 `hls_remux_done` 与 ffprobe 读数达标 |
+| 6 | 装 Release 包跑设备腿 | 卸载 debug → `adb install -r` → 三 Tab + 引擎/本机两条主流程 + 取消 + 下载管理（打开/分享/重命名/删除/批量）+ **内置播放器（全屏、拖到中段退出、重进续播、列表进度、外部应用打开）** + 设置；音频链路另按 §6 | `adb logcat -d` 里 `JsonDecodingException` / `SerializationException` **0 命中**；播放器不崩且续播点与退出位置一致；§6 的 `hls_remux_done` 与 ffprobe 读数达标 |
 | 7 | 台账补一行 | 本文件 §3 + 当轮验收报告 | 版本号、APK sha256、mapping 文件名、设备腿结论 |
 
 第 6 步不能省的原因：R8 的行为只能跑起来才知道。`:android:app` 在 AGP 9.1 下**根本不生成
@@ -33,7 +33,7 @@
 python - <<'PY'
 import gzip, shutil, hashlib, os
 src = 'android/app/build/outputs/mapping/release/mapping.txt'
-dst = 'release-artifacts/mapping-v1.0-code1.txt.gz'
+dst = 'release-artifacts/mapping-v1.1.0-code1.txt.gz'
 with open(src, 'rb') as f, gzip.open(dst, 'wb', compresslevel=9) as g:
     shutil.copyfileobj(f, g)
 raw = hashlib.sha256(open(src, 'rb').read()).hexdigest()
@@ -53,7 +53,8 @@ PY
 - **必须做往返校验**：上面那段脚本最后 assert 的就是这个。归档失败最常见的形态不是"没归档"，
   而是"归档了一个解不开的包"——那要等到真的崩了才发现，已经来不及了。
 
-还原崩栈（以下整段在本机 Git Bash 实测跑通过，输出贴在后面）：
+还原崩栈（以下整段在本机 Git Bash 实测跑通过，输出贴在后面；演示用的是已归档的 `v1.0-code1`，
+换成当次新包时只改文件名）：
 
 ```bash
 export GRADLE_USER_HOME=D:/Android/GradleUserHome
@@ -150,14 +151,15 @@ GRADLE_USER_HOME=D:/Android/GradleUserHome ./gradlew.bat \
 cd engine && ./.venv/Scripts/python.exe -m pytest -q
 ```
 
-JVM 侧 **345 tests**（app 283 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过；
-引擎桩套件 235 passed。注意 `:shared` 是 KMP 模块，任务名是 `jvmTest` 不是 `testDebugUnitTest`。
-引擎 `-m real` 套件不要与桩套件并发跑，也不要在重启引擎时跑，否则会出现假失败。
+JVM 侧 **464 tests**（app 402 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
+注意 `:shared` 是 KMP 模块，任务名是 `jvmTest` 不是 `testDebugUnitTest`。引擎桩套件 235 passed
+是 M9 的记录，本轮（只改构建与界面警告）未复跑。引擎 `-m real` 套件不要与桩套件并发跑，
+也不要在重启引擎时跑，否则会出现假失败。
 
-上面这组数字是 **2026-11-05（M9 收官）现场复跑**的结果。上一版基线是 245 项（app 183，记于 M6-6），
-app 从 183 涨到 283 主要来自 M8 的音频门禁链与 M9 的 AU 拆分测试。
-其中一次口径变化要留意：M9 撤除临时诊断层时，测试数从 290 掉到 283，掉的 7 项是**被删除的取证层自身的**
-形状测试，判定链覆盖一项未少——数字对不上时先分清是「删了」还是「弱了」。
+上面这组数字是 **2026-11-06（M11 收官）现场复跑**的结果。上一版基线是 345 项（app 283，M9），
+app 从 283 涨到 402 主要来自 M10 浏览器路由/生命周期的接线钉子与 M11 的文件存在性、批量策略、
+播放进度归一和播放器 ViewModel 测试。M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删掉的
+取证层形状测试，判定链一项未少——数字对不上时先分清是「删了」还是「判定链弱了」。
 
 ## 6. 音频链路的发版判据（M8/M9 新增，Release 前必须复跑）
 
@@ -204,8 +206,12 @@ app 从 183 涨到 283 主要来自 M8 的音频门禁链与 M9 的 AU 拆分测
 ## 7. 当前台账缺口（登记，别在发版时假装没有）
 
 - **mapping 归档与当前源码对不上**：`release-artifacts/mapping-v1.0-code1.txt.gz` 是 2026-11-03 M6-6 出的，
-  之后 M7/M8/M9 改了 60+ 个文件的源码。按本文件 §1 第 3 步的规矩，**下次出 Release 必须先重归档**，
+  之后又经历 M7–M11 多轮改动。按本文件 §1 第 3 步的规矩，**下次出 Release 必须先重归档**，
   否则拿这份 mapping 还原新崩栈会安静地给出另一个函数的名字（比没有 mapping 更糟）。
-- **文件名与 `versionName` 已不逐字一致**：归档叫 `v1.0-code1`，而 `versionName` 在 `89b19fc` 改成了 `1.0.0`。
-  §1 第 1 步要求「两个数字与归档文件名逐字一致」，这条现在不成立——重归档时一并纠正命名。
-- **可安装包只到 M6-6 那一版**：M8/M9 的真机验收跑的是 debug 包，R8 下的音频链路尚未跑过设备腿。
+- **归档名与 `versionName` 已不一致**：旧档叫 `v1.0-code1`，当前 `versionName` 是 `1.1.0`（`versionCode` 仍为 1）。
+  下次按 `mapping-v1.1.0-code1.txt.gz` 归档，别复用旧名；§2 的脚本已改成这个目标名。
+- **可安装包只到 M6-6 那一版**：M8/M9 的真机验收跑的是 debug 包；M10 的浏览器隐身/悬浮球/生命周期改造、
+  M11 的下载管理/文件操作/内置播放器（Media3）同样只在 debug 包上验收过。**R8 下的音频链路与播放器
+  尚未跑过设备腿**，第 6 步必须覆盖。
+- **APK 体积基线（unsigned）**：M11-2（`a107dc0`）3,793,903 B → M11-3B（`924c350`）5,271,453 B，
+  增加 1,477,550 B（+1.41 MB），来自 media3 ExoPlayer/UI；预算 2 MB，下次发版对比这个数。
