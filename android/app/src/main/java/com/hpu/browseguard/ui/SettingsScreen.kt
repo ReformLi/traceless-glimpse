@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
@@ -153,10 +154,10 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
 }
 
 /**
- * 设置页第一屏：引擎地址与连通性、执行方式、历史维护。
+ * 设置页：按职能分组——嗅探与下载、浏览体验、引擎连接、输出位置、隐私与数据。
  *
- * 状态全部复用 [HomeViewModel]——首页的快捷切换与这里必须读写同一份偏好，
- * 否则两个 Tab 会各自显示一套「当前执行者」。输出目录在 SAF 接入后补进本页。
+ * 配置的唯一入口收敛在这里（首页只留工作流与状态展示）；状态全部复用 [HomeViewModel]，
+ * 首页的快捷切换与这里必须读写同一份偏好，否则两个 Tab 会各自显示一套「当前执行者」。
  */
 @Composable
 fun SettingsScreen(
@@ -197,6 +198,21 @@ fun SettingsScreen(
             large = true,
         )
 
+        // 分组只按职能走：怎么下载、怎么浏览、引擎连到哪、文件放哪、数据怎么清。
+        Spacer(Modifier.height(20.dp))
+        SniffDownloadSection(
+            state = state,
+            onSelectSniffExecutor = onSelectSniffExecutor,
+            onSelectDownloadExecutor = onSelectDownloadExecutor,
+        )
+
+        Spacer(Modifier.height(20.dp))
+        BrowsingSection(
+            state = state,
+            onShowPageByDefaultChange = onShowPageByDefaultChange,
+            onMuteWhileSniffingChange = onMuteWhileSniffingChange,
+        )
+
         Spacer(Modifier.height(20.dp))
         EngineSection(
             state = state,
@@ -205,16 +221,7 @@ fun SettingsScreen(
             onRefreshConnection = onRefreshConnection,
         )
 
-        Spacer(Modifier.height(16.dp))
-        ExecutionSection(
-            state = state,
-            onSelectSniffExecutor = onSelectSniffExecutor,
-            onShowPageByDefaultChange = onShowPageByDefaultChange,
-            onMuteWhileSniffingChange = onMuteWhileSniffingChange,
-            onSelectDownloadExecutor = onSelectDownloadExecutor,
-        )
-
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(20.dp))
         OutputSection(
             location = outputLocation,
             sandboxRoot = state.localSandboxRoot,
@@ -223,19 +230,15 @@ fun SettingsScreen(
             onReset = onResetOutputDirectory,
         )
 
-        Spacer(Modifier.height(16.dp))
-        CookieSection(
-            hosts = cookieHosts,
-            lastUsed = cookieLastUsed,
-            onRequestClear = onRequestClearCookies,
-            onRevoke = onRevokeCookieConsent,
-        )
-
-        Spacer(Modifier.height(16.dp))
-        HistorySection(
+        Spacer(Modifier.height(20.dp))
+        PrivacySection(
+            cookieHosts = cookieHosts,
+            cookieLastUsed = cookieLastUsed,
+            onRequestClearCookies = onRequestClearCookies,
+            onRevokeCookieConsent = onRevokeCookieConsent,
             history = history,
-            clearing = clearingHistory,
-            onRequestClear = { confirmingClear = true },
+            clearingHistory = clearingHistory,
+            onRequestClearHistory = { confirmingClear = true },
         )
     }
 
@@ -367,11 +370,9 @@ private fun EngineSection(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ExecutionSection(
+private fun SniffDownloadSection(
     state: HomeUiState,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
-    onShowPageByDefaultChange: (Boolean) -> Unit,
-    onMuteWhileSniffingChange: (Boolean) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
 ) {
     // 隐藏深嗅是浏览器自己的会话：它跑着也允许切到电脑引擎（切完立刻销毁 WebView）。
@@ -379,7 +380,7 @@ private fun ExecutionSection(
     val sniffLocked = sniffRunning || state.downloadInFlight
     val downloadLocked = state.downloadInFlight
 
-    SettingsCard(stringResource(R.string.settings_execution_section)) {
+    SettingsCard(stringResource(R.string.settings_sniff_download_section)) {
         Text(
             text = stringResource(R.string.sniff_mode_label),
             style = MaterialTheme.typography.titleSmall,
@@ -413,55 +414,7 @@ private fun ExecutionSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        Spacer(Modifier.height(14.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.settings_show_page_label),
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = stringResource(R.string.settings_show_page_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            BgvAnimatedSwitch(
-                checked = state.showPageByDefault,
-                onCheckedChange = onShowPageByDefaultChange,
-            )
-        }
-
-        Spacer(Modifier.height(14.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.settings_mute_label),
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = stringResource(R.string.settings_mute_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            BgvAnimatedSwitch(
-                checked = state.muteWhileSniffing,
-                onCheckedChange = onMuteWhileSniffingChange,
-            )
-        }
-
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(16.dp))
         Text(
             text = stringResource(R.string.download_executor_label),
             style = MaterialTheme.typography.titleSmall,
@@ -498,6 +451,61 @@ private fun ExecutionSection(
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
+        )
+    }
+}
+
+@Composable
+private fun BrowsingSection(
+    state: HomeUiState,
+    onShowPageByDefaultChange: (Boolean) -> Unit,
+    onMuteWhileSniffingChange: (Boolean) -> Unit,
+) {
+    SettingsCard(stringResource(R.string.settings_browsing_section)) {
+        SettingSwitchRow(
+            label = stringResource(R.string.settings_show_page_label),
+            hint = stringResource(R.string.settings_show_page_hint),
+            checked = state.showPageByDefault,
+            onCheckedChange = onShowPageByDefaultChange,
+        )
+        Spacer(Modifier.height(14.dp))
+        SettingSwitchRow(
+            label = stringResource(R.string.settings_mute_label),
+            hint = stringResource(R.string.settings_mute_hint),
+            checked = state.muteWhileSniffing,
+            onCheckedChange = onMuteWhileSniffingChange,
+        )
+    }
+}
+
+/** 设置开关行：左侧标题 + 一行灰字说明，右侧带颜色过渡的开关。 */
+@Composable
+private fun SettingSwitchRow(
+    label: String,
+    hint: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        BgvAnimatedSwitch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
         )
     }
 }
@@ -573,15 +581,31 @@ private fun OutputSection(
     }
 }
 
+/**
+ * 隐私与数据：Cookie 授权和下载历史都属于「我留下的痕迹」，收进同一张卡、
+ * 用分隔线分块——两个红色按钮各管各的数据，互不混淆。
+ */
 @Composable
-private fun CookieSection(
-    hosts: List<String>,
-    lastUsed: (String) -> Long?,
-    onRequestClear: () -> Unit,
-    onRevoke: (String) -> Unit,
+private fun PrivacySection(
+    cookieHosts: List<String>,
+    cookieLastUsed: (String) -> Long?,
+    onRequestClearCookies: () -> Unit,
+    onRevokeCookieConsent: (String) -> Unit,
+    history: HistoryUiState,
+    clearingHistory: Boolean,
+    onRequestClearHistory: () -> Unit,
 ) {
-    SettingsCard(stringResource(R.string.settings_cookie_section)) {
-        if (hosts.isEmpty()) {
+    val records = history.groups.flatMap { it.records }
+    val done = records.count { it.status == RecordStatus.DONE }
+
+    SettingsCard(stringResource(R.string.settings_privacy_section)) {
+        Text(
+            text = stringResource(R.string.settings_cookie_section),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (cookieHosts.isEmpty()) {
             Text(
                 text = stringResource(R.string.settings_cookie_empty),
                 style = MaterialTheme.typography.bodyMedium,
@@ -589,24 +613,24 @@ private fun CookieSection(
             )
         } else {
             Text(
-                text = stringResource(R.string.settings_cookie_count, hosts.size),
+                text = stringResource(R.string.settings_cookie_count, cookieHosts.size),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
-            hosts.forEach { host ->
+            cookieHosts.forEach { host ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = host, style = MaterialTheme.typography.titleSmall)
                         Text(
-                            text = lastUsed(host)?.let {
+                            text = cookieLastUsed(host)?.let {
                                 stringResource(R.string.settings_cookie_last_used, cookieTimeLabel(it))
                             } ?: stringResource(R.string.settings_cookie_never_used),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    TextButton(onClick = { onRevoke(host) }) {
+                    TextButton(onClick = { onRevokeCookieConsent(host) }) {
                         Text(stringResource(R.string.settings_cookie_revoke))
                     }
                 }
@@ -616,7 +640,7 @@ private fun CookieSection(
         Spacer(Modifier.height(14.dp))
         BgvButton(
             text = stringResource(R.string.settings_cookie_clear),
-            onClick = onRequestClear,
+            onClick = onRequestClearCookies,
             style = BgvButtonStyle.Destructive,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -626,18 +650,14 @@ private fun CookieSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
 
-@Composable
-private fun HistorySection(
-    history: HistoryUiState,
-    clearing: Boolean,
-    onRequestClear: () -> Unit,
-) {
-    val records = history.groups.flatMap { it.records }
-    val done = records.count { it.status == RecordStatus.DONE }
-    SettingsCard(stringResource(R.string.settings_history_section)) {
+        HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+        Text(
+            text = stringResource(R.string.settings_history_section),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(8.dp))
         Text(
             text = when {
                 history.loading -> stringResource(R.string.settings_history_loading)
@@ -649,13 +669,13 @@ private fun HistorySection(
         )
         Spacer(Modifier.height(12.dp))
         BgvButton(
-            text = if (clearing) {
+            text = if (clearingHistory) {
                 stringResource(R.string.settings_history_clearing)
             } else {
                 stringResource(R.string.settings_history_clear)
             },
-            onClick = onRequestClear,
-            enabled = records.isNotEmpty() && !clearing,
+            onClick = onRequestClearHistory,
+            enabled = records.isNotEmpty() && !clearingHistory,
             style = BgvButtonStyle.Destructive,
             modifier = Modifier.fillMaxWidth(),
         )

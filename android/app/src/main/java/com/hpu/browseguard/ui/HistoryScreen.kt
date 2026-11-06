@@ -227,31 +227,20 @@ fun HistoryScreen(
                 subtitle = stringResource(R.string.history_subtitle),
                 large = true,
             )
-            // 吸顶悬浮 Tab：容量统计 + 状态过滤钉在列表上方，列表内容从它下面滚过。
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp,
-            ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(
-                        text = stringResource(R.string.download_summary, state.recordCount, formatBytes(state.usedBytes)),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    DownloadFilterBar(state.filter, onSetFilter)
-                    if (selecting) {
-                        Spacer(Modifier.height(6.dp))
-                        DownloadSelectionBar(
-                            selectedCount = selection.size,
-                            onSelectAll = actions.onSelectAll,
-                            onExit = actions.onClearSelection,
-                        )
-                    }
-                }
+            // 多选栏与统计行占同一个槽位：进出多选不新增行，列表不会上下跳动。
+            Spacer(Modifier.height(16.dp))
+            if (selecting) {
+                DownloadSelectionBar(
+                    selectedCount = selection.size,
+                    onSelectAll = actions.onSelectAll,
+                    onExit = actions.onClearSelection,
+                )
+            } else {
+                DownloadStatsRow(state.recordCount, state.usedBytes)
             }
+            Spacer(Modifier.height(12.dp))
+            DownloadFilterBar(state.filter, onSetFilter)
+            Spacer(Modifier.height(4.dp))
         }
 
         when {
@@ -300,14 +289,6 @@ fun HistoryScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(BgvDimens.listItemSpacing),
             ) {
-                item(key = "swipe-hint") {
-                    Text(
-                        text = stringResource(R.string.history_swipe_hint),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
-                    )
-                }
                 state.groups.forEach { group ->
                     item(key = "group-${group.label}") {
                         Text(
@@ -699,6 +680,40 @@ private fun DownloadFilterBar(filter: DownloadFilter, onSelect: (DownloadFilter)
     }
 }
 
+/** 容量统计大数字行：数字醒目、标签灰色小字，替代原来挤在一行的小字摘要。 */
+@Composable
+private fun DownloadStatsRow(count: Int, usedBytes: Long) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(32.dp),
+    ) {
+        DownloadStatColumn(
+            value = String.format(Locale.ROOT, "%d", count),
+            label = stringResource(R.string.download_stat_records),
+        )
+        DownloadStatColumn(
+            value = formatBytes(usedBytes),
+            label = stringResource(R.string.download_stat_used),
+        )
+    }
+}
+
+@Composable
+private fun DownloadStatColumn(value: String, label: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @Composable
 private fun HistoryCard(
     record: DownloadRecord,
@@ -726,7 +741,7 @@ private fun HistoryCard(
                 }
                 Text(
                     text = record.title ?: defaultHistoryTitle(record.url),
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -735,13 +750,13 @@ private fun HistoryCard(
                 Spacer(Modifier.width(8.dp))
                 StatusChip(record.status)
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = listOfNotNull(
                     sourceHost(record.url).takeIf { it.isNotBlank() },
                     timeLabel(record.updatedAt),
                 ).joinToString(" · "),
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

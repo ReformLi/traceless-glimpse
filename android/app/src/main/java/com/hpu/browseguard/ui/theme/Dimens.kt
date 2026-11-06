@@ -24,7 +24,7 @@ object BgvDimens {
     val cardPaddingVertical = 14.dp
 
     /** 列表项（卡片内部）之间的间距 */
-    val listItemSpacing = 10.dp
+    val listItemSpacing = 12.dp
 
     /** 统一按钮高度（BgvButton） */
     val controlHeight = 44.dp

@@ -6,12 +6,14 @@
     <string name="action_back">返回</string>
 
     <string name="history_title">下载管理</string>
-    <string name="history_subtitle">下载中的进度、完成后的文件、失败的原因都排在下面，可取消、重试或删除</string>
+    <string name="history_subtitle">管理下载进度与文件</string>
     <string name="download_filter_all">全部</string>
     <string name="download_filter_active">下载中</string>
     <string name="download_filter_done">已完成</string>
     <string name="download_filter_failed">失败</string>
     <string name="download_summary">%1$d 条记录 · 已占用 %2$s</string>
+    <string name="download_stat_records">条记录</string>
+    <string name="download_stat_used">已占用</string>
     <string name="download_row_cancel">取消</string>
     <string name="download_row_retry">重试</string>
     <string name="download_empty_filtered">这个筛选下暂时没有记录</string>
@@ -46,7 +48,6 @@
     <string name="history_delete_confirm">删除</string>
     <string name="history_cancel">取消</string>
     <string name="history_pc_hint">文件保存在电脑的引擎侧，手机无法直接打开；需要时请到电脑上查看。</string>
-    <string name="history_swipe_hint">左滑或长按可删除</string>
     <string name="download_select_count">已选 %1$d 项</string>
     <string name="download_select_all">全选本页</string>
     <string name="download_select_exit">退出多选</string>
@@ -87,7 +88,7 @@
     <string name="download_nothing_selected">选中的行都没有手机侧产物，未做任何改动</string>
 
     <string name="settings_title">设置</string>
-    <string name="settings_subtitle">引擎、执行方式与历史</string>
+    <string name="settings_subtitle">下载方式、浏览体验与数据管理</string>
     <string name="settings_engine_section">引擎连接</string>
     <string name="settings_engine_save_test">保存并测试</string>
     <string name="settings_engine_test">测试连接</string>
@@ -96,12 +97,14 @@
     <string name="settings_cookie_none">不读取</string>
     <string name="settings_cookie_lazy">按需（401/403 时读取一次）</string>
     <string name="settings_cookie_explicit">显式授权</string>
-    <string name="settings_execution_section">执行方式</string>
+    <string name="settings_sniff_download_section">嗅探与下载</string>
+    <string name="settings_browsing_section">浏览体验</string>
+    <string name="settings_privacy_section">隐私与数据</string>
     <string name="settings_execution_busy">有任务正在进行：等它结束或取消后才能切换</string>
     <string name="settings_show_page_label">默认直接显示网页</string>
-    <string name="settings_show_page_hint">关闭时网页在后台加载，只留地址栏与「显示网页」；适合只想抓链接的场景。</string>
+    <string name="settings_show_page_hint">关闭后网页在后台加载，只留地址栏，适合只抓链接</string>
     <string name="settings_mute_label">嗅探时静音网页</string>
-    <string name="settings_mute_hint">隐藏深嗅与内置浏览器都会把网页媒体强制静音；关闭后可能听到页面自动播放的声音。</string>
+    <string name="settings_mute_hint">嗅探时强制静音网页媒体，避免页面自动播放出声</string>
     <string name="settings_output_section">输出位置</string>
     <string name="settings_output_default">应用专属目录（默认）</string>
     <string name="settings_output_saf">已选文件夹：%1$s</string>
@@ -110,7 +113,7 @@
     <string name="settings_output_pick">选择文件夹</string>
     <string name="settings_output_change">更换文件夹</string>
     <string name="settings_output_reset">恢复默认</string>
-    <string name="settings_output_hint">只影响手机侧的本地下载；先写入应用目录，完成后复制到所选文件夹。电脑引擎的文件仍在电脑上。</string>
+    <string name="settings_output_hint">先写入应用目录，完成后复制到所选文件夹；仅影响本机下载，引擎的文件仍在电脑上</string>
     <string name="settings_output_error">无法使用该文件夹：%1$s</string>
 
     <string name="settings_cookie_section">Cookie 授权</string>
@@ -121,12 +124,12 @@
     <string name="settings_cookie_revoke">撤销</string>
     <string name="settings_cookie_clear">清除所有 Cookie</string>
     <string name="settings_cookie_clear_title">清除所有 Cookie？</string>
-    <string name="settings_cookie_clear_body">应用内浏览器保存的全部 Cookie 值都会删除，此操作不可撤销。系统只给了整体清除的接口，不能按站点逐条删值；授权记录不受影响，要收回许可请用每行后面的「撤销」。</string>
+    <string name="settings_cookie_clear_body">将删除应用内浏览器保存的全部 Cookie 值，不可撤销；授权记录不受影响，收回许可请用每行的「撤销」。</string>
     <string name="settings_cookie_clear_confirm">清除</string>
     <string name="settings_cookie_clear_cancel">取消</string>
-    <string name="settings_cookie_hint">本机下载读取的 Cookie 只留在手机上，不会发给电脑引擎。撤销只收回读取许可，已存的值仍在，下次会重新询问；要彻底删值用「清除所有 Cookie」。</string>
+    <string name="settings_cookie_hint">Cookie 只留在手机上，不发给电脑引擎；「撤销」仅收回许可，彻底删值请用下方清除</string>
 
-    <string name="settings_history_section">历史维护</string>
+    <string name="settings_history_section">下载历史</string>
     <string name="settings_history_count">共 %1$d 条记录 · %2$d 条已完成</string>
     <string name="settings_history_loading">正在读取历史…</string>
     <string name="settings_history_empty">暂无历史记录</string>
@@ -136,7 +139,7 @@
     <string name="settings_history_clear_body">全部记录都会删除，应用专属目录里的下载文件也会一并清理；你选的公开文件夹里的视频一个都不动。此操作不可撤销。</string>
     <string name="settings_history_clear_confirm">清空</string>
     <string name="settings_history_clear_cancel">取消</string>
-    <string name="settings_history_clear_hint">只清理应用专属目录里的产物；公开文件夹与电脑引擎侧的文件都不受影响。</string>
+    <string name="settings_history_clear_hint">只清理应用专属目录里的产物；公开文件夹与电脑引擎侧的文件不受影响</string>
 
     <string name="home_title">无痕掠影</string>
     <!-- 副标题跟着当前执行者走：写死「本地执行」会在选了电脑引擎时误导用户。 -->
@@ -151,41 +154,31 @@
     <string name="status_pill_offline">电脑离线</string>
     <string name="status_pill_reconnect">点按重连</string>
 
-    <string name="engine_title">本地引擎</string>
     <string name="engine_status_idle">等待连接</string>
     <string name="engine_status_checking">连接中…</string>
     <string name="engine_status_connected">已连接 · 引擎 %1$s · 协议 %2$s</string>
     <string name="engine_status_failed">未连接</string>
-    <string name="engine_reconnect">重连</string>
 
-    <string name="engine_url_label">引擎地址</string>
     <string name="engine_url_field">http://127.0.0.1:8730</string>
-    <string name="engine_url_save">保存</string>
     <string name="engine_url_invalid">需为 http(s)://主机[:端口]，不带路径与参数</string>
-    <string name="engine_url_hint">手机连电脑：在电脑执行 adb reverse tcp:8730 tcp:8730。明文只放行回环，局域网或模拟器宿主网关请给引擎配 TLS 后用 https://</string>
+    <string name="engine_url_hint">电脑上执行 adb reverse tcp:8730 tcp:8730；非回环地址需引擎启用 TLS（https）</string>
 
     <string name="download_executor_label">下载执行者</string>
     <string name="download_executor_engine">引擎</string>
     <string name="download_executor_local">本地直链</string>
-    <string name="download_executor_hint">本地直链：手机自己下嗅探到的那条 HTTP 直链，断点存 .part，不经过引擎，也不做音视频合并。切换会丢弃当前画质表。</string>
+    <string name="download_executor_hint">本地直链：手机直接下载嗅探到的链接，不做音视频合并；切换会丢弃当前画质表</string>
     <string name="download_executor_busy">有任务正在进行：等它结束或取消后才能切换执行者</string>
 
-    <string name="selfcheck_title">隐私自检</string>
+    <string name="selfcheck_title">引擎自检</string>
     <string name="selfcheck_cookie">Cookie 策略</string>
-    <string name="selfcheck_listen">监听地址</string>
-    <string name="selfcheck_tls">TLS / 令牌</string>
     <string name="selfcheck_output">输出白名单</string>
     <string name="selfcheck_cache">缓存</string>
-    <string name="selfcheck_proxy">代理</string>
-    <string name="selfcheck_deps">依赖版本</string>
-    <string name="selfcheck_on">开</string>
-    <string name="selfcheck_off">关</string>
     <string name="selfcheck_none">无</string>
 
     <string name="sniff_mode_label">嗅探方式</string>
     <string name="sniff_mode_engine">电脑引擎</string>
     <string name="sniff_mode_local">本机嗅探</string>
-    <string name="sniff_mode_hint">本机嗅探无需电脑，默认推荐；电脑引擎解析能力更强，但需要电脑在线</string>
+    <string name="sniff_mode_hint">本机嗅探开箱即用；电脑引擎解析更强，但需要电脑在线</string>
     <string name="sniff_offline_hint">电脑引擎离线。可以点上方状态重连，或切到本机嗅探（仅直链）继续。</string>
     <string name="sniff_offline_switch">切到本机嗅探</string>
     <string name="sniff_notice_dismiss">知道了</string>
@@ -317,12 +310,6 @@
     <string name="cookie_consent_agree">同意并继续</string>
     <string name="cookie_consent_reject">拒绝</string>
 
-    <string name="engine_panel_title">连接与引擎设置</string>
-    <string name="engine_panel_expand">展开</string>
-    <string name="engine_panel_collapse">收起</string>
-    <string name="engine_panel_summary_connected">已连接 · 引擎 %1$s</string>
-    <string name="engine_panel_summary_offline">未连接电脑引擎</string>
-    <string name="engine_panel_summary_local">本机嗅探 · 不需要电脑</string>
 
     <string name="player_open_with">用其他应用打开</string>
     <string name="player_back">返回</string>

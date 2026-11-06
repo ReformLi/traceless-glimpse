@@ -16,13 +16,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -45,7 +43,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -81,7 +78,6 @@ import com.hpu.browseguard.shared.model.TaskStatus
 import com.hpu.browseguard.ui.components.BgvButton
 import com.hpu.browseguard.ui.components.BgvButtonStyle
 import com.hpu.browseguard.ui.components.BgvCard
-import com.hpu.browseguard.ui.components.BgvCardTitle
 import com.hpu.browseguard.ui.components.BgvInputField
 import com.hpu.browseguard.ui.components.BgvTopBar
 import com.hpu.browseguard.ui.components.ErrorCard
@@ -120,11 +116,8 @@ fun HomeRoute(
                 HomeScreen(
                     state = state,
                     onRefresh = viewModel::refreshConnection,
-                    onEditEngineUrl = viewModel::editEngineUrl,
-                    onSaveEngineUrl = viewModel::saveEngineUrl,
                     onSelectSniffExecutor = viewModel::selectSniffExecutor,
                     onDismissSniffNotice = viewModel::dismissSniffNotice,
-                    onSelectDownloadExecutor = viewModel::selectDownloadExecutor,
                     onEditSourceUrl = viewModel::editSourceUrl,
                     onOpenBrowser = { viewModel.openBrowser(showPage = true) },
                     onSniff = viewModel::sniff,
@@ -144,11 +137,8 @@ fun HomeRoute(
 fun HomeScreen(
     state: HomeUiState,
     onRefresh: () -> Unit,
-    onEditEngineUrl: (String) -> Unit,
-    onSaveEngineUrl: () -> Unit,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
     onDismissSniffNotice: () -> Unit,
-    onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onEditSourceUrl: (String) -> Unit,
     onOpenBrowser: () -> Unit,
     onSniff: () -> Unit,
@@ -182,11 +172,11 @@ fun HomeScreen(
             )
 
             state.sniffNotice?.let { notice ->
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(16.dp))
                 NoticeBanner(notice, onDismissSniffNotice)
             }
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(20.dp))
             SniffWorkCard(
                 state = state,
                 onRefreshConnection = onRefresh,
@@ -199,23 +189,14 @@ fun HomeScreen(
 
             val download = state.download
             if (download is FormatPickable) {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
                 FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
             }
             // 按下「开始下载」之后这里就空了：进度、成败、文件位置都搬到「下载」那一页去说。
             if (download is DownloadPhase.Failed) {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
                 DownloadTriggerFailedCard(state, download, onPickFormats, onSniff)
             }
-
-            Spacer(Modifier.height(16.dp))
-            EngineSettingsSection(
-                state = state,
-                onRefresh = onRefresh,
-                onEditEngineUrl = onEditEngineUrl,
-                onSaveEngineUrl = onSaveEngineUrl,
-                onSelectDownloadExecutor = onSelectDownloadExecutor,
-            )
         }
         SnackbarHost(
             hostState = snackbarHostState,
@@ -231,24 +212,6 @@ fun HomeScreen(
         onQueuedHintShown()
         snackbarHostState.showSnackbar(hint)
     }
-}
-
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.widthIn(max = 84.dp),
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
-        )
-    }
-    Spacer(Modifier.height(6.dp))
 }
 
 /**
@@ -1001,227 +964,6 @@ private fun DownloadTriggerFailedCard(
     )
 }
 
-@Composable
-private fun EngineSettingsSection(
-    state: HomeUiState,
-    onRefresh: () -> Unit,
-    onEditEngineUrl: (String) -> Unit,
-    onSaveEngineUrl: () -> Unit,
-    onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
-) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val connection = state.connection
-    BgvCard {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(MaterialTheme.shapes.extraSmall)
-                .clickable { expanded = !expanded }
-                .padding(vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Settings,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = stringResource(R.string.engine_panel_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = engineSummary(state),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = stringResource(
-                    if (expanded) R.string.engine_panel_collapse else R.string.engine_panel_expand,
-                ),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-
-        if (expanded) {
-            Spacer(Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(connection.dotColor(), CircleShape),
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = stringResource(R.string.engine_title),
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        text = connection.statusText(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                BgvButton(
-                    text = stringResource(R.string.engine_reconnect),
-                    onClick = onRefresh,
-                    style = BgvButtonStyle.Secondary,
-                )
-            }
-            if (connection is Connection.Failed) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = connection.reason,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = stringResource(R.string.engine_url_label),
-                style = MaterialTheme.typography.titleSmall,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                BgvInputField(
-                    value = state.engineUrlDraft,
-                    onValueChange = onEditEngineUrl,
-                    isError = state.engineUrlInvalid,
-                    label = stringResource(R.string.engine_url_field),
-                    supportingText = if (state.engineUrlInvalid) {
-                        stringResource(R.string.engine_url_invalid)
-                    } else {
-                        null
-                    },
-                    modifier = Modifier.weight(1f),
-                )
-                BgvButton(
-                    text = stringResource(R.string.engine_url_save),
-                    onClick = onSaveEngineUrl,
-                    style = BgvButtonStyle.Secondary,
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.engine_url_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = stringResource(R.string.download_executor_label),
-                style = MaterialTheme.typography.titleSmall,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ExecutorChoice(
-                    text = stringResource(R.string.download_executor_engine),
-                    selected = state.downloadExecutor == DownloadExecutor.ENGINE,
-                    enabled = !state.downloadInFlight,
-                    onClick = { onSelectDownloadExecutor(DownloadExecutor.ENGINE) },
-                )
-                ExecutorChoice(
-                    text = stringResource(R.string.download_executor_local),
-                    selected = state.downloadExecutor == DownloadExecutor.LOCAL_DIRECT,
-                    enabled = !state.downloadInFlight,
-                    onClick = { onSelectDownloadExecutor(DownloadExecutor.LOCAL_DIRECT) },
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = stringResource(
-                    if (state.downloadInFlight) {
-                        R.string.download_executor_busy
-                    } else {
-                        R.string.download_executor_hint
-                    },
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (state.downloadInFlight) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-
-            val connected = connection as? Connection.Connected
-            if (connected != null) {
-                Spacer(Modifier.height(18.dp))
-                BgvCardTitle(stringResource(R.string.selfcheck_title))
-                SelfcheckRows(connected.selfcheck)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SelfcheckRows(selfcheck: SelfcheckResponse) {
-    InfoRow(
-        stringResource(R.string.selfcheck_cookie),
-        selfcheck.cookiePolicyDefault.name.lowercase(Locale.ROOT),
-    )
-    InfoRow(
-        stringResource(R.string.selfcheck_listen),
-        selfcheck.listenAddress,
-    )
-    InfoRow(
-        stringResource(R.string.selfcheck_tls),
-        boolText(selfcheck.tlsEnabled) + " / " + boolText(selfcheck.authEnabled),
-    )
-    InfoRow(
-        stringResource(R.string.selfcheck_output),
-        selfcheck.outputDirAllowlist.ifEmpty { listOf(stringResource(R.string.selfcheck_none)) }.joinToString("\n"),
-    )
-    InfoRow(
-        stringResource(R.string.selfcheck_cache),
-        "${selfcheck.cacheDir} · ${selfcheck.cacheTtlHours}h · ${formatBytes(selfcheck.cacheSizeBytes)}",
-    )
-    InfoRow(
-        stringResource(R.string.selfcheck_proxy),
-        selfcheck.activeProxyIds.ifEmpty { listOf(stringResource(R.string.selfcheck_none)) }.joinToString(", "),
-    )
-    InfoRow(
-        stringResource(R.string.selfcheck_deps),
-        selfcheck.dependencyVersions.entries.joinToString(" · ") { "${it.key} ${it.value}" },
-    )
-}
-
-@Composable
-private fun engineSummary(state: HomeUiState): String {
-    val connection = state.connection
-    return when {
-        runsEntirelyLocally(state.sniffExecutor, state.downloadExecutor) ->
-            stringResource(R.string.engine_panel_summary_local)
-
-        connection is Connection.Connected -> stringResource(
-            R.string.engine_panel_summary_connected,
-            connection.health.version,
-        )
-
-        connection is Connection.Checking -> stringResource(R.string.engine_status_checking)
-        else -> stringResource(R.string.engine_panel_summary_offline)
-    }
-}
-
-/** 选中的那颗有底色——两颗并排时要一眼看出当前是哪条链路。 */
-@Composable
-private fun ExecutorChoice(text: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    BgvButton(
-        text = text,
-        onClick = onClick,
-        enabled = enabled,
-        style = if (selected) BgvButtonStyle.Primary else BgvButtonStyle.Secondary,
-    )
-}
-
 /** 降级/失败提示：必须看得见，也要能关掉，不能变成永久占位。 */
 @Composable
 private fun NoticeBanner(text: String, onDismiss: () -> Unit) {
@@ -1279,26 +1021,6 @@ private fun recommendedFormat(formats: List<FormatInfo>): FormatInfo? {
         compareBy<FormatInfo> { it.resolution.height }.thenBy { it.hasAudio },
     ) ?: formats.maxByOrNull { it.bitrateKbps }
 }
-
-@Composable
-private fun Connection.dotColor(): Color = when (this) {
-    is Connection.Connected -> bgvStatusColors.success
-    is Connection.Failed -> MaterialTheme.colorScheme.error
-    Connection.Checking -> bgvStatusColors.warning
-    Connection.Idle -> bgvStatusColors.idle
-}
-
-@Composable
-private fun Connection.statusText(): String = when (this) {
-    Connection.Idle -> stringResource(R.string.engine_status_idle)
-    Connection.Checking -> stringResource(R.string.engine_status_checking)
-    is Connection.Connected -> stringResource(R.string.engine_status_connected, health.version, health.protocolVersion)
-    is Connection.Failed -> stringResource(R.string.engine_status_failed)
-}
-
-@Composable
-private fun boolText(value: Boolean): String =
-    stringResource(if (value) R.string.selfcheck_on else R.string.selfcheck_off)
 
 internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1L shl 30 -> String.format(Locale.ROOT, "%.2f GB", bytes / 1073741824.0)
@@ -1416,11 +1138,8 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
         HomeScreen(
             state = state,
             onRefresh = {},
-            onEditEngineUrl = {},
-            onSaveEngineUrl = {},
             onSelectSniffExecutor = {},
             onDismissSniffNotice = {},
-            onSelectDownloadExecutor = {},
             onEditSourceUrl = {},
             onOpenBrowser = {},
             onSniff = {},
