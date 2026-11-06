@@ -143,6 +143,19 @@ class BrowserWiringTest {
         assertTrue("隐藏深嗅在跑时仍可切引擎", settings.contains("state.deepSniff == DeepSniffPhase.Off"))
     }
 
+    /** M12：广告资源请求必须短路在嗅探之前，并留一行按域名去重的取证。 */
+    @Test
+    fun adRequestsAreShortCircuitedAndAuditedOncePerHost() {
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
+        val controller = File("$SRC_ROOT/data/browser/BrowserSniffController.kt").readText()
+
+        assertTrue("请求过滤要真的接上域名表", screen.contains("AdBlockRules.blockedHostOf(rawUrl)"))
+        assertTrue("主文档不能拦，否则手动打开广告域就是白屏", screen.contains("!current.isForMainFrame"))
+        assertTrue("命中后返回空响应而不是继续出网", screen.contains("emptyAdResponse()"))
+        assertTrue("被拦的资源要留一行", controller.contains("""audit.log("adblock_hit""""))
+        assertTrue("同一域名每页只记一次", controller.contains("blockedHosts.add(host)"))
+    }
+
     private fun controllerUsesOrder(): Boolean {
         val controller = File("$SRC_ROOT/data/browser/BrowserSniffController.kt").readText()
         return controller.contains("sortedWith(BROWSER_CANDIDATE_ORDER)") &&

@@ -90,6 +90,7 @@ class BrowserSniffController(
     private val seen: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
     private val probed: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val blobSeen: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
+    private val blockedHosts: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
     private val _state = MutableStateFlow(BrowserSniffState())
     val state: StateFlow<BrowserSniffState> = _state.asStateFlow()
@@ -107,6 +108,7 @@ class BrowserSniffController(
         seen.clear()
         blobSeen.clear()
         probed.clear()
+        blockedHosts.clear()
         _state.update {
             it.copy(
                 candidates = emptyList(),
@@ -207,6 +209,14 @@ class BrowserSniffController(
             discoveredAt = Instant.now().toString(),
         ) ?: return
         add(result, "network")
+    }
+
+    /**
+     * 广告资源被拦的报账。同一域名每页只留一行：
+     * 一个页面常会向同一个广告域打几十个请求，逐条写会把 logcat 的取证行冲掉。
+     */
+    fun onAdBlocked(host: String) {
+        if (blockedHosts.add(host)) audit.log("adblock_hit", mapOf("host" to host))
     }
 
     /**

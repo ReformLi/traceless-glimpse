@@ -1,11 +1,19 @@
 package com.hpu.browseguard.ui
 
+import android.app.Activity
+import android.app.PictureInPictureParams
+import android.content.Context
+import android.content.ContextWrapper
+import android.media.AudioManager
 import android.net.Uri
+import android.util.Rational
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
@@ -28,6 +37,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -37,9 +47,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,11 +79,15 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.hpu.browseguard.MainActivity
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.playback.PlaybackSource
 import com.hpu.browseguard.data.playback.RefuseReason
+import com.hpu.browseguard.ui.player.PlayerGestureMath
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 /**
@@ -170,6 +186,10 @@ private fun VideoPlayer(
         }
     }
 
+    val activity = remember(context) { context.findActivity() }
+    val pipHost = activity as? MainActivity
+    val audioManager = remember(context) { context.getSystemService(AudioManager::class.java) }
+
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var positionMs by remember { mutableLongStateOf(state.resumePositionMs) }
@@ -179,6 +199,15 @@ private fun VideoPlayer(
     var failed by remember { mutableStateOf(false) }
     var menuShown by remember { mutableStateOf(false) }
     var openProblem by remember { mutableStateOf<OpenFileProblem?>(null) }
+    var speed by remember { mutableFloatStateOf(1f) }
+    var speedMenuShown by remember { mutableStateOf(false) }
+    var inPip by remember { mutableStateOf(activity?.isInPictureInPictureMode == true) }
+    var gestureHint by remember { mutableStateOf<GestureHint?>(null) }
+
+    // 手势块不能把 positionMs 当 key：它每半秒变一次，会把进行中的拖动打断。
+    val latestPositionMs by rememberUpdatedState(positionMs)
+    val latestDurationMs by rememberUpdatedState(durationMs)
+    val latestFailed by rememberUpdatedState(failed)
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -221,15 +250,77 @@ private fun VideoPlayer(
         }
     }
 
-    LaunchedEffect(controlsShown, isPlaying) {
-        if (controlsShown && isPlaying) {
+    LaunchedEffect(controlsShown, isPlaying, speedMenuShown) {
+        if (controlsShown && isPlaying && !speedMenuShown) {
             delay(3_500)
             controlsShown = false
         }
     }
 
+    // 控制条收起时倍速面板也收起，免得下次显示时突然多出一排按钮。
+    LaunchedEffect(controlsShown) {
+        if (!controlsShown) speedMenuShown = false
+    }
+
+    // 手势提示在松手后自己消失；拖动期间每次变化都会重启这个计时。
+    LaunchedEffect(gestureHint) {
+        if (gestureHint != null) {
+            delay(900)
+            gestureHint = null
+        }
+    }
+
+    // 进小窗后不再画控制层：小窗里只有视频，点开 App 再继续操作。
+    LaunchedEffect(inPip) {
+        if (inPip) {
+            controlsShown = false
+            speedMenuShown = false
+        }
+    }
+
+    // 亮度是窗口属性，只改窗口值会在退出播放器后一直留着；进来时记下原值，走时还原。
+    val initialWindowBrightness = remember(activity) {
+        activity?.window?.attributes?.screenBrightness ?: -1f
+    }
+    DisposableEffect(activity) {
+        onDispose {
+            activity?.window?.let { window ->
+                window.attributes = window.attributes.apply { screenBrightness = initialWindowBrightness }
+            }
+        }
+    }
+
+    // 播放中按 Home/最近任务才进小窗；暂停状态退到后台没有可看的画面，交给系统正常最小化。
+    DisposableEffect(player, pipHost) {
+        if (pipHost == null) {
+            onDispose { }
+        } else {
+            pipHost.onUserLeavePlayer = {
+                if (player.isPlaying) {
+                    val video = player.videoSize
+                    val width = video.width.takeIf { it > 0 } ?: 16
+                    val height = video.height.takeIf { it > 0 } ?: 9
+                    val params = PictureInPictureParams.Builder()
+                        .setAspectRatio(Rational(width, height))
+                        .build()
+                    runCatching { pipHost.enterPictureInPictureMode(params) }.getOrDefault(false)
+                } else {
+                    false
+                }
+            }
+            pipHost.onPipModeChanged = { inPip = it }
+            onDispose {
+                pipHost.onUserLeavePlayer = null
+                pipHost.onPipModeChanged = null
+            }
+        }
+    }
+
     // 切到后台：暂停就是回写进度的扳机（见 onIsPlayingChanged），不该让声音在背后继续放。
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { player.pause() }
+    // 小窗里 Activity 也处于后台态，此时暂停会把小窗播成静帧。
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (activity?.isInPictureInPictureMode != true) player.pause()
+    }
 
     openProblem?.let { problem ->
         val message = openProblemText(problem)
@@ -242,8 +333,7 @@ private fun VideoPlayer(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
-            .pointerInput(state) { detectTapGestures { controlsShown = !controlsShown } },
+            .background(Color.Black),
     ) {
         AndroidView(
             modifier = Modifier.matchParentSize(),
@@ -258,7 +348,95 @@ private fun VideoPlayer(
             update = { view -> view.player = player },
         )
 
-        if (failed) {
+        if (!inPip && !failed) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .pointerInput(player, activity, audioManager, failed) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val width = size.width.toFloat().coerceAtLeast(1f)
+                            val height = size.height.toFloat().coerceAtLeast(1f)
+                            val startX = down.position.x
+                            val onLeftSide = startX < width / 2f
+                            val startPosition = latestPositionMs
+                            val startDuration = latestDurationMs
+                            val startBrightness = activity?.window?.attributes?.screenBrightness
+                                ?.takeIf { it >= 0f } ?: 0.5f
+                            val maxVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0
+                            val startVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
+                            var axis: GestureKind? = null
+                            var seekTarget: Long? = null
+
+                            var change = down
+                            while (change.pressed) {
+                                val event = awaitPointerEvent()
+                                change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                val dx = change.position.x - startX
+                                val dy = change.position.y - down.position.y
+                                if (axis == null &&
+                                    (abs(dx) > viewConfiguration.touchSlop || abs(dy) > viewConfiguration.touchSlop)
+                                ) {
+                                    axis = when {
+                                        abs(dx) > abs(dy) -> GestureKind.Seek
+                                        onLeftSide -> GestureKind.Brightness
+                                        else -> GestureKind.Volume
+                                    }
+                                }
+                                when (axis) {
+                                    GestureKind.Seek -> {
+                                        val target =
+                                            PlayerGestureMath.seekTargetMs(startPosition, startDuration, dx / width)
+                                        seekTarget = target
+                                        gestureHint = GestureHint(
+                                            kind = GestureKind.Seek,
+                                            targetMs = target,
+                                            forward = target >= startPosition,
+                                        )
+                                        change.consume()
+                                    }
+
+                                    GestureKind.Brightness -> {
+                                        val value = PlayerGestureMath.brightnessFor(startBrightness, dy / height)
+                                        activity?.window?.let { window ->
+                                            window.attributes = window.attributes.apply { screenBrightness = value }
+                                        }
+                                        gestureHint = GestureHint(GestureKind.Brightness, fraction = value)
+                                        change.consume()
+                                    }
+
+                                    GestureKind.Volume -> {
+                                        val volume = PlayerGestureMath.volumeFor(startVolume, dy / height, maxVolume)
+                                        audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
+                                        gestureHint = GestureHint(
+                                            kind = GestureKind.Volume,
+                                            fraction = if (maxVolume > 0) volume.toFloat() / maxVolume else 0f,
+                                        )
+                                        change.consume()
+                                    }
+
+                                    null -> Unit
+                                }
+                            }
+
+                            when (axis) {
+                                GestureKind.Seek -> {
+                                    val target = seekTarget
+                                    if (target != null) {
+                                        player.seekTo(target)
+                                        positionMs = target
+                                    }
+                                }
+
+                                null -> if (!latestFailed) controlsShown = !controlsShown
+                                else -> Unit
+                            }
+                        }
+                    },
+            )
+        }
+
+        if (failed && !inPip) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
@@ -277,7 +455,7 @@ private fun VideoPlayer(
             }
         }
 
-        if (controlsShown && !failed) {
+        if (controlsShown && !failed && !inPip) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -329,6 +507,42 @@ private fun VideoPlayer(
                     .navigationBarsPadding()
                     .padding(horizontal = 10.dp, vertical = 2.dp),
             ) {
+                if (speedMenuShown) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        PlayerGestureMath.SPEED_OPTIONS.forEach { option ->
+                            val selected = option == speed
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(36.dp)
+                                    .background(
+                                        if (selected) Color.White.copy(alpha = 0.24f) else Color.Transparent,
+                                        RoundedCornerShape(9.dp),
+                                    )
+                                    .clickable {
+                                        speed = option
+                                        player.setPlaybackSpeed(option)
+                                        speedMenuShown = false
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = PlayerGestureMath.speedLabel(option),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Slider(
                     value = scrubTo ?: shownFraction(positionMs, durationMs),
                     onValueChange = { scrubTo = it },
@@ -369,10 +583,93 @@ private fun VideoPlayer(
                         color = Color.White,
                         modifier = Modifier.weight(1f),
                     )
+                    Box(
+                        modifier = Modifier
+                            .height(36.dp)
+                            .background(
+                                if (speed != 1f) Color.White.copy(alpha = 0.18f) else Color.Transparent,
+                                RoundedCornerShape(9.dp),
+                            )
+                            .clickable { speedMenuShown = !speedMenuShown }
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_speed) + " " + PlayerGestureMath.speedLabel(speed),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
         }
+
+        gestureHint?.let { hint ->
+            GestureFeedback(
+                hint = hint,
+                durationMs = durationMs,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
     }
+}
+
+private enum class GestureKind { Seek, Brightness, Volume }
+
+private data class GestureHint(
+    val kind: GestureKind,
+    val targetMs: Long = 0L,
+    val fraction: Float = 0f,
+    val forward: Boolean = true,
+)
+
+/** 拖动时居中的一块提示：快进/快退到哪、亮度或音量到了几成。 */
+@Composable
+private fun GestureFeedback(hint: GestureHint, durationMs: Long, modifier: Modifier = Modifier) {
+    val text = when (hint.kind) {
+        GestureKind.Seek -> stringResource(
+            if (hint.forward) R.string.player_seek_forward else R.string.player_seek_backward,
+            durationLabel(hint.targetMs) ?: "0:00",
+        )
+
+        GestureKind.Brightness -> stringResource(R.string.player_brightness, (hint.fraction * 100f).roundToInt())
+        GestureKind.Volume -> stringResource(R.string.player_volume, (hint.fraction * 100f).roundToInt())
+    }
+    val progress = when (hint.kind) {
+        GestureKind.Seek -> if (durationMs > 0L) (hint.targetMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+        else -> hint.fraction.coerceIn(0f, 1f)
+    }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .background(Color(0xCC000000), RoundedCornerShape(14.dp))
+            .padding(horizontal = 20.dp, vertical = 14.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium,
+            color = Color.White,
+        )
+        Spacer(Modifier.height(8.dp))
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .width(150.dp)
+                .height(3.dp),
+            color = Color.White,
+            trackColor = Color.White.copy(alpha = 0.28f),
+        )
+    }
+}
+
+/** Compose 里拿到的 Context 可能包了一层，逐层拆到 Activity。 */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /**

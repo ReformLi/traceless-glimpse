@@ -100,10 +100,12 @@ import androidx.webkit.WebViewFeature
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.browser.AdBlockRules
 import com.hpu.browseguard.data.browser.BrowserCandidate
 import com.hpu.browseguard.data.browser.BrowserSniffController
 import com.hpu.browseguard.data.browser.BrowserSniffState
 import com.hpu.browseguard.shared.model.SniffResult
+import java.io.ByteArrayInputStream
 import java.net.URI
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -1145,14 +1147,20 @@ private fun browserClient(controller: BrowserSniffController, mute: Boolean): We
         view: WebView?,
         request: WebResourceRequest?,
     ): WebResourceResponse? {
-        if (request != null) {
-            controller.onRequest(
-                rawUrl = request.url?.toString() ?: return null,
-                method = request.method,
-                requestHeaders = request.requestHeaders ?: emptyMap(),
-                mainFrameUrl = controller.state.value.pageUrl,
-            )
+        val current = request ?: return null
+        val rawUrl = current.url.toString()
+        if (!current.isForMainFrame) {
+            AdBlockRules.blockedHostOf(rawUrl)?.let { host ->
+                controller.onAdBlocked(host)
+                return emptyAdResponse()
+            }
         }
+        controller.onRequest(
+            rawUrl = rawUrl,
+            method = current.method,
+            requestHeaders = current.requestHeaders ?: emptyMap(),
+            mainFrameUrl = controller.state.value.pageUrl,
+        )
         return null
     }
 
@@ -1174,6 +1182,14 @@ private fun browserClient(controller: BrowserSniffController, mute: Boolean): We
         return true
     }
 }
+
+/**
+ * 命中黑名单时给 WebView 一个空的成功响应。
+ *
+ * 返回 null 会让请求真的出网；空 body 才能既让资源立刻失败，又省掉一次等待与流量。
+ */
+private fun emptyAdResponse(): WebResourceResponse =
+    WebResourceResponse("text/plain", "utf-8", 200, "OK", emptyMap(), ByteArrayInputStream(ByteArray(0)))
 
 private class BrowserBridge(private val controller: BrowserSniffController) {
     @JavascriptInterface

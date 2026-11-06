@@ -327,5 +327,10 @@
     <string name="player_back">返回</string>
     <string name="player_unavailable">这个视频现在播不了：产物已经不在这台手机上了。</string>
     <string name="player_error">内置播放器放不了这个文件（编码不支持或文件有损坏），可以试试用其他应用打开。</string>
+    <string name="player_seek_forward">快进至 %1$s</string>
+    <string name="player_seek_backward">快退至 %1$s</string>
+    <string name="player_brightness">亮度 %1$d%%</string>
+    <string name="player_volume">音量 %1$d%%</string>
+    <string name="player_speed">倍速</string>
     <string name="history_watched">已看 %1$d%%</string>
 </resources>
