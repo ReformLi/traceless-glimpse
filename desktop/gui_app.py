@@ -1376,8 +1376,9 @@ class ControlPanel(ctk.CTk):
             L.log(f"更新托盘图标失败（不影响菜单）: {exc!r}")
 
     def _notify(self, message: str, title: str = APP_NAME) -> None:
-        """系统气泡只许致命错误走这里（当前仅剩「引擎意外退出」）；
-        常规事件一律走状态栏（`_set_detail` / `_set_state`），不许再加气泡。"""
+        """系统气泡只许两类走这里：致命错误（引擎意外退出）+ 托盘隐藏确认
+        （`hide_to_tray`，用户裁决保留——没有它看不出程序关没关）；
+        其余常规事件一律走状态栏（`_set_detail` / `_set_state`），不许再加气泡。"""
         try:
             if self.icon is not None and self.icon.visible:
                 self.icon.notify(message, title)
@@ -1506,8 +1507,8 @@ class ControlPanel(ctk.CTk):
     def hide_to_tray(self) -> None:
         """退出/关闭窗口的行为之一：不退出，只隐藏到托盘（引擎继续跑）。
 
-        **绝不弹 Windows 气泡**：托盘里已经有图标了，气泡只会反复打扰桌面操作；
-        状态栏那行字（恢复窗口、托盘菜单）就是给用户的全部提示。
+        收窗同时弹一条「已最小化到系统托盘」气泡（用户裁决保留）：
+        没有它，窗口消失后看不出程序是退了还是挂着。
         """
         if self._quitting:
             return
@@ -1515,6 +1516,7 @@ class ControlPanel(ctk.CTk):
             self.withdraw()
         except Exception as exc:
             L.log(f"隐藏窗口失败: {exc!r}")
+        self._notify("已最小化到系统托盘；双击图标或右键「打开主界面」恢复", APP_NAME)
         self._set_detail("已隐藏到系统托盘，引擎在后台继续运行；托盘「退出」才会结束程序。")
 
     def show_window(self) -> None:
@@ -1633,8 +1635,9 @@ class ControlPanel(ctk.CTk):
         self._smoke_check("托盘菜单四项齐备",
                           all(x in self._tray_labels for x in TRAY_REQUIRED_LABELS),
                           "/".join(x for x in self._tray_labels if x != "- - - -"))
-        # 托盘隐藏绝不再弹 Windows 气泡：spy 住 icon.notify 后真跑一次 hide_to_tray，
-        # 断言气泡零次 + 窗口确实收起；随后立刻恢复可见，不挡后面的检查与截图。
+        # 托盘隐藏恰好弹一条「已最小化到系统托盘」气泡（用户裁决保留，兼当关闭反馈）：
+        # spy 住 icon.notify 后真跑一次 hide_to_tray，断言气泡恰好 1 次且文案正确 + 窗口确实收起；
+        # 随后立刻恢复可见，不挡后面的检查与截图。
         notify_calls: list[tuple] = []
         original_icon_notify = self.icon.notify
         self.icon.notify = lambda *a, **kw: notify_calls.append((a, kw))  # type: ignore[method-assign]
@@ -1648,8 +1651,10 @@ class ControlPanel(ctk.CTk):
             self.update_idletasks()
         except Exception:
             pass
-        self._smoke_check("托盘隐藏不弹系统气泡（只收窗口+状态栏）",
-                          notify_calls == [] and hidden,
+        self._smoke_check("托盘隐藏弹且仅弹一条确认气泡（用户裁决保留）",
+                          len(notify_calls) == 1
+                          and "已最小化到系统托盘" in str(notify_calls[0][0][0] if notify_calls else "")
+                          and hidden,
                           f"notify={len(notify_calls)} hidden={hidden}")
 
         # ---- M16：Tab 布局与控制台基础 UI（引擎尚未启动） ----
