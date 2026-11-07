@@ -42,6 +42,9 @@ internal object AdtsFrameScanner {
 
     /** 第一帧头的采样率索引；不是 ADTS 就返回 0，调用方再退回容器给的 `KEY_SAMPLE_RATE`。 */
     fun sampleRateHz(buffer: ByteBuffer): Int {
+        // M17：syncWordOk 只保证前 2 字节可读，采样率索引却在第 3 字节。
+        // 只有「FF F1」两字节的缓冲若不先挡住，get(2) 会直接越界。
+        if (buffer.limit() < 3) return 0
         if (syncWordOk(buffer, 0)) {
             val index = (buffer.get(2).toInt() and 0xFF) shr 2 and 0x0F
             if (index < SAMPLE_RATES_HZ.size) return SAMPLE_RATES_HZ[index]
@@ -57,12 +60,16 @@ internal object AdtsFrameScanner {
      * 走帧与计数共用同一套边界，不会出现「数出来 15 帧、只拆出 14 帧」这种自相矛盾。
      */
     fun frameAt(buffer: ByteBuffer, offset: Int, size: Int): AuFrame? {
+        // M17 极值防御：size 是调用方声明的可读长度，缓冲本身可能更小，取交集；
+        // 且一律用减法比较——`offset + 6` 在 Int.MAX_VALUE 处会回绕成负数，
+        // 绕过边界判断后 buffer.get(offset) 直接抛 IndexOutOfBoundsException。
+        val limit = minOf(size, buffer.limit())
         // 一帧至少要有 6 字节的头才谈得上长度；剩下不到 6 字节就不可能是完整帧。
-        if (offset < 0 || offset + 6 > size) return null
+        if (offset < 0 || limit < 6 || offset > limit - 6) return null
         val headerSize = headerSizeAt(buffer, offset)
         if (headerSize == 0) return null
         val frameLength = frameLengthAt(buffer, offset)
-        if (frameLength < headerSize || offset + frameLength > size) return null
+        if (frameLength < headerSize || offset > limit - frameLength) return null
         return AuFrame(offset + headerSize, frameLength - headerSize, offset + frameLength)
     }
 
@@ -83,7 +90,8 @@ internal object AdtsFrameScanner {
     internal class AuFrame(val payloadStart: Int, val payloadSize: Int, val nextOffset: Int)
 
     private fun syncWordOk(buffer: ByteBuffer, offset: Int): Boolean {
-        if (offset + 2 > buffer.limit()) return false
+        // 减法比较：offset 靠近 Int.MAX_VALUE 时 `offset + 2` 会溢出成负数。
+        if (offset < 0 || offset > buffer.limit() - 2) return false
         val b0 = buffer.get(offset).toInt() and 0xFF
         val b1 = buffer.get(offset + 1).toInt() and 0xFF
         return b0 == 0xFF && (b1 and 0xF6) == 0xF0

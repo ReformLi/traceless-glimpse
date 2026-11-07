@@ -64,8 +64,12 @@ internal object LocalSniffMapping {
         if (ext != null && ext in REJECTED_EXTENSIONS) return null
         val kind = kindOf(ext, contentType) ?: return null
         val hints = SniffHeaderPolicy.sanitize(requestHeaders).toMutableMap()
-        if (hints["referer"] == null && pageUrl?.startsWith("http") == true) {
-            hints["referer"] = pageUrl
+        // M17 极值防御：pageUrl 会原样进 Referer 头，只判断 startsWith("http") 会放过
+        // "https://x/\r\nSet-Cookie: ..." 这样的 CRLF 头注入。合成的 referer 是
+        // sanitize 之后才加的，绕过了白名单过滤，所以必须在这里单独校验。
+        val referer = pageUrl?.takeIf { it.isSafeReferer() }
+        if (hints["referer"] == null && referer != null) {
+            hints["referer"] = referer
         }
         if (hints["user-agent"] == null && userAgent.isNotBlank()) {
             hints["user-agent"] = userAgent
@@ -114,6 +118,14 @@ internal object LocalSniffMapping {
             mime.startsWith("audio/") -> Kind(MediaStreamType.AUDIO, mime.substringAfter('/'))
             else -> null
         }
+    }
+
+    /** 只接受「解析得出来、且不含任何控制字符」的 http(s) 页面地址作为 Referer。 */
+    private fun String.isSafeReferer(): Boolean {
+        if (!startsWith("http")) return false
+        if (any { it < ' ' || it == '\u007F' }) return false
+        val url = toHttpUrlOrNull() ?: return false
+        return url.scheme == "http" || url.scheme == "https"
     }
 
     private fun extensionOf(rawUrl: String): String? =

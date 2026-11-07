@@ -10,7 +10,8 @@ package com.hpu.browseguard.data.backend.remux
 internal object AdtsAudioConfig {
 
     fun fromAdtsHeader(sample: ByteArray, size: Int): ByteArray? {
-        if (size < 7) return null
+        // M17：size 由调用方给，谎报一个大于数组的长度会让 sample[3] 越界读。
+        if (size < 7 || size > sample.size) return null
         val b0 = sample[0].toInt() and 0xFF
         val b1 = sample[1].toInt() and 0xFF
         // syncword 12 bit + layer 必须是 00

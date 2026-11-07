@@ -87,11 +87,13 @@ internal object HlsPlaylistParser {
                 line.startsWith("#EXT-X-STREAM-INF:") -> {
                     val attrs = attributes(line.substringAfter(':'))
                     val resolution = attrs["RESOLUTION"]
+                    // M17 极值防御：畸形清单里的负数/超长数字只当「没写」，
+                    // 不能让负带宽、负分辨率漏进画质排序与界面文案。
                     pendingVariant = HlsVariant(
                         url = "",
-                        bandwidth = attrs["BANDWIDTH"]?.toLongOrNull() ?: 0L,
-                        width = resolution?.substringBefore('x')?.toIntOrNull() ?: 0,
-                        height = resolution?.substringAfter('x')?.toIntOrNull() ?: 0,
+                        bandwidth = attrs["BANDWIDTH"]?.toLongOrNull()?.takeIf { it >= 0L } ?: 0L,
+                        width = resolution?.substringBefore('x')?.toIntOrNull()?.takeIf { it >= 0 } ?: 0,
+                        height = resolution?.substringAfter('x')?.toIntOrNull()?.takeIf { it >= 0 } ?: 0,
                     )
                 }
 
@@ -130,16 +132,20 @@ internal object HlsPlaylistParser {
                 }
 
                 line.startsWith("#EXT-X-MEDIA-SEQUENCE:") -> {
-                    mediaSequence = line.substringAfter(':').trim().toLongOrNull() ?: 0L
+                    // 负序号会让 AES-128 默认 IV 和分片序号一起变负。
+                    mediaSequence = line.substringAfter(':').trim().toLongOrNull()?.takeIf { it >= 0L } ?: 0L
                 }
 
                 line.startsWith("#EXT-X-TARGETDURATION:") -> {
-                    targetDuration = line.substringAfter(':').trim().toDoubleOrNull() ?: 0.0
+                    targetDuration = durationOrZero(line.substringAfter(':'))
                 }
 
                 line.startsWith("#EXTINF:") -> {
-                    val seconds = line.substringAfter(':').substringBefore(',').trim().toDoubleOrNull() ?: 0.0
-                    totalDuration += seconds
+                    val seconds = durationOrZero(line.substringAfter(':').substringBefore(','))
+                    // 单段都有限，但成千上万段 Double.MAX_VALUE 仍会加出 Infinity；
+                    // 只在溢出时停止累加，正常清单的数值一字不改。
+                    val accumulated = totalDuration + seconds
+                    if (!accumulated.isInfinite() && !accumulated.isNaN()) totalDuration = accumulated
                     if (seconds > maxSegmentDuration) maxSegmentDuration = seconds
                 }
 
@@ -156,7 +162,10 @@ internal object HlsPlaylistParser {
                     } else {
                         val range = pendingRange?.let { (length, offset) ->
                             val start = offset ?: nextRangeOffset
-                            nextRangeOffset = start + length
+                            val end = start + length
+                            // 清单给的是任意 Long，相加可能回绕成负数；钳回 0 让下一段
+                            // 重新从起点算，绝不把负偏移写进 Range 请求头。
+                            nextRangeOffset = if (end > start && end > 0L) end else 0L
                             HlsByteRange(length, start)
                         }
                         if (range == null) nextRangeOffset = 0L
@@ -164,7 +173,13 @@ internal object HlsPlaylistParser {
                             url = resolved,
                             key = pendingKey,
                             range = range,
-                            sequence = mediaSequence + segmentIndex,
+                            // M17：MEDIA-SEQUENCE 可以是任意 Long，与下标相加会回绕成负数，
+                            // 进而污染 AES-128 默认 IV；越界时钳到最大合法序号。
+                            sequence = if (mediaSequence <= Long.MAX_VALUE - segmentIndex) {
+                                mediaSequence + segmentIndex
+                            } else {
+                                Long.MAX_VALUE
+                            },
                         )
                         segmentIndex += 1
                         pendingRange = null
@@ -189,10 +204,15 @@ internal object HlsPlaylistParser {
 
     private fun parseByteRange(raw: String?, defaultOffset: Long?): Pair<Long, Long?>? {
         if (raw.isNullOrBlank()) return null
-        val length = raw.substringBefore('@').trim().toLongOrNull() ?: return null
-        val offset = raw.substringAfter('@', "").trim().toLongOrNull() ?: defaultOffset
+        // M17：长度必须为正、显式 offset 必须非负；负数会一路传到 Range 头。
+        val length = raw.substringBefore('@').trim().toLongOrNull()?.takeIf { it > 0L } ?: return null
+        val offset = raw.substringAfter('@', "").trim().toLongOrNull()?.takeIf { it >= 0L } ?: defaultOffset
         return length to offset
     }
+
+    /** 时长字段：负数 / NaN / Infinity 都不是合法时长，一律当「清单没写」。 */
+    private fun durationOrZero(raw: String): Double =
+        raw.trim().toDoubleOrNull()?.takeIf { !it.isNaN() && !it.isInfinite() && it >= 0.0 } ?: 0.0
 
     /** `#EXT-X-*:KEY=value,KEY="quoted,value"` 的属性表；逗号在引号内不切。 */
     private fun attributes(raw: String): Map<String, String> {
