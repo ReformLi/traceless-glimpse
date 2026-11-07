@@ -1,0 +1,11 @@
+# 桌面控制面板 / 托盘层的专用依赖（引擎本身不需要，勿写进 engine/requirements-lock.txt）
+# 安装： engine\.venv\Scripts\python.exe -m pip install -r desktop\requirements.txt
+customtkinter==6.0.0
+pystray==0.19.5
+Pillow==13.0.0
+# customtkinter 的传递依赖，PyInstaller 需要显式 hidden-import
+darkdetect==0.8.0
+
+# M15.3 打包期依赖（只在开发机需要，不进 exe、不影响引擎运行）
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9

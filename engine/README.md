@@ -34,6 +34,10 @@ python -m venv .venv
 - `BGV_CACHE_DIR`：仅用于 `GET /v1/privacy/selfcheck` 报告的缓存目录；缺省为
   Windows `%LOCALAPPDATA%\BGV\cache`，其他平台 `$XDG_CACHE_HOME/bgv` 或 `~/.cache/bgv`。
   当前引擎不写入缓存，故 `cacheSizeBytes` 通常为 0。
+- `BGV_LISTEN_HOST` / `BGV_LISTEN_PORT`：引擎**实际绑定**的监听地址，由 M15 桌面启动器
+  （或运维脚本）随 `--host` / `--port` 一起注入；`GET /v1/privacy/selfcheck` 的
+  `listenAddress` 按请求实时回显这两个值，不再是硬编码 `127.0.0.1:8730`。
+  未设置或端口非法时回落到协议默认 `127.0.0.1:8730`；`python main.py` 也据此绑定。
 
 ### 开发专用：临时 SSRF 主机白名单（dev only, never in production）
 

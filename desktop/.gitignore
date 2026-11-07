@@ -1,0 +1,19 @@
+# 运行产物：每台机器/每个用户都不同，不入库
+engine.log
+config.json
+config.json.bak
+config.json.tmp
+bgv-smoke-out/
+
+# 本地验证用的界面截图（保留在本机便于对照，不入库）
+preview/
+
+# Python / PyInstaller 产物
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+BrowseGuardEngine.exe
+_build.log
+_verify/

@@ -12,8 +12,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-# 监听地址与 __main__ 中的 uvicorn 绑定保持一致（协议固定回环 + 8730，不提供覆盖入口）
-LISTEN_ADDRESS = "127.0.0.1:8730"
+# 监听地址不再写死：M15 桌面端把 uvicorn 实际绑定的 host/port 通过
+# BGV_LISTEN_HOST / BGV_LISTEN_PORT 注入，selfcheck 按请求实时读取，避免
+# 「界面显示 0.0.0.0 供手机连接、自检却回 127.0.0.1」的失真。
+# 未注入时回落到协议 §1 表头的默认回环 + 8730（契约用例零改动）。
+DEFAULT_LISTEN_HOST = "127.0.0.1"
+DEFAULT_LISTEN_PORT = 8730
+LISTEN_ADDRESS = f"{DEFAULT_LISTEN_HOST}:{DEFAULT_LISTEN_PORT}"  # 协议默认值，保留常量兼容
 DEFAULT_CACHE_TTL_HOURS = 48
 UNAVAILABLE = "unavailable"
 PROBE_TIMEOUT_SECONDS = 5
@@ -49,6 +54,26 @@ def cache_size_bytes(root: Path) -> int:
         except OSError:
             continue
     return total
+
+
+def listen_host() -> str:
+    """uvicorn 实际绑定的 host（由启动器注入；缺省为协议默认回环）。"""
+    return os.getenv("BGV_LISTEN_HOST", "").strip() or DEFAULT_LISTEN_HOST
+
+
+def listen_port() -> int:
+    """uvicorn 实际绑定的 port。脏环境变量一律回落默认值，绝不让自检端点 500。"""
+    raw = os.getenv("BGV_LISTEN_PORT", "").strip()
+    if raw.isdecimal():
+        value = int(raw)
+        if 1 <= value <= 65535:
+            return value
+    return DEFAULT_LISTEN_PORT
+
+
+def listen_address() -> str:
+    """``host:port``，与本次引擎进程的实际监听保持一致。"""
+    return f"{listen_host()}:{listen_port()}"
 
 
 def _ytdlp_version() -> str:
@@ -97,7 +122,7 @@ def dependency_versions() -> dict[str, str]:
 def selfcheck_payload(*, output_dir_allowlist: list[str], cookie_policy_default: str) -> dict:
     root = cache_dir()
     return {
-        "listenAddress": LISTEN_ADDRESS,
+        "listenAddress": listen_address(),
         "tlsEnabled": False,
         "authEnabled": False,
         "activeProxyIds": [],

@@ -1224,5 +1224,8 @@ if __name__ == "__main__":
 
     # 控制台可见 INFO 级审计日志（download_attempt 等，§10 验收"引擎日志可证"）
     # 由 startup 事件里的 install_console_logging 负责，两种启动入口同一条路径。
-    # 协议默认监听 127.0.0.1:8730（§1 表头；本地回环免令牌 §2.3）
-    uvicorn.run(app, host="127.0.0.1", port=8730)
+    # 协议默认监听 127.0.0.1:8730（§1 表头；本地回环免令牌 §2.3）。
+    # M15 桌面端可用 BGV_LISTEN_HOST / BGV_LISTEN_PORT 覆盖，保证
+    # /v1/privacy/selfcheck 回显的 listenAddress 与真实绑定一致。
+    uvicorn.run(app, host=environment_service.listen_host(),
+                port=environment_service.listen_port())
