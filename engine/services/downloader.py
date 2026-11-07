@@ -81,6 +81,28 @@ def _content_range_total(value: str | None) -> int | None:
     return int(total) if total.isdigit() else None
 
 
+def _estimate_total_from_fragments(hook: dict[str, Any], downloaded: int) -> int | None:
+    """HLS 分片下载 ``total_bytes`` / ``total_bytes_estimate`` 双缺时的兜底估算。
+
+    yt-dlp 的分片进度钩子带 ``fragment_count``（总分片数）与 ``fragment_index``
+    （当前分片，1 起数），但两者都齐也不代表有总字节数。按「分片大小均匀」假设
+    外推：``total ≈ 已下载字节 × 分片总数 / 已完成分片``——起步误差最大、随分片
+    推进收敛；返回值只喂 percent / eta，UI 端对小幅抖动有钳制，不值得为此保证单调。
+    任一字段缺失或 downloaded 为 0（首个分片还没落地）时放弃估算，返回 None，
+    让 percent 维持 0 由客户端按不确定进度显示。
+    """
+    if downloaded <= 0:
+        return None
+    try:
+        frag_count = int(hook.get("fragment_count") or 0)
+        frag_index = int(hook.get("fragment_index") or 0)
+    except (TypeError, ValueError):
+        return None
+    if frag_count <= 0 or frag_index <= 0:
+        return None
+    return int(downloaded * frag_count / frag_index)
+
+
 # 响应 Content-Type -> 白名单内扩展名（只列我们能命名的类型，认不出就不改）
 _SUFFIX_BY_MIME = {
     "audio/mp4": ".m4a",
@@ -365,8 +387,13 @@ def download_media(
 
             raise _YtdlpCancelled(f"task_id={task_id} cancelled")
         if on_progress is not None and d.get("status") in {"downloading", "finished"}:
+            downloaded = int(d.get("downloaded_bytes") or 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            on_progress(int(d.get("downloaded_bytes") or 0), int(total) if total else None)
+            if total is None:
+                # HLS 分片流大概率没有总字节数，用分片占比外推一个估算值；
+                # 估算不出（首片未落地）就传 None，percent 由 main.py 保持 0。
+                total = _estimate_total_from_fragments(d, downloaded)
+            on_progress(downloaded, int(total) if total else None)
 
     def _options(cookiefile: Path | None) -> dict[str, Any]:
         template = (

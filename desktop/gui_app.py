@@ -1713,6 +1713,25 @@ class ControlPanel(ctk.CTk):
                           abs(row.progress_bar.get() - 0.62) < 0.01,
                           f"bar={row.progress_bar.get():.2f} "
                           f"label={row.percent_label.cget('text')}")
+        # M18.5：percent=0 但字节在涨（HLS 无总大小）→ 不确定进度脉冲，而非死 0%
+        row.update(percent=0.0, speed_bps=1_048_576, bytes_downloaded=3_145_727,
+                   phase="downloading")
+        self._smoke_check("总大小未知时切换不确定进度",
+                          row._pulsing and row.percent_label.cget("text") == "…",
+                          f"pulsing={row._pulsing} "
+                          f"label={row.percent_label.cget('text')}")
+        self._smoke_check("不确定进度显示已下载字节",
+                          "已下载 3.0 MB" in row.speed_label.cget("text"),
+                          row.speed_label.cget("text"))
+        self._smoke_check("脉冲首拍已推动进度条",
+                          row.progress_bar.get() > 0.0,
+                          f"bar={row.progress_bar.get():.2f}")
+        row.update(percent=62.0, speed_bps=2_516_582, eta_seconds=12,
+                   phase="downloading")
+        self._smoke_check("拿到真实百分比即退出脉冲",
+                          not row._pulsing and row.percent_label.cget("text") == "62%",
+                          f"pulsing={row._pulsing} "
+                          f"label={row.percent_label.cget('text')}")
         self._smoke_check("速度文本按 speedBps 格式化",
                           "MB/s" in row.speed_label.cget("text"), row.speed_label.cget("text"))
         self._smoke_check("剩余时间文本可见",

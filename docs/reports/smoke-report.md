@@ -3547,3 +3547,50 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
   只有当页面上没有更可信信号时才会被选中。rank 排序已在测试里钉死；
 - **关键字层（`playlist/master/stream`）只在全空时兜底**：命中它不代表一定是媒体，
   选中后交给 yt-dlp 解析失败会按既有 `formats_extract_failed` 路径降级，不阻塞嗅探结果。
+
+## 37. M18.5：下载进度在「总大小未知」时不可见（2026-11-07）
+
+**用户反馈**：M18 之后电脑端能嗅探并下载成功了，但全程看不到下载进度（进度条死 0%）。
+
+### 37.1 根因（两层叠加）
+
+1. **引擎**：HLS/DASH 下载 yt-dlp 钩子里 `total_bytes / total_bytes_estimate` 基本为空
+   （播放列表没有总字节数），`_make_progress_recorder` 按协议约定对 `total=None`
+   保持 `percent=0 / bytesTotal=0`——docstring 写明「由客户端按不确定进度显示」，
+   但客户端没实现这个约定。M16 验收时能看到 21%→54%→87% 是因为下载的是带
+   Content-Length 的 mp4 直链；M18 打开的 HLS 场景整类命中此坑。
+2. **桌面**：`TaskRow.update()` 只画 `percent`，0% 就是死 0%；`engine_client`
+   轮询回调也只透传 `percent/speedBps/etaSeconds`，`bytesDownloaded` 没出来，
+   界面连「字节在涨」都无法显示（speedBps 其实一直在算并传到了速度标签）。
+
+### 37.2 修复
+
+- **引擎** `services/downloader.py`：新增 `_estimate_total_from_fragments()`——
+  钩子里 total 双缺时用 `fragment_count / fragment_index` 按「分片大小均匀」外推
+  总字节数估算（起步误差最大、随分片推进收敛，允许小幅回退，percent 有 min 钳制）；
+  首片未落地或字段缺失/非数值时返回 None，percent 维持 0；
+- **桌面** `engine_client.py`：轮询回调补透传 `bytesDownloaded`；
+- **桌面** `download_console.py`：`TaskRow` 新增不确定进度形态——
+  `percent=0 且 bytesDownloaded>0 且 downloading` 时进度条做 1.6s 周期三角波脉冲
+  （0.06–0.61 区间，`after` 50ms 节拍，主线程内、不加线程），百分比标签显示「…」，
+  速度行显示「↓ 速度 · 已下载 X」（新增 `format_bytes`）；拿到真实 percent 立即
+  切回确定进度；`clear()` 改走 `TaskRow.destroy()` 先取消挂起动画再销毁控件。
+
+### 37.3 验证
+
+- 引擎单测：新增 `test_progress_estimate.py` 7 项（占比外推、收敛、零字节/缺字段/
+  非数值/零负分片拒绝、total 字段不归它管）；默认套件 **257 passed**（250 + 7）；
+- 真机回环验证（`.devtmp/m185_verify.py`，本机 MediaServer 的 HLS，
+  直连外网 mux 在本机网络不通、挂代理 yt-dlp 隧道 502，故用回环）：
+  9 次回调全部 percent>0，1.6%→21.1%→66.1%→100%（中途回退 66→50 是
+  yt-dlp 估算上修的正常抖动），产物 `master.mp4` 61,659 bytes；
+- 桌面：gui-smoke **80/80**（新增 4 条：切换不确定进度 / 显示已下载字节 /
+  脉冲首拍推动进度条 / 拿到真实百分比即退出脉冲）；`e2e_m16` **27/27**。
+  （smoke 断言总数随条件性分支波动，本轮基线 82 + 4 = 86 条定义、80 条实跑，全 PASS。）
+
+### 37.4 本轮自报的缺口
+
+- 分片估算在下载前期可能回退（66%→50%），未做单调钳制——UI 端取 min 已钳显示
+  上限，短暂回退比伪造单调更诚实；
+- 外网直连验证受本机网络限制用回环替代；真实站点（尤其带签名的 B 站分片）的
+  percent 体验要等站点级解析里程碑落地后再取证。

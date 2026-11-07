@@ -16,7 +16,8 @@ M16 第二步起，本模块仍然**不持有任何 socket / HTTP 客户端**，
 ``selected_format_id()``      仅用于诊断/冒烟的 formatId；**绝不发给 /download**
 ``show_downloading()``        进入下载态，锁定按钮等待进度
 ``add_task() -> TaskRow``     新增一条下载任务行
-``TaskRow.update()``          刷新进度条 / 速度 / 剩余时间 / 状态
+``TaskRow.update()``          刷新进度条 / 速度 / 剩余时间 / 状态；
+                              percent=0 但字节在涨时切换不确定进度脉冲
 ``show_done()``               完成提示 + 文件位置 + 清空 URL 输入框
 ``show_error()``              红字提示，错误码按协议 §5 翻译
 ``clear()``                   整页复位
@@ -244,8 +245,32 @@ def format_eta(seconds: int) -> str:
     return f"{value // 60:02d}:{value % 60:02d}"
 
 
+def format_bytes(num: int | float) -> str:
+    """字节 → ``12.3 MB``；负数或非数值显示占位符（与 format_speed 同款约定）。"""
+    try:
+        value = float(num)
+    except (TypeError, ValueError):
+        return "—"
+    if value < 0:
+        return "—"
+    for unit, divisor in (("GB", 1024 ** 3), ("MB", 1024 ** 2), ("KB", 1024)):
+        if value >= divisor:
+            return f"{value / divisor:.1f} {unit}"
+    return f"{value:.0f} B"
+
+
 class TaskRow:
-    """下载任务列表中的一行：文件名 / 状态 / 进度条 / 速度 / 剩余时间。"""
+    """下载任务列表中的一行：文件名 / 状态 / 进度条 / 速度 / 剩余时间。
+
+    M18.5：引擎在「总大小未知」（HLS 直链无 content-length、分片估算不出）时按
+    协议约定返回 ``percent=0``，此时进入**不确定进度**形态：进度条做平滑脉冲
+    动画（不跳 0%），速度行显示「↓ 速度 · 已下载 X」，一旦拿到真实 percent
+    （引擎分片估算成功或直链有 Content-Length）立即切回确定进度。
+    """
+
+    #: 脉冲动画节拍与周期（三角波 0→1→0）。0% 死进度条的替代形态。
+    _PULSE_MS = 50
+    _PULSE_PERIOD = 1.6  # 秒
 
     def __init__(self, parent, name: str, font: Callable) -> None:
         self.frame = ctk.CTkFrame(parent, corner_radius=8, fg_color=ROW_BG)
@@ -274,13 +299,27 @@ class TaskRow:
                                       text_color=("gray45", "gray65"), anchor="e")
         self.eta_label.grid(row=2, column=1, sticky="e", padx=(6, 10), pady=(1, 5))
 
+        # 不确定进度脉冲的运行态：_pulsing 是开关，_pulse_after 是挂起的 after id
+        self._pulsing = False
+        self._pulse_after: str | None = None
+        self._pulse_t = 0.0
+
     def update(self, *, percent: float = 0.0, speed_bps: int = 0,
-               eta_seconds: int = 0, phase: str = "downloading") -> None:
+               eta_seconds: int = 0, bytes_downloaded: int = 0,
+               phase: str = "downloading") -> None:
         """仅主线程调用。进度条按 0–1 取值，其余字段照协议 ``Progress`` 语义。"""
         try:
             ratio = max(0.0, min(1.0, float(percent) / 100.0))
         except (TypeError, ValueError):
             ratio = 0.0
+        if ratio <= 0.0 and bytes_downloaded > 0 and phase == "downloading":
+            self._enter_indeterminate(speed_bps, bytes_downloaded)
+            self.status_label.configure(
+                text=PHASE_TEXT.get(phase, phase),
+                text_color=("gray45", "gray65"),
+            )
+            return
+        self._leave_indeterminate()
         self.progress_bar.set(ratio)
         self.percent_label.configure(text=f"{ratio * 100:.0f}%")
         self.speed_label.configure(text=f"↓ {format_speed(speed_bps)}")
@@ -292,6 +331,50 @@ class TaskRow:
                         else "gray45", GREEN if phase == "done"
                         else "#FF8A80" if phase == "failed" else "gray65"),
         )
+
+    # -- 不确定进度（percent=0 但字节在涨）-----------------------------------
+
+    def _enter_indeterminate(self, speed_bps: int, bytes_downloaded: int) -> None:
+        """切换到脉冲形态。只在首次进入时启动 after 循环，之后仅刷文案。"""
+        if not self._pulsing:
+            self._pulsing = True
+            self._pulse_t = 0.0
+            self._tick_pulse()
+        self.percent_label.configure(text="…")
+        self.eta_label.configure(text="")
+        self.speed_label.configure(
+            text=f"↓ {format_speed(speed_bps)} · 已下载 {format_bytes(bytes_downloaded)}"
+        )
+
+    def _leave_indeterminate(self) -> None:
+        """退出脉冲形态：置开关即可，挂起的回调下次触发时自行发现并停止。"""
+        self._pulsing = False
+
+    def _tick_pulse(self) -> None:
+        self._pulse_after = None
+        if not self._pulsing:
+            return
+        try:
+            if not self.frame.winfo_exists():
+                return
+        except Exception:  # noqa: BLE001 —— 控件已销毁
+            return
+        self._pulse_t += self._PULSE_MS / 1000.0
+        phase = (self._pulse_t % self._PULSE_PERIOD) / self._PULSE_PERIOD
+        sweep = phase if phase <= 0.5 else 1.0 - phase  # 三角波 0→1→0
+        self.progress_bar.set(0.06 + sweep * 0.55)
+        self._pulse_after = self.frame.after(self._PULSE_MS, self._tick_pulse)
+
+    def destroy(self) -> None:
+        """清掉挂起的动画回调再销毁控件；``clear()`` 走这里而非直接 destroy frame。"""
+        self._pulsing = False
+        if self._pulse_after is not None:
+            try:
+                self.frame.after_cancel(self._pulse_after)
+            except Exception:  # noqa: BLE001 —— 控件已销毁则无事可做
+                pass
+            self._pulse_after = None
+        self.frame.destroy()
 
 
 class DownloadConsole:
@@ -673,7 +756,7 @@ class DownloadConsole:
             self.result_card.pack_forget()
         for row in self.task_rows:
             try:
-                row.frame.destroy()
+                row.destroy()  # 走 TaskRow.destroy：先停脉冲动画再销毁控件
             except Exception:
                 pass
         self.task_rows = []

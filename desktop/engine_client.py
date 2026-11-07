@@ -311,6 +311,9 @@ def run_download_flow(
             percent=progress.get("percent", 0.0),
             speed_bps=progress.get("speedBps", 0),
             eta_seconds=progress.get("etaSeconds", 0),
+            # M18.5：percent=0 不代表没在下载（HLS 无总大小时引擎按约定返回 0），
+            # 把已下载字节透传给 UI 做不确定进度显示
+            bytes_downloaded=progress.get("bytesDownloaded", 0),
             phase=state or str(progress.get("phase") or "downloading"),
         )
         if state == "done":
