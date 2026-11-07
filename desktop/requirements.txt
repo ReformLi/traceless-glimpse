@@ -5,6 +5,8 @@ pystray==0.19.5
 Pillow==13.0.0
 # customtkinter 的传递依赖，PyInstaller 需要显式 hidden-import
 darkdetect==0.8.0
+# M16 第二步：下载控制台 → 本机引擎的 HTTP 客户端（版本与 engine 侧一致）
+httpx==0.28.1
 
 # M15.3 打包期依赖（只在开发机需要，不进 exe、不影响引擎运行）
 pyinstaller==6.22.3

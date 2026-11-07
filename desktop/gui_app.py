@@ -1,8 +1,19 @@
-"""M15 · 桌面可视化控制面板（customtkinter + tkinter，纯 Python、无重型框架）。
+"""M15/M16 · 桌面可视化控制面板（customtkinter + tkinter，纯 Python、无重型框架）。
 
 替代 M15 第一步的「纯托盘启动器」成为桌面端入口；托盘降级为**后台模式**：
 主界面显示 → 用户点「启动」才拉引擎 → 点 X 隐藏到托盘 → 托盘可重新唤起 →
 托盘「退出」彻底杀掉引擎进程树并结束程序。
+
+M16 起主界面拆成 :class:`customtkinter.CTkTabview` 两个标签：
+
+* **引擎设置** —— M15 的全部能力（连接地址、监听设置、启停、日志、环境自检、
+  托盘联动）原样保留，只是父容器由主窗口换成第一个 tab；
+* **下载控制台** —— :mod:`download_console` 提供的独立嗅探/下载界面。
+  M16 第二步已接通 :mod:`engine_client`：``POST /v1/tasks`` → 每秒轮询
+  ``GET /v1/tasks/{id}`` → ``/formats`` → ``POST /download`` → 进度回抛。
+
+header 与黄色安全警告、底部状态栏是**全局常驻**的：切到哪个标签都能看到
+引擎状态与「切勿暴露公网」这条信任边界。
 
 设计要点
 --------
@@ -16,14 +27,22 @@
   ``BGV_OUTPUT_DIR_ALLOWLIST`` 注入引擎（``main._load_output_dir_allowlist`` 读取，
   手机端取 ``/v1/privacy/selfcheck`` 的 ``outputDirAllowlist[0]`` 作为 outputDir）。
 * **不自动启动**：默认等用户点按钮；仅当 ``config.json`` 里 ``auto_start=true`` 才自启。
+* **网络线程可取消**：每次启停引擎推进 ``_net_gen`` 并置位 ``stop_event``；
+  所有 httpx 请求都在 daemon 后台线程，渲染动作经 :meth:`ControlPanel._emit`
+  做「投递前 + 执行前」双重代次校验后回抛主线程。用户中途停止引擎时，
+  轮询线程最多再等 1 秒就退出，不会碰已销毁的 Tk 控件。
 
 验证入口（不需要人工点鼠标）::
 
     python desktop/gui_app.py --gui-smoke
-    python desktop/gui_app.py --gui-smoke --screenshot E:\\tmp\\gui.png
+    python desktop/gui_app.py --gui-smoke \
+        --screenshot E:\\tmp\\tab1.png --dark-shot E:\\tmp\\tab1_dark.png \
+        --console-shot E:\\tmp\\tab2.png --console-dark-shot E:\\tmp\\tab2_dark.png \
+        --console-offline-shot E:\\tmp\\tab2_offline.png
 
-打包（下一步 build_exe.py）：``--noconsole --onefile``，需 hidden-import
-``launcher`` / ``pystray`` / ``PIL`` / ``customtkinter`` / ``darkdetect``。
+打包：``--noconsole --onefile``，需 hidden-import ``launcher`` / ``gui_app`` /
+``download_console`` / ``engine_client`` / ``pystray`` / ``PIL`` /
+``customtkinter`` / ``darkdetect`` / ``httpx``。
 """
 from __future__ import annotations
 
@@ -46,6 +65,13 @@ import launcher as L  # noqa: E402
 import customtkinter as ctk  # noqa: E402
 import tkinter as tk  # noqa: E402
 from tkinter import filedialog, messagebox  # noqa: E402
+from download_console import (  # noqa: E402
+    DEMO_FORMATS, DownloadConsole, format_label, translate_error,
+)
+from engine_client import (  # noqa: E402
+    EngineClient, extract_error, run_download_flow, run_sniff_flow,
+    selector_for_format,
+)
 
 APP_NAME = L.APP_NAME
 CONFIG_PATH = L.data_dir() / "config.json"
@@ -129,6 +155,24 @@ def _font(size: int, weight: str = "normal") -> ctk.CTkFont:
         else:
             _FONT_FAMILY = "TkDefaultFont"
     return ctk.CTkFont(family=_FONT_FAMILY, size=size, weight=weight)
+
+
+def _safe_print(text: str) -> None:
+    """冒烟输出：``--noconsole`` 的 exe 里 stdout 可能是 GBK，``✖/✓`` 会炸。
+
+    PyInstaller 单文件窗口程序继承的 stdout 用系统 ANSI 编码，而界面文案里有
+    ``✖`` (U+2716)、``✓`` (U+2713) 这类 GBK 无法编码的符号。一次
+    UnicodeEncodeError 会打断 Tk 的 after 回调链，让冒烟永远走不到退出。
+    """
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        try:
+            print(text.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _validate_output_dir(raw: str) -> tuple[bool, str]:
@@ -238,19 +282,26 @@ class ControlPanel(ctk.CTk):
     """主界面 + 引擎生命周期 + 后台托盘。"""
 
     def __init__(self, *, smoke: bool = False, screenshot_path: str | None = None,
-                 dark_shot: str | None = None) -> None:
+                 dark_shot: str | None = None, console_shot: str | None = None,
+                 console_dark_shot: str | None = None,
+                 console_offline_shot: str | None = None) -> None:
         super().__init__()
         self.smoke = smoke
         self.screenshot_path = screenshot_path
         self.dark_shot = dark_shot
+        self.console_shot = console_shot
+        self.console_dark_shot = console_dark_shot
+        self.console_offline_shot = console_offline_shot
         self.cfg = Config.load(CONFIG_PATH)
 
         ctk.set_appearance_mode(self.cfg["appearance"])
         ctk.set_default_color_theme("blue")
 
         self.title(f"{APP_NAME} · 控制面板")
-        self.geometry("720x560")
-        self.minsize(680, 520)
+        # M16 多了一个标签页与结果区/任务列表，比 M15 的 720x560 略高；
+        # 卡片按内容自然收拢（不 expand），640 已能容纳完整流程且底部不空旷。
+        self.geometry("760x660")
+        self.minsize(720, 610)
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
         # -- 运行期状态 -------------------------------------------------------
@@ -264,6 +315,12 @@ class ControlPanel(ctk.CTk):
         self._gen = 0
         self._engine_lock = threading.Lock()
         self._ui_queue: queue.Queue = queue.Queue()
+        #: M16 第二步：网络流程的代次 + 可中断等待。引擎每次离开 RUNNING 都会
+        #: 让上一代全部失效，轮询线程据此安全退出（不碰已销毁的 Tk 控件）。
+        self._net_gen = 0
+        self._net_stop = threading.Event()
+        self._net_cancels = 0
+        self._net_threads: list[threading.Thread] = []
         self._save_job: str | None = None
         self._log_window = None
         self._log_text = None
@@ -316,14 +373,14 @@ class ControlPanel(ctk.CTk):
             L.log(f"窗口图标设置失败（不影响功能）: {exc!r}")
 
     def _build_ui(self) -> None:
-        # 顶部标题 + 外观切换
+        # ---- 全局：标题 + 外观切换（两个标签共用） ----
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(14, 6))
         left = ctk.CTkFrame(header, fg_color="transparent")
         left.pack(side="left", fill="y")
         ctk.CTkLabel(left, text="无痕掠影 · 本地引擎", font=_font(20, "bold"),
                      anchor="w").pack(anchor="w")
-        ctk.CTkLabel(left, text="PC 控制面板 · 手机 App 通过局域网连接本机下载",
+        ctk.CTkLabel(left, text="PC 控制面板 · 手机 App 联机 / 本机独立下载",
                      font=_font(11), text_color=("gray45", "gray65"), anchor="w").pack(anchor="w")
         ctk.CTkLabel(header, text="外观", font=_font(11),
                      text_color=("gray40", "gray65")).pack(side="right", padx=(0, 8))
@@ -333,18 +390,38 @@ class ControlPanel(ctk.CTk):
         )
         self.appearance_menu.pack(side="right")
 
-        # 黄色安全警告（显眼位置）
+        # ---- 全局：黄色安全警告（无论切到哪个标签都看得到） ----
         warn = ctk.CTkFrame(self, corner_radius=8, fg_color=("#FFF3C4", "#4A3A11"))
         warn.pack(fill="x", padx=20, pady=(4, 10))
         self.warn_label = ctk.CTkLabel(
             warn, text=SECURITY_NOTICE, font=_font(12, "bold"),
-            text_color=("#7A5B00", "#FFD966"), anchor="w", justify="left", wraplength=650,
+            text_color=("#7A5B00", "#FFD966"), anchor="w", justify="left", wraplength=690,
         )
         self.warn_label.pack(fill="x", padx=12, pady=9)
 
+        # ---- M16：双标签主体 ----
+        self.tabs = ctk.CTkTabview(self)
+        self.tabs.pack(fill="both", expand=True, padx=20, pady=(0, 6))
+        self.tab_engine = self.tabs.add("引擎设置")
+        self.tab_console = self.tabs.add("下载控制台")
+        self._build_engine_tab(self.tab_engine)
+        self.console = DownloadConsole(
+            self.tab_console, font=_font, ui_call=self.ui_call,
+            on_sniff=self._on_sniff,
+            on_download=self._on_download,
+        )
+
+        # ---- 全局：底部状态栏（复制地址 / 下载阶段反馈都写这里） ----
+        self.detail_label = ctk.CTkLabel(self, text="", font=_font(10),
+                                         text_color=("gray40", "gray65"), anchor="w",
+                                         justify="left", wraplength=710)
+        self.detail_label.pack(fill="x", padx=22, pady=(0, 10))
+
+    def _build_engine_tab(self, tab) -> None:
+        """M15 的全部控件原样迁到 Tab①：只换父容器与内边距，行为一字不改。"""
         # 引导区：大字连接地址 + 一键复制
-        addr_card = ctk.CTkFrame(self, corner_radius=12)
-        addr_card.pack(fill="x", padx=20, pady=(0, 10))
+        addr_card = ctk.CTkFrame(tab, corner_radius=12)
+        addr_card.pack(fill="x", padx=10, pady=(8, 8))
         ctk.CTkLabel(addr_card, text="连接地址（填入手机 App 的引擎地址）",
                      font=_font(11), text_color=("gray45", "gray65"),
                      anchor="w").pack(anchor="w", padx=16, pady=(12, 0))
@@ -358,12 +435,12 @@ class ControlPanel(ctk.CTk):
         self.copy_button.pack(side="right")
         self.addr_hint = ctk.CTkLabel(addr_card, text="", font=_font(11),
                                      text_color=("gray40", "gray65"), anchor="w",
-                                     justify="left", wraplength=650)
+                                     justify="left", wraplength=660)
         self.addr_hint.pack(anchor="w", padx=16, pady=(2, 12))
 
         # 设置区
-        settings = ctk.CTkFrame(self, corner_radius=12)
-        settings.pack(fill="x", padx=20, pady=(0, 10))
+        settings = ctk.CTkFrame(tab, corner_radius=12)
+        settings.pack(fill="x", padx=10, pady=(0, 8))
         ctk.CTkLabel(settings, text="设置", font=_font(13, "bold"), anchor="w").pack(
             anchor="w", padx=16, pady=(10, 4))
         row1 = ctk.CTkFrame(settings, fg_color="transparent")
@@ -409,8 +486,8 @@ class ControlPanel(ctk.CTk):
         self.output_hint.pack(side="right")
 
         # 控制区
-        control = ctk.CTkFrame(self, corner_radius=12)
-        control.pack(fill="x", padx=20, pady=(0, 8))
+        control = ctk.CTkFrame(tab, corner_radius=12)
+        control.pack(fill="x", padx=10, pady=(0, 6))
         self.led = ctk.CTkLabel(control, text="●", font=_font(22), width=28)
         self.led.pack(side="left", padx=(14, 2), pady=10)
         self.status_label = ctk.CTkLabel(control, text="", font=_font(12, "bold"),
@@ -426,26 +503,22 @@ class ControlPanel(ctk.CTk):
                                         font=_font(11), command=self._open_log)
         self.log_button.pack(side="right", padx=6, pady=8)
         self.stop_button = ctk.CTkButton(
-            control, text="⏹ 停止", width=84, height=32, font=_font(12),
+            control, text="停止", width=84, height=32, font=_font(12),
             fg_color=BTN_STOP, hover_color=BTN_STOP_HOVER,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_stop,
         )
         self.stop_button.pack(side="right", padx=6, pady=8)
         self.start_button = ctk.CTkButton(
-            control, text="▶ 启动", width=84, height=32, font=_font(12),
+            control, text="启动", width=84, height=32, font=_font(12),
             fg_color=BTN_START, hover_color=BTN_START_HOVER,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_start,
         )
         self.start_button.pack(side="right", padx=6, pady=8)
 
-        # 底部两行状态
-        self.env_label = ctk.CTkLabel(self, text="环境自检中…", font=_font(10),
+        # 环境自检属于「引擎设置」页；底部详情状态栏则是全局的。
+        self.env_label = ctk.CTkLabel(tab, text="环境自检中…", font=_font(10),
                                      text_color=("gray50", "gray60"), anchor="w")
-        self.env_label.pack(fill="x", padx=22, pady=(0, 0))
-        self.detail_label = ctk.CTkLabel(self, text="", font=_font(10),
-                                         text_color=("gray40", "gray65"), anchor="w",
-                                         justify="left", wraplength=670)
-        self.detail_label.pack(fill="x", padx=22, pady=(0, 10))
+        self.env_label.pack(fill="x", padx=12, pady=(2, 4))
 
         # 记下主题原始配色：引擎运行时把设置区统一刷成灰色禁用态，
         # 否则 CTk 的 disabled 只改文字颜色，白底输入框/蓝底下拉框仍像可编辑。
@@ -457,6 +530,102 @@ class ControlPanel(ctk.CTk):
                 except Exception:  # 部分控件没有该选项
                     pass
             self._settings_look.append((widget, saved))
+
+    # -- 下载控制台网络层（M16 第二步：全部 httpx 请求在后台线程） -------------
+    def _cancel_network(self) -> None:
+        """让当前代的全部轮询线程失效。主线程/托盘线程都可调用。
+
+        置位旧 event 让 ``stop_event.wait(1)`` 立刻返回；换一个新 event 给下一代，
+        避免「上一代已停止」把下次启动的流程也误停。``_net_gen`` 自增则让已经
+        排进 ``_ui_queue`` 的旧回调在执行前被 guarded 丢弃。
+        """
+        self._net_gen += 1
+        self._net_cancels += 1
+        self._net_stop.set()
+        self._net_stop = threading.Event()
+
+    def _spawn_network(self, name: str, target, *args) -> None:
+        self._net_threads = [t for t in self._net_threads if t.is_alive()]
+        thread = threading.Thread(target=target, args=args, name=name, daemon=True)
+        self._net_threads.append(thread)
+        thread.start()
+
+    def _emit(self, gen: int, stop: threading.Event, fn, *args, **kwargs) -> None:
+        """网络线程唯一的界面出口：**投递前 + 执行前**各校验一次代次。
+
+        Tk 控件只能在主线程碰；这里把渲染动作包成 guarded 再交给 ``ui_call``。
+        即使停止引擎与队列排空之间有时间差，guarded 也会在真正执行前发现代次
+        已失效并直接 return，不会对已销毁/已置灰的控件调用 configure。
+        """
+        if (gen != self._net_gen or stop.is_set() or not self._alive
+                or self.engine_state != STATE_RUNNING):
+            return
+
+        def guarded(_fn=fn, _args=args, _kwargs=kwargs) -> None:
+            if (gen != self._net_gen or stop.is_set() or not self._alive
+                    or self.engine_state != STATE_RUNNING):
+                return
+            _fn(*_args, **_kwargs)
+
+        self.ui_call(guarded)
+
+    def _on_sniff(self, url: str) -> None:
+        """主线程：URL 已在控制台本地校验；这里只切 UI 态并起后台线程。"""
+        if self.engine_state != STATE_RUNNING:
+            return
+        self.console.show_sniffing()
+        port = self.engine.active_port or self.cfg["port"]
+        output_dir = self.cfg["output_dir"]
+        gen, stop = self._net_gen, self._net_stop
+        self._set_detail(f"正在嗅探：{url}")
+        self._spawn_network("bgv-net-sniff", self._sniff_worker,
+                            gen, stop, url, output_dir, port)
+
+    def _sniff_worker(self, gen: int, stop: threading.Event, url: str,
+                      output_dir: str, port: int) -> None:
+        """后台线程：建任务 → 每秒轮询 → awaiting_selection 取画质表。"""
+        emit = lambda fn, *a, **kw: self._emit(gen, stop, fn, *a, **kw)  # noqa: E731
+        with EngineClient(f"http://127.0.0.1:{port}") as client:
+            run_sniff_flow(
+                client, url=url, output_dir=output_dir, emit=emit, stop_event=stop,
+                on_formats=self.console.show_formats,
+                on_error=self.console.show_error,
+                on_status=self._set_detail,
+            )
+
+    def _on_download(self, task_id: str, meta: dict) -> None:
+        """主线程：把画质元数据换算成协议 selector，建任务行后起后台线程。
+
+        ``meta`` 只有 ``height / hasVideo / hasAudio``（+诊断用 formatId）。
+        这里**绝不**构造 ``strategy="exact"`` / ``formatId``：real 模式的
+        ``services/formats.py`` 会直接抛 ``exact_format_id_unsupported``。
+        """
+        if self.engine_state != STATE_RUNNING:
+            return
+        selector = selector_for_format(meta)
+        label = self.console.format_menu.get()
+        self.console.show_downloading()
+        row = self.console.add_task(label)
+        row.update(percent=0.0, phase="queued")
+        port = self.engine.active_port or self.cfg["port"]
+        gen, stop = self._net_gen, self._net_stop
+        self._set_detail(f"已提交下载：{label} → {json.dumps(selector, ensure_ascii=False)}"
+                         "（未发送 formatId）")
+        self._spawn_network("bgv-net-download", self._download_worker,
+                            gen, stop, task_id, selector, row, port)
+
+    def _download_worker(self, gen: int, stop: threading.Event, task_id: str,
+                         selector: dict, row, port: int) -> None:
+        """后台线程：触发下载 → 每秒轮询进度 → done / failed 收尾。"""
+        emit = lambda fn, *a, **kw: self._emit(gen, stop, fn, *a, **kw)  # noqa: E731
+        with EngineClient(f"http://127.0.0.1:{port}") as client:
+            run_download_flow(
+                client, task_id=task_id, selector=selector, emit=emit, stop_event=stop,
+                on_progress=row.update,
+                on_done=self.console.show_done,
+                on_error=self.console.show_error,
+                on_status=self._set_detail,
+            )
 
     # -- 配置与控件 -----------------------------------------------------------
     def _apply_config_to_widgets(self) -> None:
@@ -576,6 +745,10 @@ class ControlPanel(ctk.CTk):
 
     def _set_state(self, state: str, detail: str = "") -> None:
         """仅主线程调用。统一刷新指示灯、按钮、托盘图标与底部文案。"""
+        previous = self.engine_state
+        # 离开 RUNNING（用户点停止 / 引擎意外退出 / 重启）立刻让轮询线程失效。
+        if state != STATE_RUNNING and previous == STATE_RUNNING:
+            self._cancel_network()
         self.engine_state = state
         self.led.configure(text_color=LED_COLOR[state])
         self.status_label.configure(text=STATUS_TEXT[state])
@@ -591,6 +764,13 @@ class ControlPanel(ctk.CTk):
         if detail:
             self._set_detail(detail, error=(state == STATE_ERROR))
         self._update_tray_icon()
+        # M16 核心架构第 1 条：控制台只在引擎真正 RUNNING 时可用，其余状态
+        # 一律置灰并给出「请先启动引擎」的提示，避免用户对着死控件发请求。
+        if getattr(self, "console", None) is not None:
+            self.console.set_engine_ready(
+                state == STATE_RUNNING,
+                self.engine.active_port or self.cfg["port"],
+            )
         if state == STATE_ERROR and detail and not self.smoke:
             self.after(100, lambda: messagebox.showerror(
                 "引擎启动失败", f"{detail}\n\n完整日志见「日志」按钮。"))
@@ -892,6 +1072,9 @@ class ControlPanel(ctk.CTk):
             return
         self._quitting = True
         self._gen += 1
+        # 退出不经过 _set_state，必须显式让网络线程失效（_final_destroy 会置
+        # _alive=False，但旧代次回调可能已经排进 UI 队列）。
+        self._cancel_network()
         with self._engine_lock:
             try:
                 self.engine.stop()
@@ -919,7 +1102,7 @@ class ControlPanel(ctk.CTk):
     # -- GUI 冒烟测试（无需人工点击） -----------------------------------------
     def _smoke_check(self, name: str, ok: bool, detail: str = "") -> None:
         self._smoke_results.append((name, bool(ok), detail))
-        print(f"{'PASS' if ok else 'FAIL'} | {name} | {detail}", flush=True)
+        _safe_print(f"{'PASS' if ok else 'FAIL'} | {name} | {detail}")
 
     def _smoke_begin(self) -> None:
         self._smoke_check("主界面构建并可见", self.engine_state == STATE_STOPPED and self.winfo_width() >= 680,
@@ -931,6 +1114,57 @@ class ControlPanel(ctk.CTk):
         self._smoke_check("托盘菜单四项齐备",
                           all(x in self._tray_labels for x in TRAY_REQUIRED_LABELS),
                           "/".join(x for x in self._tray_labels if x != "- - - -"))
+
+        # ---- M16：Tab 布局与控制台基础 UI（引擎尚未启动） ----
+        tab_names = list(self.tabs._tab_dict.keys())
+        self._smoke_check("主界面为双标签页", tab_names == ["引擎设置", "下载控制台"],
+                          "/".join(tab_names))
+        self._smoke_check("默认停在引擎设置页", self.tabs.get() == "引擎设置", self.tabs.get())
+        legacy = (self.addr_label, self.copy_button, self.host_menu, self.port_entry,
+                  self.output_entry, self.browse_button, self.auto_start_switch,
+                  self.start_button, self.stop_button, self.log_button,
+                  self.hide_button, self.led, self.env_label)
+        self._smoke_check("引擎设置页保留 M15 全部控件",
+                          all(w.winfo_exists() for w in legacy), f"{len(legacy)} 个控件")
+        c = self.console
+        widgets = (c.url_entry, c.sniff_button, c.format_menu, c.download_button,
+                   c.result_card, c.tasks_card, c.task_list, c.message_label)
+        self._smoke_check("下载控制台基础控件齐备",
+                          all(w.winfo_exists() for w in widgets), f"{len(widgets)} 个控件")
+        self._smoke_check("控制台回调已接入真实网络层",
+                          self.console.on_sniff.__name__ == "_on_sniff"
+                          and self.console.on_download.__name__ == "_on_download",
+                          f"{self.console.on_sniff.__name__} / "
+                          f"{self.console.on_download.__name__}")
+        self._smoke_check(
+            "引擎未启动时控制台置灰并提示",
+            (not c.is_ready) and c.sniff_button.cget("state") == "disabled"
+            and c.url_entry.cget("state") == "disabled"
+            and c.offline_hint.winfo_manager() == "pack",
+            f"ready={c.is_ready} sniff={c.sniff_button.cget('state')} "
+            f"entry={c.url_entry.cget('state')} hint={c.offline_hint.winfo_manager()}",
+        )
+        self._smoke_check("嗅探结果区出结果前隐藏", c.result_card.winfo_manager() == "",
+                          repr(c.result_card.winfo_manager()))
+        self._smoke_check(
+            "错误码翻译复用协议 §5",
+            translate_error("DRM_PROTECTED") == "该内容受 DRM 保护，不支持下载"
+            and translate_error("SSRF_BLOCKED") == "目标地址指向受限网络，已拒绝",
+            translate_error("DRM_PROTECTED"),
+        )
+        self._smoke_check("画质标签按 FormatInfo 字段拼接",
+                          format_label(DEMO_FORMATS[0]) == "1080p · mp4 · h264",
+                          format_label(DEMO_FORMATS[0]))
+
+        # 引擎尚未启动，正好把「控制台置灰 + 离线提示」这一态留档。
+        if self.console_offline_shot:
+            self.tabs.set("下载控制台")
+            self.update_idletasks()
+            self.update()
+            self._capture(self.console_offline_shot, "控制台未启动置灰态截图已导出")
+            self.tabs.set("引擎设置")
+            self.update_idletasks()
+            self.update()
 
         # 配置读写往返：改 → 落盘 → 重新读 → 还原
         original = dict(self.cfg.data)
@@ -1002,6 +1236,7 @@ class ControlPanel(ctk.CTk):
                           f"start={self.start_button.cget('state')} host={self.host_menu.cget('state')}")
 
         self._smoke_screenshot()
+        self._smoke_console()
 
         # 日志按钮：开一个内嵌日志窗口再关掉
         try:
@@ -1050,6 +1285,167 @@ class ControlPanel(ctk.CTk):
             self._smoke_check("外观恢复为配置值", ctk.get_appearance_mode() == before,
                               f"{ctk.get_appearance_mode()} (原 {before})")
 
+    def _smoke_console(self) -> None:
+        """M16 Tab② 纯 UI 验收：切换 / 演示态 / 显隐 / 进度 / 错误 / 完成 / 复位。"""
+        c = self.console
+        self._smoke_check(
+            "引擎就绪后控制台解锁",
+            c.is_ready and c.sniff_button.cget("state") == "normal"
+            and c.url_entry.cget("state") == "normal"
+            and c.offline_hint.winfo_manager() == "",
+            f"ready={c.is_ready} sniff={c.sniff_button.cget('state')} "
+            f"entry={c.url_entry.cget('state')} hint={c.offline_hint.winfo_manager()}",
+        )
+        self.tabs.set("下载控制台")
+        self.update_idletasks()
+        self.update()
+        self._smoke_check("可切换到下载控制台标签",
+                          self.tabs.get() == "下载控制台"
+                          and self.tab_console.winfo_ismapped() == 1, self.tabs.get())
+
+        c.ui_demo()  # 只注入界面预览数据，不发任何网络请求
+        self.update_idletasks()
+        self.update()
+        self._smoke_check("嗅探结果区出结果后显示",
+                          c.result_card.winfo_manager() == "pack"
+                          and c.result_card.winfo_ismapped() == 1,
+                          repr(c.result_card.winfo_manager()))
+        labels = list(c.format_menu.cget("values"))
+        self._smoke_check("画质下拉框列出全部格式",
+                          len(labels) == 3 and labels[0] == "1080p · mp4 · h264",
+                          " / ".join(labels))
+        self._smoke_check("下拉框标签可反查 formatId",
+                          c.selected_format_id() == "137", str(c.selected_format_id()))
+        meta = c.selected_format()
+        self._smoke_check(
+            "画质选项绑定 height/hasVideo/hasAudio",
+            meta == {"formatId": "137", "height": 1080,
+                     "hasVideo": True, "hasAudio": False},
+            json.dumps(meta, ensure_ascii=False),
+        )
+        s1080 = selector_for_format({"height": 1080, "hasVideo": True, "hasAudio": False})
+        saudio = selector_for_format({"height": 0, "hasVideo": False, "hasAudio": True})
+        self._smoke_check(
+            "画质映射绕开 exact/formatId 协议坑",
+            s1080 == {"strategy": "max_height", "maxHeight": 1080}
+            and saudio == {"strategy": "audio_only"}
+            and "formatId" not in json.dumps(s1080),
+            f"{s1080} | {saudio}",
+        )
+        self._smoke_check(
+            "引擎错误体解析为 code/message",
+            extract_error({"error": {"code": "DRM_PROTECTED",
+                                     "message": "该内容受 DRM 保护，不支持下载"}}, 422)
+            == ("DRM_PROTECTED", "该内容受 DRM 保护，不支持下载"),
+        )
+        c.format_menu.set(labels[1])
+        self._smoke_check("切换画质后 formatId 同步变化",
+                          c.selected_format_id() == "136", str(c.selected_format_id()))
+        c.format_menu.set(labels[0])
+        self._smoke_check("下载任务列表生成任务", len(c.task_rows) == 1,
+                          c.task_count.cget("text"))
+        row = c.task_rows[0]
+        self._smoke_check("进度条按 percent 更新",
+                          abs(row.progress_bar.get() - 0.62) < 0.01,
+                          f"bar={row.progress_bar.get():.2f} "
+                          f"label={row.percent_label.cget('text')}")
+        self._smoke_check("速度文本按 speedBps 格式化",
+                          "MB/s" in row.speed_label.cget("text"), row.speed_label.cget("text"))
+        self._smoke_check("剩余时间文本可见",
+                          "剩余 00:12" in row.eta_label.cget("text"),
+                          row.eta_label.cget("text"))
+        # 列表能力单独验：追加一条已完成任务，验完清掉，截图保持单任务干净态。
+        extra = c.add_task("示例视频 · 720p · mp4")
+        extra.update(percent=100.0, phase="done")
+        self._smoke_check("任务列表可追加多行", len(c.task_rows) == 2,
+                          c.task_count.cget("text"))
+        self._smoke_check("已完成任务显示完成态",
+                          extra.status_label.cget("text") == "已完成"
+                          and extra.progress_bar.get() == 1.0,
+                          extra.status_label.cget("text"))
+        c.clear()
+        c.ui_demo()
+        self.update_idletasks()
+        self.update()
+        self._smoke_check("预览数据已明确标注未联网",
+                          "未发起网络请求" in c.demo_badge.cget("text"),
+                          c.demo_badge.cget("text"))
+        self._smoke_check(
+            "界面预览说明条可见（未被任务区挤出）",
+            c.message_label.winfo_manager() == "pack"
+            and c.message_label.winfo_ismapped() == 1
+            and "未发起网络请求" in c.message_label.cget("text"),
+            c.message_label.cget("text"),
+        )
+        # 最终判据必须比**窗口**：前两版分别比了 scroll 外层 frame 和 task_list
+        # 容器高度，都因「容器自认有高度、但整张卡片已被窗口裁掉」而假通过。
+        win_bottom = self.winfo_rooty() + self.winfo_height()
+        last_abs = (c.task_rows[-1].frame.winfo_rooty()
+                    + c.task_rows[-1].frame.winfo_height())
+        detail_top = self.detail_label.winfo_rooty()
+        self._smoke_check("任务行完整可见（未越过底部状态栏）",
+                          last_abs <= detail_top and last_abs <= win_bottom - 20,
+                          f"last_abs={last_abs} detail_top={detail_top} "
+                          f"win_bottom={win_bottom}")
+
+        self._smoke_console_shots()
+
+        c.show_error("DRM_PROTECTED", "")
+        self._smoke_check("嗅探失败显示红字错误提示",
+                          c.message_label.winfo_manager() == "pack"
+                          and "该内容受 DRM 保护" in c.message_label.cget("text")
+                          and "DRM_PROTECTED" in c.message_label.cget("text"),
+                          c.message_label.cget("text"))
+        self._smoke_check("引擎译文优先于本机兜底",
+                          translate_error("UNKNOWN", "引擎自定义文案") == "引擎自定义文案")
+
+        c.show_done("E:/Videos/BGV/demo.mp4")
+        self._smoke_check("下载完成提示且清空输入框",
+                          c.url_entry.get() == ""
+                          and "下载完成" in c.message_label.cget("text"),
+                          c.message_label.cget("text"))
+
+        # 纯本地 URL 校验：证明按钮链路可用，且整个过程没有任何网络请求。
+        c.clear()
+        c.set_engine_ready(True, self.cfg["port"])
+        c._on_sniff_click()
+        self._smoke_check("空 URL 被本地校验拦截",
+                          "链接格式不正确" in c.message_label.cget("text"),
+                          c.message_label.cget("text"))
+        c.url_entry.insert(0, "ftp://example.com/a")
+        c._on_sniff_click()
+        self._smoke_check("非 http(s) 链接被本地校验拦截",
+                          "仅支持 http/https" in c.message_label.cget("text"),
+                          c.message_label.cget("text"))
+
+        c.clear()
+        self._smoke_check("clear() 复位结果与任务区",
+                          c.result_card.winfo_manager() == "" and not c.task_rows
+                          and c.empty_label.winfo_manager() == "pack")
+        self.tabs.set("引擎设置")
+        self.update_idletasks()
+        self.update()
+        self._smoke_check("可切回引擎设置标签", self.tabs.get() == "引擎设置")
+
+    def _smoke_console_shots(self) -> None:
+        if self.console_shot:
+            self._capture(self.console_shot, "下载控制台浅色截图已导出")
+        if self.console_dark_shot:
+            before = ctk.get_appearance_mode()
+            ctk.set_appearance_mode("dark")
+            self.update_idletasks()
+            self.update()
+            self._smoke_check("下载控制台深色主题可切换",
+                              ctk.get_appearance_mode().lower() == "dark",
+                              f"{before} -> {ctk.get_appearance_mode()}")
+            self._capture(self.console_dark_shot, "下载控制台深色截图已导出")
+            ctk.set_appearance_mode(self.cfg["appearance"])
+            time.sleep(0.15)
+            self.update()
+            self._smoke_check("控制台外观恢复为配置值",
+                              ctk.get_appearance_mode() == before,
+                              f"{ctk.get_appearance_mode()} (原 {before})")
+
     def _smoke_hide(self) -> None:
         self.hide_to_tray()  # 等价于点右上角 X
         self._smoke_check("点 X 隐藏到托盘（窗口 withdrawn）",
@@ -1096,6 +1492,9 @@ class ControlPanel(ctk.CTk):
             f"start={self.start_button.cget('state')} host={self.host_menu.cget('state')} "
             f"port_in_use={L.port_in_use(port)}",
         )
+        self._smoke_check("停止引擎已取消网络轮询代次",
+                          self._net_cancels >= 1 and self._net_gen >= 1,
+                          f"cancels={self._net_cancels} gen={self._net_gen}")
         self.after(150, self._smoke_restart)
 
     def _smoke_restart(self) -> None:
@@ -1134,8 +1533,13 @@ def run_gui_smoke(argv: list[str]) -> int:
 
     shot = arg_value("--screenshot")
     dark_shot = arg_value("--dark-shot")
+    console_shot = arg_value("--console-shot")
+    console_dark_shot = arg_value("--console-dark-shot")
+    console_offline_shot = arg_value("--console-offline-shot")
     report = arg_value("--smoke-report")
-    app = ControlPanel(smoke=True, screenshot_path=shot, dark_shot=dark_shot)
+    app = ControlPanel(smoke=True, screenshot_path=shot, dark_shot=dark_shot,
+                       console_shot=console_shot, console_dark_shot=console_dark_shot,
+                       console_offline_shot=console_offline_shot)
     port = app.cfg["port"]
     app.mainloop()
 
@@ -1156,8 +1560,8 @@ def run_gui_smoke(argv: list[str]) -> int:
 
     passed = sum(1 for _, ok, _ in app._smoke_results if ok)
     total = len(app._smoke_results)
-    print(f"===== gui-smoke: {passed}/{total} PASS =====", flush=True)
-    print(f"GUI_SMOKE_RESULT={passed}/{total}", flush=True)
+    _safe_print(f"===== gui-smoke: {passed}/{total} PASS =====")
+    _safe_print(f"GUI_SMOKE_RESULT={passed}/{total}")
 
     # --noconsole 的 exe 没有 stdout，结果必须落文件才取得到（打包后验收靠它）。
     if report:
@@ -1174,7 +1578,7 @@ def run_gui_smoke(argv: list[str]) -> int:
         try:
             Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
         except OSError as exc:
-            print(f"写冒烟报告失败: {exc!r}", flush=True)
+            _safe_print(f"写冒烟报告失败: {exc!r}")
     return 0 if passed == total else 1
 
 

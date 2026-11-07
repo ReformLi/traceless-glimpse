@@ -40,7 +40,8 @@ EXE_NAME = "BrowseGuardEngine"
 
 # 用户指定的 GUI / 托盘层隐式依赖（PyInstaller 静态扫不到动态后端时兜底）
 GUI_HIDDEN_IMPORTS = [
-    "launcher", "gui_app", "entry",
+    "launcher", "gui_app", "entry", "download_console",
+    "engine_client",  # M16 第二步：下载控制台网络层（httpx 流程编排）
     "customtkinter", "darkdetect", "pystray",
     "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageGrab", "PIL.ImageTk",
     "tkinter", "tkinter.filedialog", "tkinter.messagebox", "tkinter.font",
