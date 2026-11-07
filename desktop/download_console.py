@@ -44,23 +44,25 @@ from typing import Callable
 
 import customtkinter as ctk
 
-# -- 配色：与 gui_app.py 保持同一套色值；单独定义避免循环 import -----------------
-BLUE = "#1F6FEB"
-BLUE_HOVER = "#1A5FD0"
-GREEN = "#2EB872"
-RED = "#E5534B"
+import theme as T
+
+# -- 配色：统一收敛到 theme.py（2026-11 美化轮）；下面只留别名兼容旧引用 ------
+BLUE = T.ACCENT
+BLUE_HOVER = T.ACCENT_HOVER
+GREEN = T.SUCCESS
+RED = T.DANGER
 AMBER = "#E5A23C"
-BTN_DISABLED = ("#B9BEC5", "#3C424B")
-BTN_DISABLED_TEXT = ("#5C636C", "#98A0AA")
+BTN_DISABLED = T.BTN_DISABLED
+BTN_DISABLED_TEXT = T.BTN_DISABLED_TEXT
 #: CTk 默认蓝主题下 CTkOptionMenu 的 fg_color / button_color，启用时还原到它。
-MENU_ACTIVE = ("#3B8ED0", "#1F6AA5")
-MENU_BUTTON_ACTIVE = ("#36719F", "#144870")
+MENU_ACTIVE = T.BTN_SECONDARY
+MENU_BUTTON_ACTIVE = T.BTN_SECONDARY_HOVER
 #: CTkTabview 的标签页本身是灰底，卡片若用默认色会与它糊成一片（深色尤其明显）。
 #: 显式给卡片/任务行分层配色，浅色白卡片浮起、深色略亮的卡片浮起。
-CARD_BG = ("#FFFFFF", "#30343A")
-CARD_BORDER = ("#D5D9DE", "#474C54")
-STATUS_BG = ("#F2F5F8", "#2A2E34")
-ROW_BG = ("#F4F6F8", "#383D44")
+CARD_BG = T.SURFACE
+CARD_BORDER = T.BORDER
+STATUS_BG = T.SURFACE_2
+ROW_BG = T.SURFACE_2
 
 PHASE_TEXT = {
     "queued": "排队中",
@@ -273,7 +275,8 @@ class TaskRow:
     _PULSE_PERIOD = 1.6  # 秒
 
     def __init__(self, parent, name: str, font: Callable) -> None:
-        self.frame = ctk.CTkFrame(parent, corner_radius=8, fg_color=ROW_BG)
+        self.frame = ctk.CTkFrame(parent, corner_radius=T.RADIUS, fg_color=ROW_BG,
+                                  border_width=1, border_color=T.BORDER)
         self.frame.pack(fill="x", pady=(0, 5))
         self.frame.grid_columnconfigure(0, weight=1)
 
@@ -281,11 +284,12 @@ class TaskRow:
                                        anchor="w")
         self.name_label.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
         self.status_label = ctk.CTkLabel(self.frame, text=PHASE_TEXT["queued"],
-                                         font=font(10), text_color=("gray45", "gray65"),
+                                         font=font(10), text_color=T.TEXT_MUTED,
                                          anchor="e", width=92)
         self.status_label.grid(row=0, column=1, sticky="e", padx=(6, 10), pady=(5, 0))
 
-        self.progress_bar = ctk.CTkProgressBar(self.frame, height=9)
+        self.progress_bar = ctk.CTkProgressBar(self.frame, height=9, corner_radius=4,
+                                               fg_color=T.BORDER, progress_color=T.ACCENT)
         self.progress_bar.set(0.0)
         self.progress_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(3, 0))
         self.percent_label = ctk.CTkLabel(self.frame, text="0%", font=font(10),
@@ -293,10 +297,10 @@ class TaskRow:
         self.percent_label.grid(row=1, column=1, sticky="e", padx=(6, 10), pady=(3, 0))
 
         self.speed_label = ctk.CTkLabel(self.frame, text="↓ —", font=font(10),
-                                        text_color=("gray45", "gray65"), anchor="w")
+                                        text_color=T.TEXT_MUTED, anchor="w")
         self.speed_label.grid(row=2, column=0, sticky="w", padx=10, pady=(1, 5))
         self.eta_label = ctk.CTkLabel(self.frame, text="", font=font(10),
-                                      text_color=("gray45", "gray65"), anchor="e")
+                                      text_color=T.TEXT_MUTED, anchor="e")
         self.eta_label.grid(row=2, column=1, sticky="e", padx=(6, 10), pady=(1, 5))
 
         # 不确定进度脉冲的运行态：_pulsing 是开关，_pulse_after 是挂起的 after id
@@ -416,99 +420,106 @@ class DownloadConsole:
 
     # -- 构建 -----------------------------------------------------------------
     def _build_status_bar(self) -> None:
-        self.status_bar = ctk.CTkFrame(self.body, corner_radius=8, height=34,
+        self.status_bar = ctk.CTkFrame(self.body, corner_radius=T.RADIUS, height=38,
                                        fg_color=STATUS_BG, border_width=1,
                                        border_color=CARD_BORDER)
         self.status_bar.pack(fill="x", pady=(0, 8))
         self.status_bar.pack_propagate(False)
         self.status_dot = ctk.CTkLabel(self.status_bar, text="●", font=self.font(14),
                                        width=20, text_color=RED)
-        self.status_dot.pack(side="left", padx=(10, 2))
+        self.status_dot.pack(side="left", padx=(12, 2))
         self.status_text = ctk.CTkLabel(self.status_bar, text="", font=self.font(11, "bold"),
                                         anchor="w")
         self.status_text.pack(side="left", fill="x", expand=True)
         self.status_hint = ctk.CTkLabel(self.status_bar, text="", font=self.font(10),
-                                        text_color=("gray45", "gray65"), anchor="e")
-        self.status_hint.pack(side="right", padx=(6, 12))
+                                        text_color=T.TEXT_MUTED, anchor="e")
+        self.status_hint.pack(side="right", padx=(6, 14))
 
         # 未就绪时独占一行：明确告诉用户「不是控件坏了，是引擎没起来」。
         # 此处先不 pack —— 由 set_engine_ready() 按引擎状态插到 sniff_card 之前，
         # 保证「状态条 → 置灰提示 → 嗅探区」的顺序在任何状态下都正确。
-        self.offline_hint = ctk.CTkFrame(self.body, corner_radius=8,
-                                         fg_color=("#FDE9E7", "#4A2422"))
+        self.offline_hint = ctk.CTkFrame(self.body, corner_radius=T.RADIUS,
+                                         fg_color=T.OFFLINE_BG)
         ctk.CTkLabel(
             self.offline_hint,
             text="引擎未启动：控制台已置灰。请先切到「引擎设置」页点【启动】。",
-            font=self.font(11), text_color=("#B4443C", "#FF8A80"), anchor="w",
-        ).pack(fill="x", padx=12, pady=7)
+            font=self.font(11), text_color=T.OFFLINE_TEXT, anchor="w",
+        ).pack(fill="x", padx=14, pady=8)
+        T.soft_shadow(self.status_bar)
 
     def _build_sniff_card(self) -> None:
-        self.sniff_card = ctk.CTkFrame(self.body, corner_radius=10, fg_color=CARD_BG,
+        self.sniff_card = ctk.CTkFrame(self.body, corner_radius=T.RADIUS, fg_color=CARD_BG,
                                        border_width=1, border_color=CARD_BORDER)
         self.sniff_card.pack(fill="x", pady=(0, 8))
         head = ctk.CTkFrame(self.sniff_card, fg_color="transparent")
-        head.pack(fill="x", padx=12, pady=(9, 0))
+        head.pack(fill="x", padx=16, pady=(12, 0))
         ctk.CTkLabel(head, text="① 输入网页地址", font=self.font(12, "bold"),
                      anchor="w").pack(side="left")
         self.demo_badge = ctk.CTkLabel(head, text="", font=self.font(10),
                                        text_color=(AMBER, "#FFD966"), anchor="e")
         self.demo_badge.pack(side="right")
         row = ctk.CTkFrame(self.sniff_card, fg_color="transparent")
-        row.pack(fill="x", padx=12, pady=(6, 11))
-        self.url_entry = ctk.CTkEntry(row, font=self.font(11),
+        row.pack(fill="x", padx=16, pady=(8, 14))
+        self.url_entry = ctk.CTkEntry(row, font=self.font(11), height=36,
+                                      corner_radius=T.RADIUS, fg_color=T.SURFACE_2,
+                                      border_color=CARD_BORDER,
                                       placeholder_text="粘贴网页链接，例如 https://…")
-        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self.sniff_button = ctk.CTkButton(
-            row, text="开始嗅探", width=104, height=30, font=self.font(11),
-            fg_color=BLUE, hover_color=BLUE_HOVER,
+        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        sniff_wrap, self.sniff_button = T.lift_button(
+            row, text="开始嗅探", width=110, height=36, font=self.font(12),
+            base=BLUE, hover=BLUE_HOVER,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_sniff_click,
-        )
-        self.sniff_button.pack(side="right")
+            enabled=lambda: str(self.sniff_button.cget("state")) != "disabled")
+        sniff_wrap.pack(side="right")
+        T.soft_shadow(self.sniff_card)
 
     def _build_result_card(self) -> None:
         # 需求：嗅探结果展示区在出结果前隐藏 —— 先建好但不 pack，show_formats 时
         # 用 pack(before=tasks_card) 插回正确位置，避免动态控件跑到列表下面。
-        self.result_card = ctk.CTkFrame(self.body, corner_radius=10, fg_color=CARD_BG,
+        # 动态显隐的卡片不挂柔影（影条 pack 时机复杂），只保留描边分层。
+        self.result_card = ctk.CTkFrame(self.body, corner_radius=T.RADIUS, fg_color=CARD_BG,
                                         border_width=1, border_color=CARD_BORDER)
         head = ctk.CTkFrame(self.result_card, fg_color="transparent")
-        head.pack(fill="x", padx=12, pady=(9, 0))
+        head.pack(fill="x", padx=16, pady=(12, 0))
         ctk.CTkLabel(head, text="② 嗅探结果 · 选择画质", font=self.font(12, "bold"),
                      anchor="w").pack(side="left")
         self.format_count = ctk.CTkLabel(head, text="", font=self.font(10),
-                                         text_color=("gray45", "gray65"), anchor="e")
+                                         text_color=T.TEXT_MUTED, anchor="e")
         self.format_count.pack(side="right")
         self.media_label = ctk.CTkLabel(self.result_card, text="", font=self.font(10),
-                                        text_color=("gray40", "gray65"), anchor="w",
-                                        wraplength=620, justify="left")
-        self.media_label.pack(fill="x", padx=12, pady=(3, 0))
+                                        text_color=T.TEXT_MUTED, anchor="w",
+                                        wraplength=900, justify="left")
+        self.media_label.pack(fill="x", padx=16, pady=(3, 0))
 
         row = ctk.CTkFrame(self.result_card, fg_color="transparent")
-        row.pack(fill="x", padx=12, pady=(6, 11))
+        row.pack(fill="x", padx=16, pady=(8, 14))
         row.grid_columnconfigure(0, weight=1)
         self.format_menu = ctk.CTkOptionMenu(
-            row, values=["（暂无画质）"], font=self.font(11),
+            row, height=36, values=["（暂无画质）"], font=self.font(11),
+            corner_radius=T.RADIUS, fg_color=MENU_ACTIVE,
+            button_color=MENU_BUTTON_ACTIVE, button_hover_color=MENU_BUTTON_ACTIVE,
             text_color_disabled=BTN_DISABLED_TEXT,
         )
-        self.format_menu.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.download_button = ctk.CTkButton(
-            row, text="开始下载", width=104, height=30, font=self.font(11),
-            fg_color=BLUE, hover_color=BLUE_HOVER,
+        self.format_menu.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        dl_wrap, self.download_button = T.lift_button(
+            row, text="开始下载", width=110, height=36, font=self.font(12),
+            base=BLUE, hover=BLUE_HOVER,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_download_click,
-        )
-        self.download_button.grid(row=0, column=1)
+            enabled=lambda: str(self.download_button.cget("state")) != "disabled")
+        dl_wrap.grid(row=0, column=1)
 
     def _build_tasks_card(self) -> None:
-        self.tasks_card = ctk.CTkFrame(self.body, corner_radius=10, fg_color=CARD_BG,
+        self.tasks_card = ctk.CTkFrame(self.body, corner_radius=T.RADIUS, fg_color=CARD_BG,
                                        border_width=1, border_color=CARD_BORDER)
         # 不做 expand：卡片按内容自然高度收拢，既不会把消息条挤没，也不会在
         # 只有一两条任务时撑出一大片空卡片。剩余空间留在标签页背景上。
         self.tasks_card.pack(fill="x")
         head = ctk.CTkFrame(self.tasks_card, fg_color="transparent")
-        head.pack(fill="x", padx=12, pady=(9, 0))
+        head.pack(fill="x", padx=16, pady=(12, 0))
         ctk.CTkLabel(head, text="③ 下载任务", font=self.font(12, "bold"),
                      anchor="w").pack(side="left")
         self.task_count = ctk.CTkLabel(head, text="0 个任务", font=self.font(10),
-                                       text_color=("gray45", "gray65"), anchor="e")
+                                       text_color=T.TEXT_MUTED, anchor="e")
         self.task_count.pack(side="right")
         # 用普通 frame 而非 CTkScrollableFrame：后者的 canvas 视口高度由构造期
         # ``height`` 固定，不会跟随 ``pack(expand=True)`` 撑大的外层 frame；实测
@@ -516,16 +527,17 @@ class DownloadConsole:
         # 第二行会被 canvas 静默裁掉。本阶段任务数很少，普通容器即可稳定显示。
         # 下一阶段若需要长列表，再按真实任务量引入可随窗口 resize 的滚动视口。
         self.task_list = ctk.CTkFrame(self.tasks_card, fg_color="transparent")
-        self.task_list.pack(fill="x", padx=8, pady=(4, 9))
+        self.task_list.pack(fill="x", padx=10, pady=(4, 10))
         self.empty_label = ctk.CTkLabel(self.task_list, text="暂无下载任务",
                                         font=self.font(11),
-                                        text_color=("gray50", "gray60"))
+                                        text_color=T.TEXT_MUTED)
         self.empty_label.pack(pady=26)
+        T.soft_shadow(self.tasks_card)
 
     def _build_message(self) -> None:
         # 同一个标签承载红字错误 / 绿字完成 / 灰字提示，避免多套重叠控件。
         self.message_label = ctk.CTkLabel(self.body, text="", font=self.font(11, "bold"),
-                                          anchor="w", justify="left", wraplength=640)
+                                          anchor="w", justify="left", wraplength=900)
         self.message_label.pack(fill="x", padx=4, pady=(4, 0))
         self.message_label.pack_forget()
 
@@ -565,8 +577,7 @@ class DownloadConsole:
         self.status_text.configure(
             text="本机引擎已就绪 · 可直接嗅探下载" if ready
                  else "引擎未启动 · 控制台暂不可用",
-            text_color=(GREEN if ready else "#B4443C",
-                        GREEN if ready else "#FF8A80"),
+            text_color=GREEN if ready else T.OFFLINE_TEXT,
         )
         self.status_hint.configure(text=f"http://127.0.0.1:{port}" if ready
                                    else "无需鉴权 · 仅本机")
@@ -627,10 +638,12 @@ class DownloadConsole:
     @staticmethod
     def _set_button(button, enabled: bool, text: str) -> None:
         try:
+            # hover_color 与 fg_color 同色（惰性）：悬浮过渡由 theme.attach_hover
+            # 的 200ms 分帧动画负责，避免 CTk 自带瞬时变色抢跑。
             button.configure(
                 text=text, state="normal" if enabled else "disabled",
                 fg_color=BLUE if enabled else BTN_DISABLED,
-                hover_color=BLUE_HOVER if enabled else BTN_DISABLED,
+                hover_color=BLUE if enabled else BTN_DISABLED,
             )
         except Exception:
             pass

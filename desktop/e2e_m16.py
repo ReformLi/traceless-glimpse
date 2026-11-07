@@ -42,6 +42,8 @@ sys.path.insert(0, str(ENGINE))
 
 import launcher as L  # noqa: E402
 import gui_app as G  # noqa: E402
+import theme as T  # noqa: E402
+from download_console import RED  # noqa: E402
 from engine_client import selector_for_format  # noqa: E402
 from testsupport.media_server import MediaServer  # noqa: E402
 
@@ -304,7 +306,8 @@ class Runner:
         self.check("⑤ 错误文案含协议错误码且为红字",
                    "✖" in text and ("SSRF_BLOCKED" in text or "NO_MEDIA_FOUND" in text
                                     or "INVALID_URL" in text)
-                   and "e5534b" in color.lower(),
+                   # 颜色取 download_console.RED（主题常量），主题换色不假失败
+                   and T.resolve(RED).lower() in color.lower(),
                    f"{text} | color={color}")
         self.shoot("error")
         self.on_stop_midway()

@@ -69,6 +69,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 import launcher as L  # noqa: E402
 import customtkinter as ctk  # noqa: E402
 import tkinter as tk  # noqa: E402
+import theme as T  # noqa: E402
 from tkinter import filedialog, messagebox  # noqa: E402
 from download_console import (  # noqa: E402
     DEMO_FORMATS, DownloadConsole, format_label, translate_error,
@@ -92,7 +93,7 @@ DEFAULTS: dict = {
     "port": 8730,
     "output_dir": DEFAULT_OUTPUT_DIR,
     "auto_start": False,
-    "appearance": "system",
+    "appearance": "dark",
     # M16.5：空串 = 未自定义，走系统 PATH；否则是 ffmpeg.exe 的绝对路径。
     "ffmpeg_path": "",
 }
@@ -134,14 +135,15 @@ DEP_LOG_HINT = "· 安装日志（点击「一键安装内核」后在此显示�
 
 # 禁用态必须连底色一起变灰：只靠 CTk 默认的 text_color_disabled，
 # 亮蓝/亮红底上的「禁用」仍会被看成可点按钮（截图复核后补的）。
-BTN_DISABLED = ("#B9BEC5", "#3C424B")
-BTN_DISABLED_TEXT = ("#5C636C", "#98A0AA")
-BTN_START = "#1F6FEB"
-BTN_START_HOVER = "#1A5FD0"
-BTN_STOP = "#B4443C"
-BTN_STOP_HOVER = "#8E332D"
-BTN_SECONDARY = ("#77808C", "#4A515C")
-BTN_SECONDARY_HOVER = ("#646D79", "#5A626D")
+# 2026-11 美化轮：配色整体收敛到 theme.py，这里只留别名兼容旧引用。
+BTN_DISABLED = T.BTN_DISABLED
+BTN_DISABLED_TEXT = T.BTN_DISABLED_TEXT
+BTN_START = T.ACCENT
+BTN_START_HOVER = T.ACCENT_HOVER
+BTN_STOP = T.DANGER
+BTN_STOP_HOVER = T.DANGER_HOVER
+BTN_SECONDARY = T.BTN_SECONDARY
+BTN_SECONDARY_HOVER = T.BTN_SECONDARY_HOVER
 
 _FONT_FAMILY: str | None = None
 
@@ -310,14 +312,17 @@ class ControlPanel(ctk.CTk):
 
         ctk.set_appearance_mode(self.cfg["appearance"])
         ctk.set_default_color_theme("blue")
+        # 窗口底统一吃 theme.BG：CTk 默认的灰蓝底与卡片色阶脱节。
+        try:
+            self.configure(fg_color=T.BG)
+        except Exception:
+            pass
 
         self.title(f"{APP_NAME} · 控制面板")
-        # M16 多了一个标签页与结果区/任务列表，比 M15 的 720x560 略高；
-        # 卡片按内容自然收拢（不 expand），640 已能容纳完整流程且底部不空旷。
-        # M16.5 多一张依赖自检卡片，比 M16 的 660 略高；卡片按内容自然收拢，
-        # 不 expand，两个标签页都留得住底部状态栏。
-        self.geometry("760x850")
-        self.minsize(720, 780)
+        # 2026-11 美化轮：旧 760x850 接近正方形被嫌「太方」；改横向宽幅
+        # 1000x680，Tab① 改双栏（左：连接+控制，右：设置+依赖）适配新比例。
+        self.geometry(T.WINDOW_GEOMETRY)
+        self.minsize(*T.WINDOW_MIN)
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
         # -- 运行期状态 -------------------------------------------------------
@@ -394,33 +399,45 @@ class ControlPanel(ctk.CTk):
     def _build_ui(self) -> None:
         # ---- 全局：标题 + 外观切换（两个标签共用） ----
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(14, 6))
+        header.pack(fill="x", padx=24, pady=(16, 8))
         left = ctk.CTkFrame(header, fg_color="transparent")
         left.pack(side="left", fill="y")
         ctk.CTkLabel(left, text="无痕掠影 · 本地引擎", font=_font(20, "bold"),
                      anchor="w").pack(anchor="w")
         ctk.CTkLabel(left, text="PC 控制面板 · 手机 App 联机 / 本机独立下载",
-                     font=_font(11), text_color=("gray45", "gray65"), anchor="w").pack(anchor="w")
+                     font=_font(11), text_color=T.TEXT_MUTED, anchor="w").pack(anchor="w")
         ctk.CTkLabel(header, text="外观", font=_font(11),
-                     text_color=("gray40", "gray65")).pack(side="right", padx=(0, 8))
+                     text_color=T.TEXT_MUTED).pack(side="right", padx=(0, 8))
         self.appearance_menu = ctk.CTkOptionMenu(
-            header, width=110, height=28, values=list(APPEARANCE_LABELS.values()),
-            font=_font(11), command=self._on_appearance_change,
+            header, width=110, height=30, values=list(APPEARANCE_LABELS.values()),
+            font=_font(11), corner_radius=T.RADIUS,
+            fg_color=T.BTN_SECONDARY, button_color=T.BTN_SECONDARY_HOVER,
+            button_hover_color=T.BTN_SECONDARY_HOVER,
+            command=self._on_appearance_change,
         )
         self.appearance_menu.pack(side="right")
 
         # ---- 全局：黄色安全警告（无论切到哪个标签都看得到） ----
-        warn = ctk.CTkFrame(self, corner_radius=8, fg_color=("#FFF3C4", "#4A3A11"))
-        warn.pack(fill="x", padx=20, pady=(4, 10))
+        warn = ctk.CTkFrame(self, corner_radius=T.RADIUS, fg_color=T.WARN_BG)
+        warn.pack(fill="x", padx=24, pady=(4, 10))
         self.warn_label = ctk.CTkLabel(
             warn, text=SECURITY_NOTICE, font=_font(12, "bold"),
-            text_color=("#7A5B00", "#FFD966"), anchor="w", justify="left", wraplength=690,
+            text_color=T.WARN_TEXT, anchor="w", justify="left", wraplength=920,
         )
-        self.warn_label.pack(fill="x", padx=12, pady=9)
+        self.warn_label.pack(fill="x", padx=14, pady=9)
 
         # ---- M16：双标签主体 ----
-        self.tabs = ctk.CTkTabview(self)
-        self.tabs.pack(fill="both", expand=True, padx=20, pady=(0, 6))
+        self.tabs = ctk.CTkTabview(self, fg_color=T.BG, corner_radius=T.RADIUS)
+        self.tabs.pack(fill="both", expand=True, padx=24, pady=(0, 8))
+        # 标签页本身做成「胶囊」：未选中与底同色、选中吃强调色，弱化到近乎隐形。
+        seg = self.tabs._segmented_button
+        seg.configure(corner_radius=T.RADIUS, fg_color=T.BG,
+                      selected_color=T.ACCENT, selected_hover_color=T.ACCENT_HOVER,
+                      unselected_color=T.BG, unselected_hover_color=T.SURFACE_2,
+                      # 浅色下选中态是蓝底，文字必须近黑才可读（浅色截图复核抓到）；
+                      # 深色下浅灰字在蓝底与暗底上都清晰。
+                      text_color=("gray15", "gray75"),
+                      font=_font(12, "bold"))
         self.tab_engine = self.tabs.add("引擎设置")
         self.tab_console = self.tabs.add("下载控制台")
         self._build_engine_tab(self.tab_engine)
@@ -432,97 +449,172 @@ class ControlPanel(ctk.CTk):
 
         # ---- 全局：底部状态栏（复制地址 / 下载阶段反馈都写这里） ----
         self.detail_label = ctk.CTkLabel(self, text="", font=_font(10),
-                                         text_color=("gray40", "gray65"), anchor="w",
-                                         justify="left", wraplength=710)
-        self.detail_label.pack(fill="x", padx=22, pady=(0, 10))
+                                         text_color=T.TEXT_MUTED, anchor="w",
+                                         justify="left", wraplength=930)
+        self.detail_label.pack(fill="x", padx=26, pady=(0, 10))
 
     def _build_engine_tab(self, tab) -> None:
-        """M15 的全部控件原样迁到 Tab①：只换父容器与内边距，行为一字不改。"""
-        # 引导区：大字连接地址 + 一键复制
-        addr_card = ctk.CTkFrame(tab, corner_radius=12)
-        addr_card.pack(fill="x", padx=10, pady=(8, 8))
-        ctk.CTkLabel(addr_card, text="连接地址（填入手机 App 的引擎地址）",
-                     font=_font(11), text_color=("gray45", "gray65"),
-                     anchor="w").pack(anchor="w", padx=16, pady=(12, 0))
-        addr_row = ctk.CTkFrame(addr_card, fg_color="transparent")
-        addr_row.pack(fill="x", padx=16, pady=(2, 0))
-        self.addr_label = ctk.CTkLabel(addr_row, text="http://...", font=_font(26, "bold"),
-                                       anchor="w", text_color=("#1F6FEB", "#6CB6FF"))
-        self.addr_label.pack(side="left", fill="x", expand=True)
-        self.copy_button = ctk.CTkButton(addr_row, text="一键复制", width=96, height=32,
-                                         font=_font(12), command=self._copy_address)
-        self.copy_button.pack(side="right")
-        self.addr_hint = ctk.CTkLabel(addr_card, text="", font=_font(11),
-                                     text_color=("gray40", "gray65"), anchor="w",
-                                     justify="left", wraplength=660)
-        self.addr_hint.pack(anchor="w", padx=16, pady=(2, 12))
+        """M15 的全部控件原样迁到 Tab①：只换父容器与内边距，行为一字不改。
 
-        # 设置区
-        settings = ctk.CTkFrame(tab, corner_radius=12)
-        settings.pack(fill="x", padx=10, pady=(0, 8))
-        ctk.CTkLabel(settings, text="设置", font=_font(13, "bold"), anchor="w").pack(
-            anchor="w", padx=16, pady=(10, 4))
+        2026-11 美化轮改为**双栏**：左栏 340px（连接地址 + 引擎控制），
+        右栏弹性（设置 + 环境依赖自检）——宽幅窗口下不再竖着一摞四张卡。
+        """
+        tab.grid_columnconfigure(0, minsize=340, weight=0)
+        tab.grid_columnconfigure(1, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+        left = ctk.CTkFrame(tab, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(2, 8), pady=(8, 2))
+        right = ctk.CTkFrame(tab, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 2), pady=(8, 2))
+
+        # -- 左栏 · 引导区：大字连接地址 + 一键复制 --
+        addr_card = ctk.CTkFrame(left, corner_radius=T.RADIUS, fg_color=T.SURFACE,
+                                 border_width=1, border_color=T.BORDER)
+        addr_card.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(addr_card, text="连接地址（填入手机 App 的引擎地址）",
+                     font=_font(11), text_color=T.TEXT_MUTED,
+                     anchor="w").pack(anchor="w", padx=18, pady=(14, 0))
+        self.addr_label = ctk.CTkLabel(addr_card, text="http://...", font=_font(22, "bold"),
+                                       anchor="w", text_color=(T.ACCENT, "#6CB6FF"))
+        self.addr_label.pack(anchor="w", padx=18, pady=(4, 8))
+        copy_wrap, self.copy_button = T.lift_button(
+            addr_card, text="一键复制", width=120, height=34, font=_font(12),
+            base=T.ACCENT, hover=T.ACCENT_HOVER, command=self._copy_address)
+        copy_wrap.pack(anchor="w", padx=18)
+        self.addr_hint = ctk.CTkLabel(addr_card, text="", font=_font(11),
+                                      text_color=T.TEXT_MUTED, anchor="w",
+                                      justify="left", wraplength=300)
+        self.addr_hint.pack(anchor="w", padx=18, pady=(10, 14))
+        T.soft_shadow(addr_card)
+
+        # -- 左栏 · 控制区：LED + 状态 + 启停/日志/托盘 --
+        control = ctk.CTkFrame(left, corner_radius=T.RADIUS, fg_color=T.SURFACE,
+                               border_width=1, border_color=T.BORDER)
+        control.pack(fill="x", pady=(0, 6))
+        led_row = ctk.CTkFrame(control, fg_color="transparent")
+        led_row.pack(fill="x", padx=18, pady=(14, 4))
+        self.led = ctk.CTkLabel(led_row, text="●", font=_font(20), width=26)
+        self.led.pack(side="left")
+        self.status_label = ctk.CTkLabel(led_row, text="", font=_font(13, "bold"),
+                                         anchor="w")
+        self.status_label.pack(side="left", padx=(4, 0))
+        btns = ctk.CTkFrame(control, fg_color="transparent")
+        btns.pack(fill="x", padx=18, pady=(4, 6))
+        btns.grid_columnconfigure((0, 1), weight=1, uniform="ctl")
+        start_wrap, self.start_button = T.lift_button(
+            btns, text="启动", width=140, height=36, font=_font(12),
+            base=T.ACCENT, hover=T.ACCENT_HOVER,
+            text_color_disabled=BTN_DISABLED_TEXT, command=self._on_start,
+            enabled=lambda: str(self.start_button.cget("state")) != "disabled")
+        start_wrap.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        stop_wrap, self.stop_button = T.lift_button(
+            btns, text="停止", width=140, height=36, font=_font(12),
+            base=T.DANGER, hover=T.DANGER_HOVER,
+            text_color_disabled=BTN_DISABLED_TEXT, command=self._on_stop,
+            enabled=lambda: str(self.stop_button.cget("state")) != "disabled")
+        stop_wrap.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        tools = ctk.CTkFrame(control, fg_color="transparent")
+        tools.pack(fill="x", padx=18, pady=(0, 14))
+        tools.grid_columnconfigure((0, 1), weight=1, uniform="tool")
+        self.log_button = ctk.CTkButton(
+            tools, text="日志", height=30, font=_font(11), corner_radius=T.RADIUS,
+            fg_color=T.BTN_SECONDARY, hover_color=T.BTN_SECONDARY, command=self._open_log)
+        self.log_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.hide_button = ctk.CTkButton(
+            tools, text="隐藏到托盘", height=30, font=_font(11), corner_radius=T.RADIUS,
+            fg_color=T.BTN_SECONDARY, hover_color=T.BTN_SECONDARY, command=self.hide_to_tray)
+        self.hide_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        T.attach_hover(self.log_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER)
+        T.attach_hover(self.hide_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER)
+        T.soft_shadow(control)
+
+        # 环境自检属于「引擎设置」页；底部详情状态栏则是全局的。
+        self.env_label = ctk.CTkLabel(left, text="环境自检中…", font=_font(10),
+                                      text_color=T.TEXT_MUTED, anchor="w")
+        self.env_label.pack(fill="x", padx=6, pady=(0, 4))
+
+        # -- 右栏 · 设置区 --
+        settings = ctk.CTkFrame(right, corner_radius=T.RADIUS, fg_color=T.SURFACE,
+                                border_width=1, border_color=T.BORDER)
+        settings.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(settings, text="设置", font=_font(13, "bold"),
+                     anchor="w").pack(anchor="w", padx=18, pady=(12, 4))
         row1 = ctk.CTkFrame(settings, fg_color="transparent")
-        row1.pack(fill="x", padx=16, pady=3)
-        ctk.CTkLabel(row1, text="监听地址", font=_font(12), width=72, anchor="w").pack(side="left")
+        row1.pack(fill="x", padx=18, pady=4)
+        ctk.CTkLabel(row1, text="监听地址", font=_font(12), width=72,
+                     anchor="w").pack(side="left")
         self.host_menu = ctk.CTkOptionMenu(
-            row1, width=186, values=list(HOST_LABELS.values()), font=_font(11),
+            row1, width=186, height=30, values=list(HOST_LABELS.values()),
+            font=_font(11), corner_radius=T.RADIUS,
+            fg_color=T.BTN_SECONDARY, button_color=T.BTN_SECONDARY_HOVER,
             text_color_disabled=BTN_DISABLED_TEXT,
             command=lambda _v: self._schedule_save(),
         )
         self.host_menu.pack(side="left")
         ctk.CTkLabel(row1, text="监听端口", font=_font(12), width=72, anchor="w").pack(
             side="left", padx=(18, 0))
-        self.port_entry = ctk.CTkEntry(row1, width=90, font=_font(12))
+        self.port_entry = ctk.CTkEntry(row1, width=90, height=30, font=_font(12),
+                                       corner_radius=T.RADIUS, fg_color=T.SURFACE_2,
+                                       border_color=T.BORDER)
         self.port_entry.pack(side="left")
         self.port_entry.bind("<KeyRelease>", lambda _e: self._schedule_save())
-        ctk.CTkLabel(row1, text="（修改后需重启引擎生效）", font=_font(10),
-                     text_color=("gray50", "gray60"), anchor="w").pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(settings, text="修改监听地址或端口后，需重启引擎生效", font=_font(10),
+                     text_color=T.TEXT_MUTED, anchor="w").pack(
+            anchor="w", padx=18, pady=(0, 2))
 
         row2 = ctk.CTkFrame(settings, fg_color="transparent")
-        row2.pack(fill="x", padx=16, pady=3)
+        row2.pack(fill="x", padx=18, pady=4)
         ctk.CTkLabel(row2, text="输出目录", font=_font(12), width=72, anchor="w").pack(side="left")
-        self.output_entry = ctk.CTkEntry(row2, font=_font(11))
+        self.output_entry = ctk.CTkEntry(row2, height=30, font=_font(11),
+                                         corner_radius=T.RADIUS, fg_color=T.SURFACE_2,
+                                         border_color=T.BORDER)
         self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.output_entry.bind("<KeyRelease>", lambda _e: self._schedule_save())
-        self.browse_button = ctk.CTkButton(row2, text="浏览…", width=72, height=28,
-                                           font=_font(11),
+        self.browse_button = ctk.CTkButton(row2, text="浏览…", width=72, height=30,
+                                           font=_font(11), corner_radius=T.RADIUS,
+                                           fg_color=T.BTN_SECONDARY,
+                                           hover_color=T.BTN_SECONDARY,
                                            text_color_disabled=BTN_DISABLED_TEXT,
                                            command=self._browse_output)
         self.browse_button.pack(side="right")
+        T.attach_hover(self.browse_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER,
+                       enabled=lambda: str(self.browse_button.cget("state")) != "disabled")
 
         row3 = ctk.CTkFrame(settings, fg_color="transparent")
-        row3.pack(fill="x", padx=16, pady=(3, 12))
+        row3.pack(fill="x", padx=18, pady=(4, 12))
         self.auto_start_switch = ctk.CTkSwitch(
             row3, text="启动程序时自动运行引擎", font=_font(11),
-            command=self._schedule_save,
+            progress_color=T.ACCENT, command=self._schedule_save,
         )
         self.auto_start_switch.pack(side="left")
         self.output_hint = ctk.CTkLabel(
             row3, text="输出目录经引擎白名单校验，手机端自动采用第一项",
-            font=_font(10), text_color=("gray50", "gray60"), anchor="e",
+            font=_font(10), text_color=T.TEXT_MUTED, anchor="e",
         )
         self.output_hint.pack(side="right")
+        T.soft_shadow(settings)
 
-        # ---- M16.5：环境依赖自检（Tab① 引擎设置区） ----
+        # -- 右栏 · 环境依赖自检 --
         # 状态圆点用 Tk 的「●」+ text_color 着色，不用 🟢/🔴 emoji：实测在
         # Microsoft YaHei UI 下 emoji 会退化成斜线填充圆圈，颜色语义全丢。
-        dep = ctk.CTkFrame(tab, corner_radius=12)
-        dep.pack(fill="x", padx=10, pady=(0, 8))
+        dep = ctk.CTkFrame(right, corner_radius=T.RADIUS, fg_color=T.SURFACE,
+                           border_width=1, border_color=T.BORDER)
+        dep.pack(fill="x", pady=(0, 6))
         self.dep_card = dep
         dep_head = ctk.CTkFrame(dep, fg_color="transparent")
-        dep_head.pack(fill="x", padx=16, pady=(10, 2))
+        dep_head.pack(fill="x", padx=18, pady=(12, 2))
         ctk.CTkLabel(dep_head, text="环境依赖自检", font=_font(13, "bold"),
                      anchor="w").pack(side="left")
         self.dep_recheck_button = ctk.CTkButton(
-            dep_head, text="重新检测", width=84, height=26, font=_font(11),
-            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
-            command=self._dep_refresh,
+            dep_head, text="重新检测", width=84, height=28, font=_font(11),
+            corner_radius=T.RADIUS, fg_color=T.BTN_SECONDARY,
+            hover_color=T.BTN_SECONDARY, command=self._dep_refresh,
         )
         self.dep_recheck_button.pack(side="right")
+        T.attach_hover(self.dep_recheck_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER)
 
         ff_row = ctk.CTkFrame(dep, fg_color="transparent")
-        ff_row.pack(fill="x", padx=16, pady=(4, 2))
+        ff_row.pack(fill="x", padx=18, pady=(4, 2))
         self.dep_ffmpeg_dot = ctk.CTkLabel(ff_row, text="●", font=_font(15), width=18,
                                            text_color=LED_COLOR[STATE_STOPPED])
         self.dep_ffmpeg_dot.pack(side="left")
@@ -530,77 +622,50 @@ class ControlPanel(ctk.CTk):
                                              font=_font(12), anchor="w")
         self.dep_ffmpeg_label.pack(side="left", fill="x", expand=True)
         self.dep_ffmpeg_clear = ctk.CTkButton(
-            ff_row, text="清除", width=54, height=26, font=_font(11),
-            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            ff_row, text="清除", width=54, height=28, font=_font(11),
+            corner_radius=T.RADIUS, fg_color=T.BTN_SECONDARY, hover_color=T.BTN_SECONDARY,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._clear_ffmpeg,
         )
         self.dep_ffmpeg_clear.pack(side="right", padx=(6, 0))
+        T.attach_hover(self.dep_ffmpeg_clear, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER,
+                       enabled=lambda: str(self.dep_ffmpeg_clear.cget("state")) != "disabled")
         self.dep_ffmpeg_browse = ctk.CTkButton(
-            ff_row, text="浏览…", width=72, height=26, font=_font(11),
-            text_color_disabled=BTN_DISABLED_TEXT, command=self._browse_ffmpeg,
+            ff_row, text="浏览…", width=72, height=28, font=_font(11),
+            corner_radius=T.RADIUS, text_color_disabled=BTN_DISABLED_TEXT,
+            command=self._browse_ffmpeg,
         )
         self.dep_ffmpeg_browse.pack(side="right")
+        T.attach_hover(self.dep_ffmpeg_browse, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER,
+                       enabled=lambda: str(self.dep_ffmpeg_browse.cget("state")) != "disabled")
         self.dep_ffmpeg_hint = ctk.CTkLabel(
             dep, text="未自定义路径时，在系统 PATH 中查找 ffmpeg", font=_font(10),
-            text_color=("gray50", "gray65"), anchor="w", justify="left", wraplength=650)
-        self.dep_ffmpeg_hint.pack(fill="x", padx=34, pady=(0, 4))
+            text_color=T.TEXT_MUTED, anchor="w", justify="left", wraplength=520)
+        self.dep_ffmpeg_hint.pack(fill="x", padx=36, pady=(0, 4))
 
         cr_row = ctk.CTkFrame(dep, fg_color="transparent")
-        cr_row.pack(fill="x", padx=16, pady=(2, 4))
+        cr_row.pack(fill="x", padx=18, pady=(2, 4))
         self.dep_chromium_dot = ctk.CTkLabel(cr_row, text="●", font=_font(15), width=18,
                                              text_color=LED_COLOR[STATE_STOPPED])
         self.dep_chromium_dot.pack(side="left")
         self.dep_chromium_label = ctk.CTkLabel(
             cr_row, text="Playwright Chromium · 检测中…", font=_font(12), anchor="w")
         self.dep_chromium_label.pack(side="left", fill="x", expand=True)
-        self.dep_install_button = ctk.CTkButton(
-            cr_row, text="一键安装内核", width=110, height=26, font=_font(11),
-            fg_color=BTN_START, hover_color=BTN_START_HOVER,
+        install_wrap, self.dep_install_button = T.lift_button(
+            cr_row, text="一键安装内核", width=110, height=28, font=_font(11),
+            base=T.ACCENT, hover=T.ACCENT_HOVER,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_install_chromium,
-        )
-        self.dep_install_button.pack(side="right")
+            enabled=lambda: str(self.dep_install_button.cget("state")) != "disabled")
+        install_wrap.pack(side="right")
         # 日志区**常驻可见**。试过「点安装才 pack 展开」：卡片变高会把下方控制区
         # 整条挤出窗口（真机截图复核抓到），布局还会突然跳动。固定占位既不裁切，
         # 也不打断既有布局；空态写一行占位提示，不留一块突兀的空白。
-        self.dep_log = ctk.CTkTextbox(dep, height=68, font=_font(10))
-        self.dep_log.pack(fill="x", padx=16, pady=(0, 10))
+        self.dep_log = ctk.CTkTextbox(dep, height=68, font=_font(10),
+                                      corner_radius=T.RADIUS, fg_color=T.SURFACE_2,
+                                      border_color=T.BORDER)
+        self.dep_log.pack(fill="x", padx=18, pady=(0, 14))
         self.dep_log.configure(state="disabled")
         self._dep_log_clear()
-
-        # 控制区
-        control = ctk.CTkFrame(tab, corner_radius=12)
-        control.pack(fill="x", padx=10, pady=(0, 6))
-        self.led = ctk.CTkLabel(control, text="●", font=_font(22), width=28)
-        self.led.pack(side="left", padx=(14, 2), pady=10)
-        self.status_label = ctk.CTkLabel(control, text="", font=_font(12, "bold"),
-                                         width=110, anchor="w")
-        self.status_label.pack(side="left")
-        self.hide_button = ctk.CTkButton(
-            control, text="隐藏到托盘", width=100, height=32, font=_font(11),
-            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
-            command=self.hide_to_tray,
-        )
-        self.hide_button.pack(side="right", padx=(6, 12), pady=8)
-        self.log_button = ctk.CTkButton(control, text="日志", width=64, height=32,
-                                        font=_font(11), command=self._open_log)
-        self.log_button.pack(side="right", padx=6, pady=8)
-        self.stop_button = ctk.CTkButton(
-            control, text="停止", width=84, height=32, font=_font(12),
-            fg_color=BTN_STOP, hover_color=BTN_STOP_HOVER,
-            text_color_disabled=BTN_DISABLED_TEXT, command=self._on_stop,
-        )
-        self.stop_button.pack(side="right", padx=6, pady=8)
-        self.start_button = ctk.CTkButton(
-            control, text="启动", width=84, height=32, font=_font(12),
-            fg_color=BTN_START, hover_color=BTN_START_HOVER,
-            text_color_disabled=BTN_DISABLED_TEXT, command=self._on_start,
-        )
-        self.start_button.pack(side="right", padx=6, pady=8)
-
-        # 环境自检属于「引擎设置」页；底部详情状态栏则是全局的。
-        self.env_label = ctk.CTkLabel(tab, text="环境自检中…", font=_font(10),
-                                     text_color=("gray50", "gray60"), anchor="w")
-        self.env_label.pack(fill="x", padx=12, pady=(2, 4))
+        T.soft_shadow(dep)
 
         # 记下主题原始配色：引擎运行时把设置区统一刷成灰色禁用态，
         # 否则 CTk 的 disabled 只改文字颜色，白底输入框/蓝底下拉框仍像可编辑。
@@ -612,6 +677,9 @@ class ControlPanel(ctk.CTk):
                 except Exception:  # 部分控件没有该选项
                     pass
             self._settings_look.append((widget, saved))
+
+        # 悬浮动画的「可动画」谓词：引擎运行中被置灰的按钮不做颜色动画，
+        # 配色完全交给 _paint_settings / _paint_button（谓词已在各自创建处挂好）。
 
     def _lockable_widgets(self) -> tuple:
         """引擎运行时需一并置灰的设置类控件；构建与状态切换共用，防漏改。"""
@@ -889,9 +957,11 @@ class ControlPanel(ctk.CTk):
     def _paint_button(button, disabled: bool, active: str, hover: str) -> None:
         try:
             if disabled:
-                button.configure(fg_color=BTN_DISABLED, hover_color=BTN_DISABLED)
+                button.configure(fg_color=T.BTN_DISABLED, hover_color=T.BTN_DISABLED)
             else:
-                button.configure(fg_color=active, hover_color=hover)
+                # hover_color 保持与 fg_color 同色（惰性）：悬浮过渡交给
+                # theme.attach_hover 的 200ms 分帧动画，避免 CTk 瞬时变色抢跑。
+                button.configure(fg_color=active, hover_color=active)
         except Exception as exc:
             L.log(f"设置按钮配色失败: {exc!r}")
 
@@ -1337,6 +1407,17 @@ class ControlPanel(ctk.CTk):
     def _smoke_begin(self) -> None:
         self._smoke_check("主界面构建并可见", self.engine_state == STATE_STOPPED and self.winfo_width() >= 680,
                           f"geometry={self.winfo_width()}x{self.winfo_height()}")
+        # 2026-11 美化轮：横向宽幅窗口 + 组件圆角统一 12px。
+        self._smoke_check("窗口为横向宽幅（不再方正）",
+                          self.winfo_width() > self.winfo_height(),
+                          f"geometry={self.winfo_width()}x{self.winfo_height()}")
+        self._smoke_check("组件圆角统一12px",
+                          self.dep_card.cget("corner_radius") == 12
+                          and self.console.sniff_card.cget("corner_radius") == 12
+                          and self.log_button.cget("corner_radius") == 12,
+                          f"dep={self.dep_card.cget('corner_radius')} "
+                          f"sniff={self.console.sniff_card.cget('corner_radius')} "
+                          f"btn={self.log_button.cget('corner_radius')}")
         self._smoke_check("黄色安全警告显眼存在", "切勿暴露在公网" in self.warn_label.cget("text"))
         self._smoke_check("连接地址已计算", self.addr_label.cget("text").startswith("http://"),
                           self.addr_label.cget("text"))
