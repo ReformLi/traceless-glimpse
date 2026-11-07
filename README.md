@@ -7,11 +7,17 @@
 
 ## 三端架构
 
-1. **桌面本地引擎**（主力）：本地 HTTP 服务，监听 `127.0.0.1:8730`，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
+1. **桌面本地引擎**（主力）：本地 HTTP 服务，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
+   M15 起附带 `desktop/` 控制面板与单文件 `BrowseGuardEngine.exe`：一键启停引擎、显示局域网地址、
+   环境依赖自检；M16 起内置「下载控制台」，不连手机也能在电脑上完成嗅探 → 选画质 → 下载。
+   默认监听 `0.0.0.0:8730`（协议文档与引擎桩模式仍以 `127.0.0.1:8730` 为缺省值）。
 2. **Android App**：`com.hpu.browseguard`，既是引擎客户端，也能完全离线自足——内置浏览器嗅探 + 本机直连下载 + TS→MP4 转封装 + 内置播放器（断点续播）（见下节）。
 3. **CLI / MCP Server**：`bgv` 命令与 MCP 工具，供技术用户与 AI 客户端调用。
 
 三端通过 `docs/PROTOCOL.md` 定义的 HTTP/JSON 协议通信；协议模型在 `shared/`（Kotlin Multiplatform）单一来源实现。
+
+> **信任边界**：引擎无入站鉴权（M15.3 裁决不补 Token）。桌面启动器默认监听 `0.0.0.0:8730`
+> 是为了让手机连得上，代价是只能在可信的家庭局域网使用，切勿暴露公网。
 
 ## 仓库结构
 
@@ -19,6 +25,7 @@
 |---|---|
 | `android/` | Android 客户端（Compose + 内置浏览器 + 本机下载/转封装，见 `android/README.md`） |
 | `engine/` | 本地引擎（Python 3.11+ / FastAPI / Pydantic v2） |
+| `desktop/` | PC 控制面板与单文件封装（customtkinter + pystray + PyInstaller，见 `desktop/README.md`） |
 | `shared/` | KMP 协议模型（kotlinx.serialization），Android / CLI / MCP 共用 |
 | `cli/` | `bgv` 命令行工具（Kotlin/JVM，复用 `:shared` 与 `:engine-client`） |
 | `mcp/` | MCP Server（Kotlin/JVM，仅 stdio transport，复用 `:shared` 与 `:engine-client`） |
@@ -47,7 +54,24 @@ python -m venv .venv
 python scripts/check_schema.py
 ```
 
-从零配置引擎、手机连接电脑的排障步骤见 `docs/ENGINE_USER_GUIDE.md`。
+### 桌面端一键启动（M15 起，普通用户推荐）
+
+```powershell
+# 已有打包产物：双击 desktop\dist\BrowseGuardEngine.exe，在「引擎设置」点「启动」
+# 源码态：
+engine\.venv\Scripts\python.exe -m pip install -r desktop\requirements.txt
+engine\.venv\Scripts\python.exe desktop\gui_app.py
+
+# 打包单文件 exe（产物不入库）
+engine\.venv\Scripts\python.exe desktop\build_exe.py
+```
+
+控制面板可设置监听地址 / 端口 / 输出目录、显示手机要填的局域网 IP、隐藏到托盘、自检环境依赖
+（自定义 `ffmpeg.exe` 路径、一键安装 Chromium 内核）；「下载控制台」标签可在电脑上直接嗅探与下载。
+配置字段、注入引擎的环境变量与全套验收命令见 `desktop/README.md`。
+
+从零配置引擎、手机连接电脑的排障步骤见 `docs/ENGINE_USER_GUIDE.md`；命令行方式保留给无 GUI 环境、
+引擎单测与手工排障场景。
 
 ### 命令行（bgv）
 

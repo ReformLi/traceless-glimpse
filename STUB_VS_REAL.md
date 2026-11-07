@@ -68,3 +68,8 @@ M1 中的五类行为差异。协议字段、错误码与状态机对两者一�
 所以「stub 还是 real」这个问题在 Android 本机路径上无意义：它不是桩，也不是引擎的另一副面孔，
 而是第三条代码路径。它的行为差异表（并发槽位、段级重试、音频完整性门禁链、降级保留 `.ts`）写在
 `android/README.md`，逐轮取证在 `docs/smoke-report.md` §27–§29，需求条目在 `docs/PRD.md` §6.9。
+
+M15 起桌面端多了一个 `desktop/` 控制面板与单文件 exe，但**它不是第四个执行者**：GUI 通过
+`http://127.0.0.1:<port>` 调用同一套协议端点，启动器固定注入 `BGV_ENGINE_MODE=real`，
+所以「stub 还是 real」在这条路径上答案永远是 real。桩模式继续只服务于协议联调、
+Schema 对账与引擎单测。桌面端的形态、配置与边界见 `desktop/README.md`。

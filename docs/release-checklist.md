@@ -282,3 +282,28 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
   debug/本地明文一致，见 `docs/smoke-report.md` §33.7）。仍未覆盖：正式签名包（必须由维护者本机打）。
 - **「不再询问」的通知权限路径没实测**：两次拒绝后系统不再弹窗，当前只靠设置页那句红字 +
   「去设置」出口；文案与引导在那种状态下是否够用，实体机遇到时再确认。
+
+## 8. 桌面端产物核对（M15 起，与 Android 发版独立）
+
+桌面端是另一条交付线。`desktop/dist/BrowseGuardEngine.exe`、`desktop/config.json`、
+`desktop/engine.log`、`desktop/preview/` 全部按 `desktop/.gitignore` **不入库**，
+换机器或改动 `desktop/` / `engine/services/` 之后必须在开发机重打、重验，不能假设上一台机器的产物还在。
+
+| # | 动作 | 命令 / 位置 | 通过判据 |
+|---|---|---|---|
+| 1 | 装齐桌面层依赖 | `engine\.venv\Scripts\python.exe -m pip install -r desktop\requirements.txt` | 版本与 `requirements.txt` 逐字一致（含 `httpx==0.28.1`） |
+| 2 | 重打单文件 exe | `engine\.venv\Scripts\python.exe desktop\build_exe.py` | `desktop/_build.log` 无 ERROR；产物存在，`--noconsole` 双击不弹控制台窗口 |
+| 3 | 打包版冒烟 | `desktop\dist\BrowseGuardEngine.exe --gui-smoke --smoke-report <绝对路径>` | 全部 PASS（M16.5 收官 76/76，连跑两次稳定）；报告路径必须写绝对路径——exe 的工作目录不是仓库根 |
+| 4 | 源码态 GUI 冒烟 | `engine\.venv\Scripts\python.exe desktop\gui_app.py --gui-smoke` | 全部 PASS（M16.5 收官 85/85），浅/深/置灰截图目视无裁切 |
+| 5 | 端到端两条 | `desktop\e2e_m16.py` 与 `desktop\e2e_m16_5.py` | 27/27 与 33/33；产物经 ffprobe 检出视频 + 音频双轨 |
+| 6 | 引擎回归 | `cd engine; .\.venv\Scripts\python.exe -m pytest -q` | `238 passed`（桌面端改过 `services/` 后必跑） |
+| 7 | 记体积与 hidden-import | 本文件 §8 台账 | 体积异常增减要查是不是漏 collect 了运行期动态导入 |
+
+**体积基线**：M15.3 73,437,819 B（70.04 MiB）→ M16 第二步 70.08 MiB → M16.5 73,504,181 B（70.10 MiB）。
+大头是随包收进来的 `playwright/driver/node.exe` 与 PYZ，**Chromium 浏览器内核不在里面**。
+新增 `desktop/*.py` 模块时，必须同步加进 `build_exe.py` 的 `GUI_HIDDEN_IMPORTS`；
+新增 `engine/services/*.py` 时加进 `ENGINE_HIDDEN_IMPORTS`，否则打包版会静默缺模块——
+M16 第二步加 `engine_client`、M16.5 加 `services.ffmpeg_path` 都是按这条做的。
+
+桌面端字段、环境变量与验收脚本的完整说明见 `desktop/README.md`；逐轮取证见
+`docs/smoke-report.md` §34。桌面端目前**无签名、无自动更新**，分发前由维护者自行校验哈希。

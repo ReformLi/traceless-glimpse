@@ -2,6 +2,8 @@
 
 Python 3.11+ / FastAPI / Pydantic v2。承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 合并与后处理；默认监听 `127.0.0.1:8730`，所有响应（含错误）携带 `X-Protocol-Version: 0.2`（`main.py` 的 `PROTOCOL_VERSION`，M5 起随 `Task.outputPath` 升版）。
 
+桌面启动器（M15 起）默认绑定 `0.0.0.0:8730` 并强制 `BGV_ENGINE_MODE=real`，见 `desktop/README.md`；协议文档、桩模式与 `python main.py` 仍以 `127.0.0.1:8730` 为缺省值。
+
 模式由 `BGV_ENGINE_MODE` 选择：`stub`（默认）返回假数据但状态机与错误码真实，`real` 才接真实 Playwright / yt-dlp / FFmpeg。
 两模式的差异清单见仓库根 `STUB_VS_REAL.md`。桩模式仍然是默认值——协议联调与 Schema 对账都在桩上跑，
 不依赖外部二进制，这条设计从 M0 起没变。
@@ -38,6 +40,19 @@ python -m venv .venv
   （或运维脚本）随 `--host` / `--port` 一起注入；`GET /v1/privacy/selfcheck` 的
   `listenAddress` 按请求实时回显这两个值，不再是硬编码 `127.0.0.1:8730`。
   未设置或端口非法时回落到协议默认 `127.0.0.1:8730`；`python main.py` 也据此绑定。
+- `BGV_FFMPEG_PATH`（M16.5）：`ffmpeg.exe` 的绝对路径，由桌面控制面板「环境依赖自检」
+  选中后注入。引擎侧统一在 `services/ffmpeg_path.py` 解析，供合并（`services/merger.py`）、
+  产物完整性校验（`services/downloader.py` 的 `_ffprobe_duration`）、yt-dlp 的
+  `ffmpeg_location` 与 selfcheck 的 `dependencyVersions.ffmpeg` 四处共用：
+
+  1. 已设置 → 必须是存在的文件，**不回落 PATH**（配置写错就明确抛错，避免系统里另一个
+     FFmpeg 版本悄悄遮住自定义版本）；`ffprobe` 优先取 `ffmpeg.exe` 同目录的兄弟文件；
+  2. 未设置 → `shutil.which("ffmpeg")` / `("ffprobe")`；
+  3. 都找不到 → 返回 `None`，由各调用方抛领域内的明确错误（`MergeError` /
+     `DownloadIntegrityError`）。
+
+  桌面启动器注入的完整变量族（另有 `BGV_ENGINE_MODE=real`、`BGV_OUTPUT_DIR_ALLOWLIST`、
+  `BGV_LISTEN_HOST/PORT`）与进程树清理方式见 `desktop/README.md` §6。
 
 ### 开发专用：临时 SSRF 主机白名单（dev only, never in production）
 

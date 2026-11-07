@@ -6,7 +6,7 @@
 | 项目英文名      | Traceless Glimpse   |
 | 仓库名        | `traceless-glimpse` |
 | Android 包名 | `com.hpu.browseguard` |
-| 文档版本       | v0.3（v0.2 规划 + M9 收官回写；2026-11-06 补 M10/M11/M12 里程碑，2026-11-07 补 M12.5/M13） |
+| 文档版本       | v0.3（v0.2 规划 + M9 收官回写；2026-11-06 补 M10/M11/M12 里程碑，2026-11-07 补 M12.5/M13，以及 M14–M16.5 里程碑） |
 | 文档状态       | 与已交付实现对齐；v0.3 的增量集中在 §6.9 本机执行者、§13.2 路径 B 定位、§15 里程碑表 |
 
 ---
@@ -81,7 +81,9 @@
 
 ### 5.1 三种形态（同一 Agent 核心，不同外壳）
 
-1. **桌面本地引擎**（主力）：本地 HTTP 服务，监听 `127.0.0.1`，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
+1. **桌面本地引擎**（主力）：本地 HTTP 服务，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
+   M15 起增加 `desktop/` 控制面板与单文件 exe 作为外壳（默认监听 `0.0.0.0:8730` 以便手机接入），
+   M16 起内置下载控制台，电脑端可独立完成全流程；引擎无入站鉴权，仅限可信局域网。
 2. **Android App**：`com.hpu.browseguard`，作为客户端与轻量入口，可连接本机引擎（USB / 局域网 TLS）或使用内置轻量下载能力。
 3. **CLI / MCP Server**：`bgv` 命令与 MCP 工具，供技术用户与 AI 客户端调用。
 
@@ -443,6 +445,10 @@ v0.1 的 FR-SEC 系列已经从工程角度定义了 SSRF 防护、惰性 Cookie
 | **M12 播放器体验与广告拦截** | 播放器手势层（横滑快进快退 90 秒/整屏、左半屏亮度、右半屏音量）+ 倍速面板 0.5–2.0x + 系统画中画；WebView `shouldInterceptRequest` 广告域名黑名单返回 200 空体，主文档不拦 | 475 项 JVM 测试通过（app 413）；不碰 `LocalDirectDownloader` / `HlsDownloader` / `TsRemuxer` 一行 | MuMu 真机取证：快进至 0:58 / 快退至 0:12 与画面时间码一致、亮度 23% 提示、音量 0→25、2.0x 生效、播放中按 Home 进小窗且音频不断、五个广告域各留 `adblock_hit` 而主文档与本地资源照常 | 已过（`38fac08`，缺口见 `docs/release-checklist.md` §7） |
 | **M12.5 取证行去重与 R8 首跑** | `AdBlockLedger` 按**地址**认页（同域每页一行、同址重载不补行）；播放器 `key(recordId)` + 离场强制 `release()`；测试签名打出首个可安装 R8 包并重归档 mapping | 483 项 JVM 测试通过（app 421）；UI 布局与业务逻辑未改，下载三件套一行未动 | MuMu R8 包全链无闪退：深嗅出候选 → 下载已完成 → 下载管理 → ExoPlayer 画面推进 → 续播 `resume=25221`；`adblock_hit` 同域 3 请求 1 行、重载不补行；反序列化异常 0 命中 | 已过（`docs/smoke-report.md` §31；R8 下 HLS 音频判据仍欠一次，见 §7） |
 | **M13 前台服务保活** | 下载期间挂 `dataSync` 前台服务（默认开、可关）：启停只看开关 + 协调器 `activeCount()`，节拍复用 Room 心跳流；通知栏单条进度、不放操作按钮、点按回下载页；`POST_NOTIFICATIONS` 按需申请，被拒时设置页给红字与「去设置」 | 504 项 JVM 测试通过（app 442）；不碰 `LocalDirectDownloader` / `HlsDownloader` / `TsRemuxer`，`DownloadCoordinator` 只当观察对象 | MuMu：锁屏连续 2 分钟 `wlan0` 以 120 KB/s 增长、服务全程 `isForeground=true`、灭屏完成两次下载（57,861,784 B）；通知 10%→49%、点通知直接落「下载」Tab 且只消费一次；权限被拒有红字与可用出口 | 已过（`docs/smoke-report.md` §32，缺口见 `docs/release-checklist.md` §7） |
+| **M14 HLS AES-128** | `#EXT-X-KEY` 解析与 IV 派生、`AES/CBC/NoPadding` 解密并按 188 对齐裁尾、密钥请求复用同一套请求头；下载本体与转封装一行未动 | 纯 Kotlin + JCA 解密器，无新增依赖；openssl 生成的固定向量单测入仓 | 513 项 JVM 测试通过（app 451）；R8 测试签名包真机加密 HLS 全链，产物 PCM md5 与 debug / 本地明文一致 | 已过（`docs/smoke-report.md` §33） |
+| **M15 PC 引擎一键化** | `desktop/` 托盘启动器 → customtkinter 控制面板 → PyInstaller 单文件 exe；引擎 selfcheck 的监听地址改动态读取 | `BrowseGuardEngine.exe`（约 70 MiB，无控制台、带图标）、后台托盘、`config.json` 持久化 | 源码态「拉起引擎 / 显示 IP / 退出杀进程」三动作跑通；`--gui-smoke`、打包后 GUI 启动与局域网 `/v1/health` 200 全通过 | 已过（`76ec785`，`docs/smoke-report.md` §34.1） |
+| **M16 桌面下载闭环** | `CTkTabview` 双标签 + 下载控制台；httpx 后台线程经 `ui_call` 队列回抛进度；画质按结构化 selector 映射 | 纯电脑端「嗅探 → 选画质 → 下载 → 合并」闭环，不依赖手机 | `gui-smoke 73/73`、`e2e_m16 27/27`：真实画质三档、进度 0→100%、产物 ffprobe 双轨可播、失败红字、中途停止轮询线程全退 | 已过（`33ebc21`，`docs/smoke-report.md` §34.2） |
+| **M16.5 依赖自检与 FFmpeg 路径** | Tab① 环境依赖自检卡片（FFmpeg / Chromium 状态、浏览选路径、一键装内核 + 日志）；`BGV_FFMPEG_PATH` 在引擎侧统一解析 | `config.json` 新增 `ffmpeg_path`；`engine/services/ffmpeg_path.py` 收敛 4 个调用点 | `e2e_m16_5 33/33`：摘掉 PATH 后红色未找到 → 选本机 `ffmpeg.exe` → real 引擎分离轨合并产出双轨 MP4，selfcheck 回显真实版本号 | 已过（`a92db88`，`docs/smoke-report.md` §34.3） |
 
 ---
 

@@ -3348,3 +3348,84 @@ apksigner sign --ks ~/.android/debug.keystore ...          # 测试签名，cert
 
 仍未覆盖：正式签名包（必须由维护者本机打，测试签名包不得分发）。
 
+
+## 34. M15 / M16 / M16.5：桌面端一键化与下载闭环（2026-11-07）
+
+三次提交主体都在 `desktop/`，移动端代码冻结。`engine/` 只动了两处非业务逻辑：
+M15.3 把 selfcheck 的 `LISTEN_ADDRESS` 硬编码改成按 `BGV_LISTEN_HOST/PORT` 动态读取；
+M16.5 增加可执行文件解析层并收敛 FFmpeg 调用点。**协议字段一字未改**，所以
+`docs/PROTOCOL.md` 与 `docs/PROTOCOL-CHANGELOG.md` 不需要升版本；桌面端是协议的
+消费者，不是新协议。
+
+### 34.1 M15：托盘启动器 → GUI 控制面板 → 单文件 exe（`76ec785`）
+
+| 腿 | 现场证据 |
+| --- | --- |
+| M15 第一步纯托盘 | `launcher.py --self-test 13/13`、`--self-test-error 4/4`、`--tray-smoke` 通过；拉起引擎、显示局域网 IP、退出杀进程三动作达标 |
+| 改道 GUI | `--gui-smoke 27/27`；浅/深双主题截图、X 隐藏到托盘再唤起、配置持久化、启停联动 |
+| M15.3 打包 | selfcheck 动态化后 `pytest 237 passed`；打包后验收 20/20、exe 内 `--gui-smoke 30/30`；同网段 `http://192.168.31.242:8731/v1/health` 返回 200、`selfcheck.listenAddress` 回 `0.0.0.0:8731` |
+| 产物 | `desktop/dist/BrowseGuardEngine.exe` 73,437,819 B = 70.04 MiB，PE `Subsystem=2` 无控制台，盾牌图标资源可提取 |
+
+本轮踩过的四个 Windows 专属坑：① venv 的 `python.exe` 是重定向器，`Popen.pid` 不是
+uvicorn 的 `Started server process` PID，只 `terminate()` 会留孤儿 → 改 `taskkill /T /F`
++ server PID 补杀 + 端口释放硬断言；② 中文 Windows 的 `tasklist` 输出 GBK，
+`text=True` 会 `UnicodeDecodeError` → 改 bytes + `errors="replace"`；
+③ `--noconsole` 下 `sys.stdout/stderr` 可能是 `None` → `entry.py` 重绑 fd 1/2；
+④ onefile 的窗口属于 bootloader 子 PID，按父 PID 找不到 → 改按窗口标题轮询。
+
+体积 70 MiB 而非预估的 10 MB：压缩后 `playwright/driver/node.exe` 约 32.73 MiB、
+`PYZ.pyz` 约 14.61 MiB。**浏览器内核本身不进 exe**，仍在 `%LOCALAPPDATA%\ms-playwright`。
+
+### 34.2 M16：下载控制台 UI → 接通引擎网络层（`33ebc21`）
+
+第一步只做 UI（`--gui-smoke 68/68`，零网络请求），第二步接通真实链路：
+`gui-smoke 73/73`、`e2e_m16 27/27`、重打包 exe 70.08 MiB、exe 内 `gui-smoke 64/64`。
+
+| 协议坑 | 落实 |
+| --- | --- |
+| `strategy="exact"` + `formatId` 在 real 模式被 `services/formats.py` 判 422 `FORMAT_UNAVAILABLE` | GUI 只发结构化 selector：有视频且 `height>0` → `{"strategy":"max_height","maxHeight":H}`；纯音频 → `audio_only`；有视频但无高度 → `best`。**全程不发 formatId** |
+| `POST /v1/tasks` 返回 `Task.id`，不是 `taskId` | 客户端按 `id` 取，冒烟断言钉住 |
+| `/download` 的 selector 必须包在 `formatSelector` 里 | 裸 `{"strategy":...}` 被 `StrictModel(extra="forbid")` 拒 422 |
+| 错误体是 `{"error":{code,message,detail}}` | `extract_error()` 统一解析，`translate_error()` 翻成中文红字 |
+
+真机（PC 端）证据：本地真实 HTTP 媒体页 → Playwright 嗅探 → yt-dlp → FFmpeg，不是 UI 桩数据。
+下拉框弹出 `240p / 360p / 480p · mp4 · h264` 三档真实画质；选 360p 映射为 `max_height=360`；
+进度 `0→21→54→87→100%`，速度 `128.5→217.2 KB/s`，ETA `00:05→00:01`；
+产物 `master.mp4` 724,651 B，ffprobe 检出 h264 320×240 + aac 双轨。
+失败场景 `https://localhost/unsupported` → `✖ 目标地址指向受限网络，已拒绝（SSRF_BLOCKED）`；
+下载中途点「停止引擎」→ 轮询线程全退、日志无 `TclError`、控制台置灰、重启后按钮恢复。
+
+顺手修掉三个缺陷：`clear_message()` 只隐藏标签不清文本，导致重新嗅探读到上一条残留错误；
+引擎停止后 `_downloading` 残留使按钮永久灰；`--noconsole` 下 stdout 是 GBK，`✖/✓`
+抛 `UnicodeEncodeError` 打断 `after` 链。
+
+### 34.3 M16.5：依赖自检面板与自定义 FFmpeg（`a92db88`）
+
+| 判据 | 现场证据 |
+| --- | --- |
+| 摘掉 PATH 后红色未找到 | e2e 启动 GUI 前移除 FFmpeg 目录，`shutil.which("ffmpeg") is None`，面板显示红字与「可点浏览…」提示 |
+| 浏览选自定义路径 | `config.json` 持久化 → 绿字带真实版本号，selfcheck 的 `dependencyVersions.ffmpeg` 回显同一版本，证明 `BGV_FFMPEG_PATH` 已注入引擎进程 |
+| 真实合并 | 构造「两条 video-only + 一条 audio-only STREAM-INF」的分离轨 HLS（`has_separate_tracks=True`），引擎日志 `merge_complete bytes=363043`，ffprobe 检出 h264 + aac 双轨 MP4 |
+| 一键安装 | 真跑 `playwright install chromium` 并逐行回显日志；另用注入的 `\r` 进度条验证 45% / 100% 流式回吐 |
+| 回归 | 引擎 `pytest 238 passed`、`gui-smoke 85/85`、`e2e_m16_5 33/33`、M16 第二步 `e2e_m16 27/27`；重打包 exe 70.10 MiB，exe 内 `gui-smoke 76/76` 连跑两次 |
+
+三个比需求描述更深的点：① **只改 `merger.py` 不够**——PATH 里没有 FFmpeg 时下载会先死在
+`downloader._ffprobe_duration`，yt-dlp 的原生 HLS 下载器也需要 `ffmpeg_location`，
+故新增 `services/ffmpeg_path.py` 统一 4 个调用点并从自定义路径同目录推导 `ffprobe.exe`；
+② **配置写错不能静默回落 PATH**，否则用户以为自定义版本生效、实际用的是系统另一个版本；
+③ **muxed HLS 不会触发合并**（引擎记 `post_action_noop`），验收源必须用真实分离轨。
+另外 `🟢/🔴` 在 Microsoft YaHei UI 下退化成斜线圆圈（与 M16 的 `▶/⏹` 方框同源），改用 `●` + 主题色着色。
+
+修掉的 UI / 打包缺陷：安装日志区「点安装才展开」会把控制区整条挤出窗口且布局跳动 → 常驻占位、
+窗口调到 760×850；`gui_app._capture` 的冒烟截图只拍到桌面壁纸 → 补 Win32 `PrintWindow` 分支；
+exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 2 s→6 s（health 仍 2 s）。
+
+### 34.4 本轮自报的缺口
+
+- **物理真机未接入**：手机侧只验了同网段 HTTP 路径（`192.168.31.242:8731`），设备上没有实际连一次。
+- **公网真实站点**：`w3schools` 视频页能嗅探到 mp4，但下载被站点鉴权拒为 `AUTH_REQUIRED`（可作真实失败样本）；
+  B 站一类 DASH 站请求 `.m4s`，引擎 sniffer 的扩展名白名单不识别。默认验收因此使用本地真实
+  HTTP 媒体服务器（真实字节 + 真实 Playwright / yt-dlp / FFmpeg），`e2e_m16.py --public-url` 可切公网只验嗅探。
+- **无入站鉴权**：M15.3 裁决不补 Token，桌面端默认 `0.0.0.0` 仅限可信家庭局域网。
+- **产物不入库**：`config.json`、`engine.log`、`preview/` 报告与截图、`dist/*.exe` 都按
+  `desktop/.gitignore` 忽略；换机器需要重跑 `build_exe.py` 与两条 e2e 脚本才能复现本报告数字。
