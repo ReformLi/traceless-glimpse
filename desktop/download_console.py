@@ -275,6 +275,7 @@ class TaskRow:
     _PULSE_PERIOD = 1.6  # 秒
 
     def __init__(self, parent, name: str, font: Callable) -> None:
+        self.phase = "queued"  # 最近一次 update() 的阶段，供 has_active_work() 判断
         self.frame = ctk.CTkFrame(parent, corner_radius=T.RADIUS, fg_color=ROW_BG,
                                   border_width=1, border_color=T.BORDER)
         self.frame.pack(fill="x", pady=(0, 5))
@@ -312,6 +313,7 @@ class TaskRow:
                eta_seconds: int = 0, bytes_downloaded: int = 0,
                phase: str = "downloading") -> None:
         """仅主线程调用。进度条按 0–1 取值，其余字段照协议 ``Progress`` 语义。"""
+        self.phase = phase
         try:
             ratio = max(0.0, min(1.0, float(percent) / 100.0))
         except (TypeError, ValueError):
@@ -609,6 +611,16 @@ class DownloadConsole:
         if self.result_card.winfo_manager() != "":
             self.result_card.pack_forget()
         self.clear_message()
+
+    #: 视为「有活干」的任务阶段：关闭窗口直接退出会打断它们。
+    BUSY_PHASES = frozenset({"queued", "sniffing", "downloading",
+                             "merging", "post_processing"})
+
+    def has_active_work(self) -> bool:
+        """是否有进行中的嗅探/下载。关闭窗口分流（托盘/询问/退出）用它判断。"""
+        if self._sniffing or self._downloading:
+            return True
+        return any(row.phase in self.BUSY_PHASES for row in self.task_rows)
 
     def _refresh_controls(self) -> None:
         enabled = self.is_ready and not self._sniffing and not self._downloading

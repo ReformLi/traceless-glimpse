@@ -88,12 +88,18 @@ HOST_VALUES = {v: k for k, v in HOST_LABELS.items()}
 APPEARANCE_LABELS = {"system": "跟随系统", "light": "浅色", "dark": "深色"}
 APPEARANCE_VALUES = {v: k for k, v in APPEARANCE_LABELS.items()}
 
+# 点 X（关闭窗口）的分流策略。默认 tray：手机 App 可能正连着引擎，或后台有
+# 下载任务，关窗即杀对这两个场景是灾难；纯本机用户可自行切成「直接退出」。
+CLOSE_ACTION_LABELS = {"tray": "隐藏到托盘", "ask": "每次询问", "exit": "直接退出"}
+CLOSE_ACTION_VALUES = {v: k for k, v in CLOSE_ACTION_LABELS.items()}
+
 DEFAULTS: dict = {
     "host": "0.0.0.0",
     "port": 8730,
     "output_dir": DEFAULT_OUTPUT_DIR,
     "auto_start": False,
     "appearance": "dark",
+    "close_action": "tray",
     # M16.5：空串 = 未自定义，走系统 PATH；否则是 ffmpeg.exe 的绝对路径。
     "ffmpeg_path": "",
 }
@@ -265,6 +271,9 @@ class Config:
         appearance = str(d.get("appearance", "system"))
         if appearance not in APPEARANCE_LABELS:
             appearance = "system"
+        close_action = str(d.get("close_action", DEFAULTS["close_action"]))
+        if close_action not in CLOSE_ACTION_LABELS:
+            close_action = DEFAULTS["close_action"]
         # 路径只做「去引号 + 相对转绝对」的归一化，不检查文件是否存在：
         # 让用户能看见「上次选的路径现在失效了」，而不是悄悄被抹成默认值。
         ffmpeg = str(d.get("ffmpeg_path") or "").strip().strip('"').strip("'")
@@ -276,6 +285,7 @@ class Config:
             "output_dir": out,
             "auto_start": bool(d.get("auto_start", False)),
             "appearance": appearance,
+            "close_action": close_action,
             "ffmpeg_path": ffmpeg,
         }
 
@@ -323,7 +333,7 @@ class ControlPanel(ctk.CTk):
         # 1000x680，Tab① 改双栏（左：连接+控制，右：设置+依赖）适配新比例。
         self.geometry(T.WINDOW_GEOMETRY)
         self.minsize(*T.WINDOW_MIN)
-        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
 
         # -- 运行期状态 -------------------------------------------------------
         self.engine_state = STATE_STOPPED
@@ -581,7 +591,7 @@ class ControlPanel(ctk.CTk):
                        enabled=lambda: str(self.browse_button.cget("state")) != "disabled")
 
         row3 = ctk.CTkFrame(settings, fg_color="transparent")
-        row3.pack(fill="x", padx=18, pady=(4, 12))
+        row3.pack(fill="x", padx=18, pady=(4, 6))
         self.auto_start_switch = ctk.CTkSwitch(
             row3, text="启动程序时自动运行引擎", font=_font(11),
             progress_color=T.ACCENT, command=self._schedule_save,
@@ -592,6 +602,27 @@ class ControlPanel(ctk.CTk):
             font=_font(10), text_color=T.TEXT_MUTED, anchor="e",
         )
         self.output_hint.pack(side="right")
+
+        # 点 X 的行为交给用户选：默认托盘是为手机联机 / 后台下载兜底，
+        # 纯本机用户可以选「直接退出」回到直觉的桌面习惯。
+        row4 = ctk.CTkFrame(settings, fg_color="transparent")
+        row4.pack(fill="x", padx=18, pady=(0, 12))
+        ctk.CTkLabel(row4, text="点 × 关闭窗口时", font=_font(11),
+                     width=150, anchor="w").pack(side="left")
+        self.close_menu = ctk.CTkOptionMenu(
+            row4, width=150, values=list(CLOSE_ACTION_LABELS.values()),
+            font=_font(11), corner_radius=T.RADIUS,
+            fg_color=T.BTN_SECONDARY, button_color=T.BTN_SECONDARY_HOVER,
+            button_hover_color=T.BTN_SECONDARY_HOVER,
+            text_color_disabled=BTN_DISABLED_TEXT,
+            command=lambda _v: self._schedule_save(),
+        )
+        self.close_menu.pack(side="left", padx=(0, 12))
+        self.close_hint = ctk.CTkLabel(
+            row4, text="托盘隐藏后引擎与下载继续在后台运行",
+            font=_font(10), text_color=T.TEXT_MUTED, anchor="e",
+        )
+        self.close_hint.pack(side="right")
         T.soft_shadow(settings)
 
         # -- 右栏 · 环境依赖自检 --
@@ -790,6 +821,7 @@ class ControlPanel(ctk.CTk):
         self.output_entry.delete(0, "end")
         self.output_entry.insert(0, self.cfg["output_dir"])
         self.appearance_menu.set(APPEARANCE_LABELS[self.cfg["appearance"]])
+        self.close_menu.set(CLOSE_ACTION_LABELS[self.cfg["close_action"]])
         if self.cfg["auto_start"]:
             self.auto_start_switch.select()
         else:
@@ -849,6 +881,8 @@ class ControlPanel(ctk.CTk):
             output_dir=out,
             auto_start=bool(self.auto_start_switch.get()),
             appearance=APPEARANCE_VALUES.get(self.appearance_menu.get(), "system"),
+            close_action=CLOSE_ACTION_VALUES.get(self.close_menu.get(),
+                                                 DEFAULTS["close_action"]),
         )
         self.cfg.save()
         ctk.set_appearance_mode(self.cfg["appearance"])
@@ -1334,6 +1368,126 @@ class ControlPanel(ctk.CTk):
         except Exception as exc:
             L.log(f"托盘气泡失败: {exc!r}")
 
+    # -- 点 X 关闭窗口的分流 --------------------------------------------------
+    def _engine_busy(self) -> bool:
+        """引擎或嗅探/下载任务是否有活干——决定「直接退出」要不要弹确认。"""
+        if self.engine_state in (STATE_STARTING, STATE_RUNNING):
+            return True
+        try:
+            return bool(self.console.has_active_work())
+        except Exception:
+            return False
+
+    def _on_close_window(self) -> None:
+        """WM_DELETE_WINDOW 入口：按用户设置的 close_action 分流。
+
+        smoke 走旧的 hide_to_tray 路径，既不弹窗也不改断言前提。
+        """
+        if self.smoke:
+            self.hide_to_tray()
+            return
+        if self._quitting:
+            return
+        action = self.cfg["close_action"]
+        busy = self._engine_busy()
+        if action == "tray":
+            self.hide_to_tray()
+            return
+        if action == "ask":
+            # 没有后台职责时询问纯属打扰：窗口一关程序就该退。
+            if not busy:
+                self.quit_app()
+            else:
+                self._show_close_dialog(allow_tray=True)
+            return
+        # exit：无活干直接退；有活干让用户确认一次（不给「记住」选项，
+        # 这只是本次的保护闸，用户的设置仍是直接退出）。
+        if busy:
+            self._show_close_dialog(allow_tray=False)
+        else:
+            self.quit_app()
+
+    def _show_close_dialog(self, *, allow_tray: bool) -> None:
+        """居中模态询问：退出 / 托盘 / 取消，可勾选记住选择。"""
+        # 已有一张询问框在开就别叠第二张（连按两次 X）。
+        existing = getattr(self, "_close_dialog", None)
+        if existing is not None and existing.winfo_exists():
+            try:
+                existing.lift()
+                existing.focus_force()
+            except Exception:
+                pass
+            return
+        dlg = ctk.CTkToplevel(self, fg_color=T.SURFACE)
+        self._close_dialog = dlg
+        dlg.title("关闭程序")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        ctk.CTkLabel(dlg, text="引擎正在后台运行", font=_font(14, "bold")
+                     ).pack(anchor="w", padx=22, pady=(20, 4))
+        ctk.CTkLabel(
+            dlg,
+            text="现在退出会停止引擎并中断手机 App 连接与下载任务。\n"
+                 "最小化到托盘可让它们继续运行。",
+            font=_font(11), text_color=T.TEXT_MUTED, justify="left", anchor="w",
+        ).pack(anchor="w", padx=22, pady=(0, 8))
+
+        remember = ctk.BooleanVar(value=False)
+        if allow_tray:
+            ctk.CTkCheckBox(
+                dlg, text="记住我的选择，不再询问", font=_font(11),
+                variable=remember, fg_color=T.ACCENT, corner_radius=4,
+            ).pack(anchor="w", padx=22, pady=(0, 6))
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(fill="x", padx=22, pady=(6, 18))
+
+        def _choose(choice: str | None) -> None:
+            dlg.grab_release()
+            dlg.destroy()
+            self._close_dialog = None
+            if choice is None:
+                return  # 取消：什么都不做，窗口本来就没关
+            if allow_tray and remember.get():
+                self.cfg.update(close_action=choice)
+                self.cfg.save()
+                self.close_menu.set(CLOSE_ACTION_LABELS[choice])
+                self._set_detail(f"关闭行为已记住：{CLOSE_ACTION_LABELS[choice]}"
+                                 f"（可在「引擎设置」里更改）")
+            if choice == "exit":
+                self.quit_app()
+            else:
+                self.hide_to_tray()
+
+        def _btn(text: str, color, hover, choice: str | None, side: str) -> None:
+            b = ctk.CTkButton(btns, text=text, width=108, height=32, font=_font(11),
+                              corner_radius=T.RADIUS, fg_color=color, hover_color=hover,
+                              command=lambda: _choose(choice))
+            b.pack(side=side, padx=(0 if side == "left" else 6, 0))
+
+        if allow_tray:
+            _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left")
+            _btn("最小化到托盘", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, "tray", "left")
+            _btn("取消", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, None, "right")
+        else:
+            _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left")
+            _btn("取消", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, None, "right")
+
+        dlg.after(120, lambda: self._center_dialog(dlg))
+        dlg.grab_set()
+        dlg.focus_force()
+
+    def _center_dialog(self, dlg) -> None:
+        """CTkToplevel 尺寸确定后居中到主窗口。"""
+        try:
+            dlg.update_idletasks()
+            w, h = dlg.winfo_width(), dlg.winfo_height()
+            x = self.winfo_x() + (self.winfo_width() - w) // 2
+            y = self.winfo_y() + (self.winfo_height() - h) // 2 - 40
+            dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+
     def hide_to_tray(self) -> None:
         """点 X 的行为：不退出，只隐藏到托盘（引擎继续跑）。"""
         if self._quitting:
@@ -1422,6 +1576,19 @@ class ControlPanel(ctk.CTk):
         self._smoke_check("连接地址已计算", self.addr_label.cget("text").startswith("http://"),
                           self.addr_label.cget("text"))
         self._smoke_check("默认不自动启动引擎", self.engine_state == STATE_STOPPED and self.engine.proc is None)
+        # 关闭行为三选项 + 默认托盘；Config.normalize 对非法值回退默认。
+        self._smoke_check("关闭行为设置项三选项齐备",
+                          list(CLOSE_ACTION_LABELS.values()) == list(self.close_menu.cget("values"))
+                          and self.close_menu.get() == "隐藏到托盘"
+                          and self.cfg["close_action"] == "tray",
+                          f"menu={list(self.close_menu.cget('values'))} cfg={self.cfg['close_action']}")
+        self._smoke_check("Config 对非法 close_action 回退默认",
+                          Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"] == "tray"
+                          and Config(Path(CONFIG_PATH), {}).data["close_action"] == "tray",
+                          str(Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"]))
+        self._smoke_check("控制台活动任务判断就绪（空闲时应为 False）",
+                          self.console.has_active_work() is False,
+                          f"rows={len(self.console.task_rows)}")
         self._smoke_check("托盘菜单四项齐备",
                           all(x in self._tray_labels for x in TRAY_REQUIRED_LABELS),
                           "/".join(x for x in self._tray_labels if x != "- - - -"))
