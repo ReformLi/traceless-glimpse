@@ -93,6 +93,21 @@ APPEARANCE_VALUES = {v: k for k, v in APPEARANCE_LABELS.items()}
 CLOSE_ACTION_LABELS = {"tray": "隐藏到托盘", "ask": "每次询问", "exit": "直接退出"}
 CLOSE_ACTION_VALUES = {v: k for k, v in CLOSE_ACTION_LABELS.items()}
 
+
+def close_dialog_copy(busy: bool) -> tuple[str, str]:
+    """点 X 确认框的标题与正文：忙时说清退出会中断什么，闲时只问要不要退。"""
+    if busy:
+        return (
+            "引擎正在后台运行",
+            "现在退出会停止引擎并中断手机 App 连接与下载任务。\n"
+            "最小化到托盘可让它们继续运行。",
+        )
+    return (
+        "确定要退出吗？",
+        "退出后引擎停止，手机 App 将无法连接电脑。\n"
+        "最小化到托盘可让引擎保持可用。",
+    )
+
 DEFAULTS: dict = {
     "host": "0.0.0.0",
     "port": 8730,
@@ -1394,11 +1409,9 @@ class ControlPanel(ctk.CTk):
             self.hide_to_tray()
             return
         if action == "ask":
-            # 没有后台职责时询问纯属打扰：窗口一关程序就该退。
-            if not busy:
-                self.quit_app()
-            else:
-                self._show_close_dialog(allow_tray=True)
+            # 用户选了「每次询问」就是要每次被问：引擎闲不闲不该替他省这一步。
+            # 忙/闲的差别只体现在弹窗文案上（闲时不必吓唬"下载会中断"）。
+            self._show_close_dialog(allow_tray=True)
             return
         # exit：无活干直接退；有活干让用户确认一次（不给「记住」选项，
         # 这只是本次的保护闸，用户的设置仍是直接退出）。
@@ -1408,7 +1421,7 @@ class ControlPanel(ctk.CTk):
             self.quit_app()
 
     def _show_close_dialog(self, *, allow_tray: bool) -> None:
-        """居中模态询问：退出 / 托盘 / 取消，可勾选记住选择。"""
+        """居中模态询问：退出 / 托盘 / 取消，可勾选记住选择。文案按引擎忙闲自适应。"""
         # 已有一张询问框在开就别叠第二张（连按两次 X）。
         existing = getattr(self, "_close_dialog", None)
         if existing is not None and existing.winfo_exists():
@@ -1418,17 +1431,18 @@ class ControlPanel(ctk.CTk):
             except Exception:
                 pass
             return
+        busy = self._engine_busy()
+        title, body = close_dialog_copy(busy)
         dlg = ctk.CTkToplevel(self, fg_color=T.SURFACE)
         self._close_dialog = dlg
         dlg.title("关闭程序")
         dlg.resizable(False, False)
         dlg.transient(self)
-        ctk.CTkLabel(dlg, text="引擎正在后台运行", font=_font(14, "bold")
+        ctk.CTkLabel(dlg, text=title, font=_font(14, "bold")
                      ).pack(anchor="w", padx=22, pady=(20, 4))
         ctk.CTkLabel(
             dlg,
-            text="现在退出会停止引擎并中断手机 App 连接与下载任务。\n"
-                 "最小化到托盘可让它们继续运行。",
+            text=body,
             font=_font(11), text_color=T.TEXT_MUTED, justify="left", anchor="w",
         ).pack(anchor="w", padx=22, pady=(0, 8))
 
@@ -1586,6 +1600,29 @@ class ControlPanel(ctk.CTk):
                           Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"] == "tray"
                           and Config(Path(CONFIG_PATH), {}).data["close_action"] == "tray",
                           str(Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"]))
+        # 询问模式一律弹窗（M18.6 演进）：引擎闲时也要被问。真 Toplevel 不在 smoke 里
+        # 建——实测中途建 CTkToplevel 会触发 Tk 原生崩溃（0xC0000005），改为
+        # 纯文案函数断言 + 分流 dry-run（猴补丁拦截弹窗调用，不真建窗）。
+        self._smoke_check("关闭确认框文案忙闲自适应",
+                          close_dialog_copy(True)[0] == "引擎正在后台运行"
+                          and close_dialog_copy(False)[0] == "确定要退出吗？",
+                          f"busy={close_dialog_copy(True)[0]} idle={close_dialog_copy(False)[0]}")
+        self.cfg.update(close_action="ask")
+        dialog_calls: list[dict] = []
+        original_dialog = self._show_close_dialog
+        self._show_close_dialog = lambda **kw: dialog_calls.append(kw)  # type: ignore[method-assign]
+        was_smoke, self.smoke = self.smoke, False
+        try:
+            self._on_close_window()
+        finally:
+            self.smoke = was_smoke
+            self._show_close_dialog = original_dialog  # type: ignore[method-assign]
+            self.cfg.update(close_action="tray")
+        self._smoke_check("询问模式引擎闲时也弹确认框（不再直接退）",
+                          dialog_calls == [{"allow_tray": True}]
+                          and self.cfg["close_action"] == "tray"
+                          and not self._quitting,
+                          f"calls={dialog_calls} cfg={self.cfg['close_action']}")
         self._smoke_check("控制台活动任务判断就绪（空闲时应为 False）",
                           self.console.has_active_work() is False,
                           f"rows={len(self.console.task_rows)}")
