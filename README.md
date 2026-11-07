@@ -19,6 +19,19 @@
 > **信任边界**：引擎无入站鉴权（M15.3 裁决不补 Token）。桌面启动器默认监听 `0.0.0.0:8730`
 > 是为了让手机连得上，代价是只能在可信的家庭局域网使用，切勿暴露公网。
 
+## 里程碑
+
+| 阶段 | 交付 | 提交 |
+|---|---|---|
+| M13 | 前台服务保活与通知栏进度 | `6060f9b` |
+| M14 | HLS AES-128 分片解密与下载 | `d7bd3b4` |
+| M15 | 桌面端托盘启动器 → GUI 控制面板 → 单文件 `BrowseGuardEngine.exe` | `76ec785` |
+| M16 | 下载控制台接通引擎网络层，纯电脑端「嗅探 → 选画质 → 下载」闭环 | `33ebc21` |
+| M16.5 | 环境依赖自检面板与 `BGV_FFMPEG_PATH` 自定义路径 | `a92db88` |
+| M17 | 解析器模糊测试与极值防御（清单 / TS+ADTS / URL 三组极值输入） | `d1b3a0a` |
+
+每阶段的现场证据、协议坑与自报缺口记在 `docs/smoke-report.md`（§33 起按阶段编号）。
+
 ## 仓库结构
 
 | 目录 | 职责 |
@@ -40,7 +53,7 @@
 # Gradle 项目结构（应列出 :shared / :android:app / :engine-client / :cli / :mcp）
 .\gradlew.bat projects
 
-# Android：出 debug 包 + 跑本模块 JVM 单测（442 项，不需要设备）
+# Android：出 debug 包 + 跑本模块 JVM 单测（471 项，不需要设备）
 .\gradlew.bat :android:app:assembleDebug
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 

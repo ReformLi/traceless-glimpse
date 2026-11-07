@@ -3429,3 +3429,60 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
 - **无入站鉴权**：M15.3 裁决不补 Token，桌面端默认 `0.0.0.0` 仅限可信家庭局域网。
 - **产物不入库**：`config.json`、`engine.log`、`preview/` 报告与截图、`dist/*.exe` 都按
   `desktop/.gitignore` 忽略；换机器需要重跑 `build_exe.py` 与两条 e2e 脚本才能复现本报告数字。
+
+## 35. M17：解析器模糊测试与极值防御（2026-11-07，`d1b3a0a`）
+
+目标是在**不改正常业务逻辑**的前提下，对底层解析器施加极端输入，确认它只会优雅报错。
+工具链不依赖外部 fuzz 平台：`FuzzDefenseTest.kt` 自带固定 seed（`0x4D3137`）的极值生成器，
+清单 / 恶意 URL / 乱码音轨三组随机轮次分别为 240 / 240 / 96，加定向用例共 **20 例**；
+`mustNotThrow` 把**任何** Throwable 都判成破防，所以"优雅"只能落在三种形态上——
+返回 `null`、返回空列表、或返回登记过的本地失败（`LocalFailures`）。
+
+一处契约事实先对齐：Android 端**没有** `HlsParseException`（全仓库只有 `EngineException`）。
+`HlsPlaylistParser.parse` 的既有契约是返回可空 `HlsPlaylist?`，`null` 即"拒绝 / 空清单"，
+下游由 `LocalFailures.unsupportedLink` 转成明确本地失败。因此断言写成**零异常 + null/安全数据**，
+而不是要求抛某个并不存在的异常——否则测试会倒逼出一个多余的新异常类型。
+
+### 35.1 首轮裸测：13 PASS / 7 FAIL，7 个全是生产代码真实缺陷
+
+先只写测试、不动生产代码，跑出来的失败即缺陷清单：
+
+| # | 极值输入 | 真实后果 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `#EXTINF:` 后接 20 万个 `9` | `toDoubleOrNull()` 返回 `Infinity`，污染 `HlsProbeResult.durationSeconds` 直到 UI | 新增 `durationOrZero()`，非有限值与负值一律 0 |
+| 2 | 乱码中混入负 `#EXTINF` | 总时长为负 | 同上，钳 0 并停止累加 |
+| 3 | `BANDWIDTH=-1` | 负带宽进入变体排序 | 负值钳 0 |
+| 4 | `RESOLUTION=-1x-2` | 负宽高进入画质展示与选择 | 负值钳 0 |
+| 5 | `#EXT-X-MEDIA-SEQUENCE:9223372036854775807` | `mediaSequence + 分片下标` **Long 回绕成负数序号**，污染 AES-128 默认 IV | 加法前判上界，溢出即钳 |
+| 6 | `AdtsFrameScanner.frameAt(offset = Int.MAX_VALUE)` | `offset + 6` 回绕为负，绕过边界判断后 `buffer.get(2147483647)` 抛**真实 `IndexOutOfBoundsException`** | 全减法比较 + `minOf(size, buffer.limit())` |
+| 7 | `pageUrl = "https://x/a\r\nSet-Cookie: sid=1"` | 只过 `startsWith("http")` 就被原样写进 **Referer 头**；且该头是在 `SniffHeaderPolicy.sanitize` **之后**手工补的，绕过白名单过滤 | 新增 `String.isSafeReferer()`：过 URL 解析、排除控制字符 |
+
+第 5 与第 7 是这一轮最有价值的两个：前者是典型的整数溢出污染密码学参数（默认 IV 由 media sequence 推导），
+后者是**绕过既有清洗环节**的 CRLF 头注入——它不破坏解析器，而是让恶意页面把任意头塞进后续请求。
+
+另有一处未进失败清单的**预防性**加固：`AdtsAudioConfig.fromAdtsHeader` 增加 `size > sample.size` 拒绝，
+防止调用方谎报长度导致越界读（该路径当前调用方不会传错，属纵深防御）。
+
+### 35.2 修复原则
+
+只加边界守卫，**正常路径的数值计算一字未改**：非有限值钳 0、负值钳 0、加法判上界、
+减法代替加法比较、越界前 `minOf` 收口。513 个既有用例全绿即为"未改业务逻辑"的证据。
+
+### 35.3 覆盖与回归
+
+| 项 | 结果 |
+| --- | --- |
+| 基线 | `./gradlew test --rerun` → **513**（android/app 451 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 |
+| 新增 | `FuzzDefenseTest` 20 例（清单 8 / TS+ADTS 6 / URL 5 / 生成器自检 1） |
+| 最终 | **533 = 513 + 20，0 failures / 0 errors**（android/app 471） |
+| 触发层 | 0 长度分片与 1 字节 `0x47` 伪 TS 文件直接调 `TsRemuxer().remux()` 在 JVM 上跑通：返回 `Skipped`、不留 `.mp4.part`，证明守卫先于任何 native 调用 |
+
+### 35.4 本轮自报的缺口
+
+- **原生层未被覆盖**：`MediaMuxer` 是 Android 原生组件，JVM 单测既触发不了 SIGSEGV、也证明不了
+  "绝不原生崩溃"。本轮钉住的是**前置守卫与触发器逻辑**（`PtsGate` 极值跳变必 Reject、
+  6 条门禁都给出登记过的降级理由、守卫先于 muxer 调用）。要钉死原生层需 `androidTest` 真机用例，
+  本轮裁决为"环境成本过高，不做"。
+- **随机轮次是确定性伪随机**：固定 seed 保证 CI 可复现，代价是换 seed 可能暴露新问题；
+  它不能替代长时间持续 fuzz。
+- **只在 JVM 侧生效**：Py 引擎与桌面端未纳入本轮极值输入，`engine/` 的 `security.py` 另有自己的 SSRF 边界。
