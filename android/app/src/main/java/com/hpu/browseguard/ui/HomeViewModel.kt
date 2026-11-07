@@ -30,6 +30,7 @@ import com.hpu.browseguard.data.download.DownloadCoordinator
 import com.hpu.browseguard.data.download.QueuedTask
 import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.formatSummary
+import com.hpu.browseguard.data.keepalive.KeepAliveStarter
 import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.FormatInfo
@@ -125,6 +126,8 @@ data class HomeUiState(
     val mergeSelected: Boolean = true,
     /** 下载交给引擎还是本机直链——全局开关，只切下载这一段。 */
     val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
+    /** 下载还在跑时挂前台服务保活；默认开，切后台/灭屏也不许被系统冻住。 */
+    val keepAliveWhileDownloading: Boolean = true,
     /** 嗅探交给电脑引擎还是手机 WebView；默认本机，界面可显式切换。 */
     val sniffExecutor: SniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
     /** 浏览器里默认直接露出网页；只在 App 冷启动时决定初值。 */
@@ -243,6 +246,13 @@ class HomeViewModel(
     private val consent: CookieConsentStore = DenyAllCookieConsent,
     /** 按下「开始下载」之后，这条任务就归它了：进度、终态、SAF 复制都不回这个页面。 */
     private val downloads: DownloadCoordinator,
+    /**
+     * 任务进队列那一刻给保活服务打的卡。
+     *
+     * 只有这一条路径知道「用户此刻还在这个 App 里」——Android 12 起后台不能起前台服务，
+     * 所以这张卡必须由界面动作打，不能由谁在后台观察队列观察出来。
+     */
+    private val keepAlive: KeepAliveStarter = KeepAliveStarter.NOOP,
 ) : ViewModel() {
 
     private var sniffJob: Job? = null
@@ -284,6 +294,7 @@ class HomeViewModel(
             engineUrl = settings.baseUrl,
             engineUrlDraft = settings.baseUrl,
             downloadExecutor = settings.downloadExecutor,
+            keepAliveWhileDownloading = settings.keepAliveWhileDownloading,
             sniffExecutor = settings.sniffExecutor,
             showPageByDefault = settings.showPageByDefault,
             // 冷启动才消费「默认直接显示网页」；本机模式之外没有浏览器可显示。
@@ -445,6 +456,18 @@ class HomeViewModel(
     fun setShowPageByDefault(value: Boolean) {
         settings.showPageByDefault = value
         _state.update { it.copy(showPageByDefault = value) }
+    }
+
+    /**
+     * 「下载保活」开关：关掉后正在挂的服务等下一次心跳自己收摊，这里不直接碰 Service。
+     *
+     * 现场打开且真有活在跑时要立刻打一次卡，否则通知栏得等到下一次入队才亮起来；
+     * 队列空着就不打卡，免得服务闪一下又自己退——那一闪只会写出「正在下载 0 项」。
+     */
+    fun setKeepAliveWhileDownloading(value: Boolean) {
+        settings.keepAliveWhileDownloading = value
+        _state.update { it.copy(keepAliveWhileDownloading = value) }
+        if (value && downloads.activeCount() > 0) keepAlive.onRequestStart()
     }
 
     /**
@@ -863,6 +886,8 @@ class HomeViewModel(
         _state.update { it.copy(consentWait = null) }
         if (!wait.needsSniffReplay) {
             downloads.resume(wait.recordId)
+            // 等授权那一段服务已经收摊了（没有字节在动就不占保活额度）；续跑要重新打一次卡。
+            keepAlive.onRequestStart()
             return
         }
         resumeFormatId = wait.formatId
@@ -967,6 +992,8 @@ class HomeViewModel(
                     !browserDownloadActive,
             ),
         )
+        // 先入队再打卡：服务起来读的第一眼就得已经看得见这条流，否则它会以为自己无事可干。
+        keepAlive.onRequestStart()
         // 主页到此为止：进度与终态归下载管理页，这个页面立刻回到输入状态等着贴下一条链接。
         autoStartSelection = false
         browserDownloadActive = false
@@ -1022,6 +1049,7 @@ class HomeViewModel(
             history: HistoryRepository,
             consent: CookieConsentStore,
             downloads: DownloadCoordinator,
+            keepAlive: KeepAliveStarter,
         ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -1029,7 +1057,9 @@ class HomeViewModel(
                     require(modelClass.isAssignableFrom(HomeViewModel::class.java)) {
                         "HomeViewModel.Factory 不认识的类型：$modelClass"
                     }
-                    return HomeViewModel(settings, backends, engineInfo, audit, history, consent, downloads) as T
+                    return HomeViewModel(
+                        settings, backends, engineInfo, audit, history, consent, downloads, keepAlive,
+                    ) as T
                 }
             }
     }

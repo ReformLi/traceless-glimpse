@@ -10,7 +10,7 @@
 | 结果 | **54 项断言全绿，退出码 0**（`RESULT: ALL GREEN`） |
 
 > 本文件从 M0 冒烟单一路写成了项目的逐轮取证与遗留登记日志：§1–§17 是 M0–M3，§18–§26 是 M4，
-> §27–§29 是 M7–M9，§30 是文档回写。M5（CLI/MCP）与 M6（Android 完整功能六轮）当轮写在
+> §27–§29 是 M7–M9，§30 是文档回写，§31 是 M12.5，§32 是 M13。M5（CLI/MCP）与 M6（Android 完整功能六轮）当轮写在
 > `MCP_USER_GUIDE.md` 与 `acceptance-m6-*.md` 里，没有回填本文件。
 > 下面这张表只描述 §1–§6 那一轮（M0 桩引擎），后面的轮次各有自己的前提块。
 > 里程碑对应关系见 `PRD.md` §15；Android 端当前实现形态见 `../android/README.md`。
@@ -3153,4 +3153,72 @@ mapping 按 §1 第 3 步当场重归档为 `release-artifacts/mapping-v1.1.0-co
    下载连不上停在待下载。改走浏览器地址栏注入才可靠。**App 侧无缺陷，但台账多了一行，删除需点名授权。**
 3. **BACK 回到旧播放器的原始现象本轮没能重现**，`key(recordId)` + 强制 release 属「防御已就位、
    观察未结案」，按裁决继续单独立项观察。
+
+---
+
+## 32. M13：前台服务保活与通知栏进度（2026-11-07）
+
+本轮只加保活：`LocalDirectDownloader` / `HlsDownloader` / `TsRemuxer` 一行未动，`DownloadCoordinator`
+只当观察对象（`activeCount()` + `HistoryRepository.records` 心跳流），下载本体与队列逻辑没改。
+UI 只新增设置页「下载保活」一行与通知权限被拒时的一句实话，原有布局与业务逻辑未动。
+
+### 32.1 判据与节拍
+
+- 启停唯一判据是 `KeepAlivePolicy.shouldRun(settings.keepAliveWhileDownloading, downloads.activeCount())`：
+  开关关掉或队列空就 `stopSelf`，服务自己不数时间。判据刻意不看记录状态——终态落库与协程结束之间
+  总差一步，按记录判会出现「下载早完了，通知栏还挂着 99%」。
+- 节拍复用下载页同一条 Room 心跳流（每个字节落库都 emit），不新增定时器；通知内容由
+  `KeepAliveSnapshotOf` 从记录合成，百分比按字节池化（并发流相加、不取平均），封顶 99%。
+- 前台类型 `dataSync`、`START_NOT_STICKY`；通知 `IMPORTANCE_LOW` + `setOnlyAlertOnce` +
+  `CATEGORY_PROGRESS`，**只有一条 ongoing，没有任何操作按钮**（JVM 静态钉子反向断言无 `.addAction(`）。
+- Android 12+ 后台不得起 FGS，所以打卡点只放在用户动作路径：入队后、Cookie 授权续跑后、
+  现场打开开关且队列非空时，共 3 处。
+- 等 Cookie 授权时协调器已把 job 摘出 `jobs`，`activeCount` 归 0、服务收摊；点「同意并继续」
+  再打一次卡，续跑不断。
+
+### 32.2 权限与文案
+
+- 冷启动且开关开着、通知不可见时申请一次 `POST_NOTIFICATIONS`（Android 13+ 弹窗只给一次机会，
+  答过再 launch 是静默回调，不会变成骚扰）。
+- 设置页那行在开关开着但通知不可见时出红字「通知权限没给：下载照旧保活，但通知栏看不到进度。」
+  和「去设置」；`MainActivity.onResume` 每次重读 `areNotificationsEnabled()`，授权/撤销回来立刻改口。
+
+### 32.3 MuMu 设备取证（MuMu 15 / SM-S9080 / Android 15，900×1600）
+
+素材：宿主 `m13_keepalive.mp4`（55.2 MB）+ 本机 Python 限速服务。第一轮 250 KB/s 走完整链路，
+第二轮降到 120 KB/s，好让锁屏观测窗口足够长。
+
+| 腿 | 现场证据 |
+| --- | --- |
+| 权限弹窗 | debug 包冷启动即弹「要允许"无痕掠影"向您发送通知吗？」；允许后 `dumpsys package` 里 `POST_NOTIFICATIONS: granted=true` |
+| 服务起来 | `dumpsys activity services`：`ServiceRecord{…/DownloadKeepAliveService}`、`isForeground=true foregroundId=1301 types=0x00000001`；通知 `channel=download_keep_alive … ONGOING_EVENT\|ONLY_ALERT_ONCE\|NO_CLEAR\|FOREGROUND_SERVICE category=progress` |
+| 通知在动 | 10:09 通知栏截图「正在下载 1 项 … 已下载 10%」→ 10:18「已下载 49%」；正文下只有系统的「管理」chip，无 App 操作按钮 |
+| 灭屏下载不断（第一轮） | 10:11:20 灭屏；10:12:59 落库 `downloadedBytes=52,994,048 / 57,861,784`（灭屏前约 30 MB）；10:13 完成，产物 57,861,784 B |
+| 锁屏 2 分钟（第二轮） | 10:16:38–10:18:43 连续 `mWakefulness=Asleep`；`wlan0 rx` 129,121,027 → 145,050,242（+15.9 MB ≈ 120 KB/s × 125 s）；每次抽查服务都是 `isForeground=true` |
+| 完成自收摊 | 10:23:05 终态 `DONE`、`sizeBytes=57,861,784`；队列空后 `dumpsys activity services` 已无本条，通知栏显示「无通知」 |
+| 点通知回下载页 | 从后台点通知正文 → App 直接落在「下载」Tab，进行中的那条在最上面 |
+| 一次性消费 | 到达下载页后回「首页」再转横屏，仍停在「首页」，没有二次跳转 |
+| 权限被拒 | `pm revoke POST_NOTIFICATIONS` 后冷启动再弹一次，选「不允许」→ 设置页出红字 + 「去设置」；点「去设置」落到本应用通知页（「您尚未允许此应用显示通知」）；在系统页打开开关后返回，红字在 `onResume` 立刻消失 |
+
+一条环境插曲：第一轮灭屏约 1 分钟后 MuMu 宿主侧自己把屏幕点亮（`mWakefulness=Awake`），不是 App
+行为；重新灭屏后连续 Asleep 超过两分钟，上表「锁屏 2 分钟」取的是第二段。
+
+### 32.4 本轮自报的缺口
+
+1. **MuMu 是模拟器，真实 Doze/省电策略没有覆盖**：宿主一直供电，`dataSync` 在 Android 14+ 的单次
+   6 小时、每 24 小时累计 24 小时额度也没跑到边界。真机长时挂后台仍需一次实测。
+2. **`dumpsys notification --noredact` 在本机只吐 channel 与 `AppSettings`，找不到 NotificationRecord
+   段**，命令行无法复读标题与进度；本轮以通知栏截图为准，原因未查明，登记在此。
+3. **R8 包未出**：本轮只装 debug 包；§31 遗留的「R8 下 HLS 转封装音频判据」仍欠一次，
+   服务与通知在 R8 包上也还没跑过。
+4. **「不再询问」后的路径没实测**：两次拒绝后系统不再弹窗，当前只有「去设置」这一个出口，
+   文案沿用同一句红字。
+
+### 32.5 回归与提交
+
+- 全量 JVM 现场复跑：**504 tests**（app 442 + shared 11 + engine-client 12 + cli 26 + mcp 13），
+  0 失败 0 错误 0 跳过。相对 M12.5 的 483 多出 21 项，全部来自 M13：`KeepAliveSnapshotTest` 8、
+  `KeepAliveWiringTest` 10、`KeepAlivePolicyTest` 3。
+- 未新增依赖（`ServiceCompat`、`ActivityResultContracts` 都在现有版本内）；除 Manifest 的
+  权限与 `foregroundServiceType` 外没有构建配置改动。
 

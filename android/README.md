@@ -5,7 +5,7 @@
 切到本机后，`data/backend/` 里不出现 `EngineClient`、`TaskCreateRequest`、`DownloadRequest`、`encode(`，
 这条由 `TaskNeverGoesOnTheWireTest.localSideStaysOffTheWire` 扫源码钉住：本机的活不借引擎的协议发言。
 
-## 现状（M12.5 收官）
+## 现状（M13 收官）
 
 - 已接入 Gradle 构建，是 `settings.gradle.kts` 里的 `:android:app`，协议模型直接复用 `:shared`（KMP）单一来源，不重复定义。
 - UI 是 Jetpack Compose + Material 3（`buildFeatures.compose = true`），不是模板时代的 Views 栈。
@@ -65,6 +65,19 @@
   **主文档不拦**——用户在地址栏主动打开的域必须能看到结果，白屏比广告更难解释。
   审计行 `adblock_hit host=<域名>` 只记域名，同一域名每页去重（去重窗口的边界见 `../docs/release-checklist.md` §7）。
 
+## 下载保活与通知栏（M13）
+
+- 下载期间挂一条 `dataSync` 前台服务（`data/keepalive/`），默认开、设置页「下载保活」可关。
+  服务一行下载都不做：只订阅 `HistoryRepository.records` 心跳流，用
+  `KeepAlivePolicy.shouldRun(开关, DownloadCoordinator.activeCount())` 决定继续挂还是 `stopSelf`；
+  不新增定时器，通知与下载页读的是同一笔落库。
+- 通知栏只有一条 ongoing 进度（`IMPORTANCE_LOW` + `setOnlyAlertOnce`，**没有任何操作按钮**），
+  点按经 `ACTION_OPEN_DOWNLOADS` 回到 App 的「下载」Tab，跳转只消费一次。
+- `POST_NOTIFICATIONS` 在冷启动且开关开着、通知不可见时申请一次；`MainActivity.onResume` 重读
+  `areNotificationsEnabled()`。被拒不影响保活本身，设置页给红字与「去设置」出口。
+- 打卡点只在用户动作路径（入队、Cookie 授权续跑、现场打开开关且队列非空），避开 Android 12+
+  「后台不得起前台服务」的限制；等 Cookie 授权时队列视为空，服务收摊，续跑时再打卡。
+
 ## Cookie：默认关，按域名授权
 
 未授权前连 WebView 自己的 CookieStore 都不碰；授权后 Cookie 值只注入同站点的本机下载请求，
@@ -76,7 +89,7 @@
 ```
 com.hpu.browseguard
 ├── MainActivity.kt
-├── data/     # EngineClient、backend/（本机执行者）、browser/、cookie/、download/、history/、media/、output/、playback/
+├── data/     # EngineClient、backend/（本机执行者）、browser/、cookie/、download/、history/、keepalive/、media/、output/、playback/
 └── ui/       # Compose：BgvApp / HomeScreen / BrowserScreen / HistoryScreen / DownloadList / VideoPlayerScreen / SettingsScreen
 ```
 
@@ -86,7 +99,7 @@ com.hpu.browseguard
 # 出 debug 包（产物在 android/app/build/outputs/apk/debug/app-debug.apk）
 .\gradlew.bat :android:app:assembleDebug
 
-# 本模块 JVM 单测：421 项，不需要设备
+# 本模块 JVM 单测：442 项，不需要设备
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 ```
 
@@ -110,6 +123,8 @@ com.hpu.browseguard
 - DRM（SAMPLE-AES / Widevine / FairPlay）一律拒绝并如实展示，不提供下载入口。
 - blob/MSE 不伪造可下载的 `SniffResult`。
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
+- 下载保活只在 MuMu 模拟器上验证过：真实 Doze/厂商省电策略与 `dataSync` 时长额度上限未实测；
+  R8 包也还没跑过服务与通知（见 `../docs/release-checklist.md` §7）。
 
-里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿）；
+里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活）；
 M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。

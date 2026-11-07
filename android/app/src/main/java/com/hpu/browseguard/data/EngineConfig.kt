@@ -42,6 +42,9 @@ interface EngineSettings {
 
     /** 嗅探时强制静音网页；默认开启，隐藏深嗅绝不能出声。 */
     var muteWhileSniffing: Boolean
+
+    /** 下载期间挂前台服务保活；默认开启——用户下载就是为了切后台，不能让他先去设置里找开关。 */
+    var keepAliveWhileDownloading: Boolean
 }
 
 /**
@@ -96,11 +99,18 @@ class EngineConfig(context: Context) : EngineSettings {
             prefs.edit().putBoolean(KEY_MUTE_WHILE_SNIFFING, value).apply()
         }
 
+    override var keepAliveWhileDownloading: Boolean
+        get() = prefs.getBoolean(KEY_KEEP_ALIVE, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_KEEP_ALIVE, value).apply()
+        }
+
     private companion object {
         const val KEY_BASE_URL = "base_url"
         const val KEY_DOWNLOAD_EXECUTOR = "download_executor"
         const val KEY_SNIFF_EXECUTOR = "sniff_executor"
         const val KEY_SHOW_PAGE_BY_DEFAULT = "show_page_by_default"
         const val KEY_MUTE_WHILE_SNIFFING = "mute_while_sniffing"
+        const val KEY_KEEP_ALIVE = "keep_alive_while_downloading"
     }
 }

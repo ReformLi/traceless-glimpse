@@ -33,7 +33,7 @@
 # Gradle 项目结构（应列出 :shared / :android:app / :engine-client / :cli / :mcp）
 .\gradlew.bat projects
 
-# Android：出 debug 包 + 跑本模块 JVM 单测（421 项，不需要设备）
+# Android：出 debug 包 + 跑本模块 JVM 单测（442 项，不需要设备）
 .\gradlew.bat :android:app:assembleDebug
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 

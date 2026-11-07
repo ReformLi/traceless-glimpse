@@ -6,7 +6,7 @@
 | 项目英文名      | Traceless Glimpse   |
 | 仓库名        | `traceless-glimpse` |
 | Android 包名 | `com.hpu.browseguard` |
-| 文档版本       | v0.3（v0.2 规划 + M9 收官回写；2026-11-06 补 M10/M11/M12 里程碑） |
+| 文档版本       | v0.3（v0.2 规划 + M9 收官回写；2026-11-06 补 M10/M11/M12 里程碑，2026-11-07 补 M12.5/M13） |
 | 文档状态       | 与已交付实现对齐；v0.3 的增量集中在 §6.9 本机执行者、§13.2 路径 B 定位、§15 里程碑表 |
 
 ---
@@ -442,6 +442,7 @@ v0.1 的 FR-SEC 系列已经从工程角度定义了 SSRF 防护、惰性 Cookie
 | **M11 下载管理与播放** | 下载管理页、文件打开/分享/重命名/删除、批量存在性策略、冷启动幽灵行与孤儿清理；Room v5 播放进度、Media3 全屏播放与断点续播 | 464 项 JVM 测试通过；APK 增量 +1.41 MB（media3，预算 2 MB） | MuMu 四项验收：全屏播放、拖到中段退出重进续播、列表时长与进度、外部应用打开兜底；删除用户可见记录须二次确认 | 已过（`a107dc0` / `924c350`，缺口见 `docs/release-checklist.md` §7） |
 | **M12 播放器体验与广告拦截** | 播放器手势层（横滑快进快退 90 秒/整屏、左半屏亮度、右半屏音量）+ 倍速面板 0.5–2.0x + 系统画中画；WebView `shouldInterceptRequest` 广告域名黑名单返回 200 空体，主文档不拦 | 475 项 JVM 测试通过（app 413）；不碰 `LocalDirectDownloader` / `HlsDownloader` / `TsRemuxer` 一行 | MuMu 真机取证：快进至 0:58 / 快退至 0:12 与画面时间码一致、亮度 23% 提示、音量 0→25、2.0x 生效、播放中按 Home 进小窗且音频不断、五个广告域各留 `adblock_hit` 而主文档与本地资源照常 | 已过（`38fac08`，缺口见 `docs/release-checklist.md` §7） |
 | **M12.5 取证行去重与 R8 首跑** | `AdBlockLedger` 按**地址**认页（同域每页一行、同址重载不补行）；播放器 `key(recordId)` + 离场强制 `release()`；测试签名打出首个可安装 R8 包并重归档 mapping | 483 项 JVM 测试通过（app 421）；UI 布局与业务逻辑未改，下载三件套一行未动 | MuMu R8 包全链无闪退：深嗅出候选 → 下载已完成 → 下载管理 → ExoPlayer 画面推进 → 续播 `resume=25221`；`adblock_hit` 同域 3 请求 1 行、重载不补行；反序列化异常 0 命中 | 已过（`docs/smoke-report.md` §31；R8 下 HLS 音频判据仍欠一次，见 §7） |
+| **M13 前台服务保活** | 下载期间挂 `dataSync` 前台服务（默认开、可关）：启停只看开关 + 协调器 `activeCount()`，节拍复用 Room 心跳流；通知栏单条进度、不放操作按钮、点按回下载页；`POST_NOTIFICATIONS` 按需申请，被拒时设置页给红字与「去设置」 | 504 项 JVM 测试通过（app 442）；不碰 `LocalDirectDownloader` / `HlsDownloader` / `TsRemuxer`，`DownloadCoordinator` 只当观察对象 | MuMu：锁屏连续 2 分钟 `wlan0` 以 120 KB/s 增长、服务全程 `isForeground=true`、灭屏完成两次下载（57,861,784 B）；通知 10%→49%、点通知直接落「下载」Tab 且只消费一次；权限被拒有红字与可用出口 | 已过（`docs/smoke-report.md` §32，缺口见 `docs/release-checklist.md` §7） |
 
 ---
 

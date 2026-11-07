@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -53,6 +54,7 @@ import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.RecordStatus
+import com.hpu.browseguard.data.keepalive.NotificationPermission
 import com.hpu.browseguard.data.output.OutputAdoptResult
 import com.hpu.browseguard.data.output.OutputLocation
 import com.hpu.browseguard.shared.model.CookiePolicy
@@ -90,6 +92,8 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
     val historyState by historyViewModel.state.collectAsStateWithLifecycle()
     val clearing by historyViewModel.clearing.collectAsStateWithLifecycle()
     val outputLocation by container.outputs.location.collectAsStateWithLifecycle()
+    // 通知可见性由活动在 onResume 重新读数：从授权弹窗或系统设置页回来，这一行立刻改口。
+    val notificationsVisible by container.notificationsVisible.collectAsStateWithLifecycle()
     var outputError by remember { mutableStateOf<String?>(null) }
     // 授权表不是 Flow：进页面时读一次，撤销后立刻重读——列的就是这一份。
     var cookieHosts by remember { mutableStateOf(container.cookieConsents.grantedHosts()) }
@@ -106,10 +110,14 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         }
     }
 
+    // 「去设置」要点开系统里本应用的通知页；授权弹窗的机会用掉之后，这是唯一能把进度找回通知栏的路。
+    val uiContext = LocalContext.current
+
     SettingsScreen(
         state = homeState,
         history = historyState,
         clearingHistory = clearing,
+        notificationsVisible = notificationsVisible,
         outputLocation = outputLocation,
         outputError = outputError,
         cookieHosts = cookieHosts,
@@ -121,6 +129,10 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         onShowPageByDefaultChange = homeViewModel::setShowPageByDefault,
         onMuteWhileSniffingChange = homeViewModel::setMuteWhileSniffing,
         onSelectDownloadExecutor = homeViewModel::selectDownloadExecutor,
+        onKeepAliveChange = homeViewModel::setKeepAliveWhileDownloading,
+        onOpenNotificationSettings = {
+            uiContext.startActivity(NotificationPermission.systemSettingsIntent(uiContext))
+        },
         onPickOutputDirectory = {
             outputError = null
             directoryPicker.launch(null)
@@ -164,6 +176,7 @@ fun SettingsScreen(
     state: HomeUiState,
     history: HistoryUiState,
     clearingHistory: Boolean,
+    notificationsVisible: Boolean,
     outputLocation: OutputLocation,
     outputError: String?,
     cookieHosts: List<String>,
@@ -175,6 +188,8 @@ fun SettingsScreen(
     onShowPageByDefaultChange: (Boolean) -> Unit,
     onMuteWhileSniffingChange: (Boolean) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
+    onKeepAliveChange: (Boolean) -> Unit,
+    onOpenNotificationSettings: () -> Unit,
     onPickOutputDirectory: () -> Unit,
     onResetOutputDirectory: () -> Unit,
     onClearHistory: () -> Unit,
@@ -202,8 +217,11 @@ fun SettingsScreen(
         Spacer(Modifier.height(20.dp))
         SniffDownloadSection(
             state = state,
+            notificationsVisible = notificationsVisible,
             onSelectSniffExecutor = onSelectSniffExecutor,
             onSelectDownloadExecutor = onSelectDownloadExecutor,
+            onKeepAliveChange = onKeepAliveChange,
+            onOpenNotificationSettings = onOpenNotificationSettings,
         )
 
         Spacer(Modifier.height(20.dp))
@@ -372,8 +390,11 @@ private fun EngineSection(
 @Composable
 private fun SniffDownloadSection(
     state: HomeUiState,
+    notificationsVisible: Boolean,
     onSelectSniffExecutor: (SniffExecutor) -> Unit,
     onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
+    onKeepAliveChange: (Boolean) -> Unit,
+    onOpenNotificationSettings: () -> Unit,
 ) {
     // 隐藏深嗅是浏览器自己的会话：它跑着也允许切到电脑引擎（切完立刻销毁 WebView）。
     val sniffRunning = state.sniff is SniffPhase.Running && state.deepSniff == DeepSniffPhase.Off
@@ -452,6 +473,29 @@ private fun SniffDownloadSection(
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
         )
+
+        // 保活算「怎么下载」这一段：切后台能不能继续下，是下载的性质，不是浏览体验。
+        Spacer(Modifier.height(16.dp))
+        SettingSwitchRow(
+            label = stringResource(R.string.settings_keep_alive_label),
+            hint = stringResource(R.string.settings_keep_alive_hint),
+            checked = state.keepAliveWhileDownloading,
+            onCheckedChange = onKeepAliveChange,
+        )
+        if (state.keepAliveWhileDownloading && !notificationsVisible) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.settings_keep_alive_notify_off),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onOpenNotificationSettings) {
+                    Text(stringResource(R.string.settings_keep_alive_open_settings))
+                }
+            }
+        }
     }
 }
 
@@ -832,6 +876,7 @@ private fun SettingsScreenPreview() {
                 loading = false,
             ),
             clearingHistory = false,
+            notificationsVisible = true,
             outputLocation = OutputLocation(treeUri = "content://preview/tree", displayName = "Download"),
             outputError = null,
             cookieHosts = listOf("cdn.example.com", "www.example.com"),
@@ -843,6 +888,8 @@ private fun SettingsScreenPreview() {
             onShowPageByDefaultChange = {},
             onMuteWhileSniffingChange = {},
             onSelectDownloadExecutor = {},
+            onKeepAliveChange = {},
+            onOpenNotificationSettings = {},
             onPickOutputDirectory = {},
             onResetOutputDirectory = {},
             onClearHistory = {},

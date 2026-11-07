@@ -101,6 +101,7 @@ fun HomeRoute(
             container.history,
             container.cookieConsents,
             container.downloads,
+            container.keepAlive,
         ),
     ),
 ) {

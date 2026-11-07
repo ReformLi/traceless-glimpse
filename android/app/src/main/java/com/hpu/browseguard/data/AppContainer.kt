@@ -22,6 +22,9 @@ import com.hpu.browseguard.data.history.HistoryRepository
 import com.hpu.browseguard.data.history.ReconcileReport
 import com.hpu.browseguard.data.history.RoomHistoryRepository
 import com.hpu.browseguard.data.history.TaskLookup
+import com.hpu.browseguard.data.keepalive.DownloadKeepAliveStarter
+import com.hpu.browseguard.data.keepalive.KeepAliveStarter
+import com.hpu.browseguard.data.keepalive.NotificationPermission
 import com.hpu.browseguard.data.media.AndroidMediaProbe
 import com.hpu.browseguard.data.media.MediaProbe
 import com.hpu.browseguard.data.output.OutputPublish
@@ -32,6 +35,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * 组装根：全仓唯一允许 new 具体后端的地方。
@@ -115,6 +119,27 @@ class AppContainer(context: Context) : BackendProvider {
     val downloads: DownloadCoordinator by lazy {
         DownloadCoordinator(this, history, applicationScope, audit, cookieConsents)
     }
+
+    /**
+     * 保活服务的面子：界面只管在任务进队列那一刻打一张卡，什么时候停由服务自己看队列。
+     *
+     * 放在这一层是因为它和 [downloads] 必须成对——起服务的人数的是同一个队列。
+     */
+    val keepAlive: KeepAliveStarter = DownloadKeepAliveStarter(app, settings, audit)
+
+    /**
+     * 点通知栏那一条要落到下载页；一次性的，界面消费完立刻清零。
+     *
+     * 不清零的话，转屏或进程恢复会把用户再踹回下载页一次——用户可没再点通知。
+     */
+    val showDownloadsTab = MutableStateFlow(false)
+
+    /**
+     * 通知栏那一格此刻用户看得见吗；活动每次回到前台重新读一次，授权回来就不会留着旧话。
+     *
+     * 服务不受这个值影响——权限被拒它照样保活，只是界面上要说实话。
+     */
+    val notificationsVisible = MutableStateFlow(NotificationPermission.isVisibleToUser(app))
 
     /**
      * 冷启动对账：把上次进程遗留的进行中记录落到事实状态。

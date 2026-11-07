@@ -157,13 +157,17 @@ GRADLE_USER_HOME=D:/Android/GradleUserHome ./gradlew.bat \
 cd engine && ./.venv/Scripts/python.exe -m pytest -q
 ```
 
-JVM 侧 **483 tests**（app 421 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
+JVM 侧 **504 tests**（app 442 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
 注意 `:shared` 是 KMP 模块，任务名是 `jvmTest` 不是 `testDebugUnitTest`。引擎桩套件 235 passed
-是 M9 的记录，本轮（只改构建与界面警告）未复跑。引擎 `-m real` 套件不要与桩套件并发跑，
+是 M9 的记录，本轮（只改界面与前台服务）未复跑。引擎 `-m real` 套件不要与桩套件并发跑，
 也不要在重启引擎时跑，否则会出现假失败。
 
-上面这组数字是 **2026-11-06 20:32（M12.5 收官）现场复跑**的结果。上一版基线是 475 项（app 413，M12），
-app 从 413 涨到 421 是 M12.5 的 `AdBlockLedgerTest`（6 项，一页一域一行的边界）与 `PlayerWiringTest`
+上面这组数字是 **2026-11-07（M13 收官）现场复跑**的结果。上一版基线是 483 项（app 421，M12.5），
+app 从 421 涨到 442 是 M13 的 `KeepAliveSnapshotTest`（8 项，字节池化/未知总大小/转封装态）、
+`KeepAliveWiringTest`（10 项，通知无按钮、文案表、开关默认值与权限文案的接线钉子）与
+`KeepAlivePolicyTest`（3 项，开关 × 队列的启停判据）。
+
+再往前一版是 475 项（app 413，M12），app 从 413 涨到 421 是 M12.5 的 `AdBlockLedgerTest`（6 项，一页一域一行的边界）与 `PlayerWiringTest`
 （2 项，手势落系统 + 离场强制销毁的接线钉子）。
 
 再往前一版是 464 项（app 402，M11）：app 从 402 涨到 413 是 M12 的 `PlayerGestureMathTest`（6 项，
@@ -255,3 +259,14 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
   下载连不上才停在待下载，**不是校验缺陷**）。上一版登记的 `127.0.0.1:8733/deep.html` 那行本轮没有逐行复看，
   列表里 `127.0.0.1 · deep.html` 仍在、状态未确认。**这些都属用户可见记录，删除需要点名授权**，
   不在自动清理范围内。
+- **下载保活只在模拟器上验证过**（M13 登记）：MuMu 15 上锁屏 2 分钟、灭屏完成两次下载都过了，
+  但模拟器宿主一直供电，**真实 Doze / 厂商省电策略没覆盖**；Android 14+ `dataSync` 的单次 6 小时、
+  每 24 小时累计 24 小时额度也没跑到边界。下次在实体机上长时挂后台时补一次
+  （建议一条 ≥20 分钟的限速下载，期间锁屏并抽查 `dumpsys activity services` 与服务器侧已发字节）。
+- **通知内容无法从 `dumpsys notification` 复读**（M13 登记）：本机 `dumpsys notification --noredact`
+  只输出 channel 与 `AppSettings`，找不到 NotificationRecord 段，命令行核不到标题与进度；
+  M13 取证以通知栏截图为准。原因未查明，别把它当「通知没发出去」。
+- **M13 的前台服务与通知没在 R8 包上跑过**：本轮只装了 debug 包。和上面那条 HLS 音频判据一样，
+  下次出 Release 时一并补：下载开始 → 切后台 → 锁屏 1 分钟 → 通知进度在动 → 点通知落下载页。
+- **「不再询问」的通知权限路径没实测**：两次拒绝后系统不再弹窗，当前只靠设置页那句红字 +
+  「去设置」出口；文案与引导在那种状态下是否够用，实体机遇到时再确认。
