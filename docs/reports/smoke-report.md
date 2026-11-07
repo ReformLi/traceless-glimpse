@@ -3780,3 +3780,46 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
 - 心跳无法验证「离线窗口期」（引擎刚挂、两拍未满时点嗅探）：该窗口 `Connection.Connected`
   仍成立，走引擎请求→失败→自动降级的 M16 老路，行为正确但延迟至多 10 秒；
 - 真机验收（连引擎→杀进程→10 秒内变离线→重启→自动回绿）留给 EMUI 实机回归。
+
+## 42. 隐身嗅探结果下载按钮卡死的回落修复（2026-11-07）
+
+**现象**：手机隐身嗅探（不显示网页）出了 HLS 结果卡「画质未标注 · 无DRM」，
+下方「选择画质并下载」按钮置灰，点不动——只能显示网页后走浏览器右下角「下载」那条腿。
+
+### 42.1 根因：配置死锁，不是嗅探 bug
+
+- `downloadExecutor` 默认 = `ENGINE`（`EngineConfig.kt`，「全局开关，默认引擎」），与嗅探执行器相互独立；
+- 本机 WebView 嗅探不依赖引擎，所以嗅探正常成功、结果卡正常显示；
+- 但旧 `canPickFormats` 要求 `downloadExecutor == LOCAL_DIRECT || engineReady`——
+  下载执行器 = 引擎 + 引擎未就绪（未连接/离线/自检白名单空）→ **false → 按钮置灰**；
+- 更糟的是该状态**无任何可见提示**（引擎离线红字只在嗅探执行器 = ENGINE 时显示）→ 纯死胡同；
+- 用户走通的路径恰好绕开：显示网页 → 右下角「下载」→ `downloadFromBrowser` 强制切
+  `LOCAL_DIRECT` → 本机下载成功。
+- 本机下载器对 HLS 支持完整（`HlsDownloader`：主清单 → 媒体清单 → 逐段 + AES-128 → 拼接 → muxer 转 MP4），
+  这条结果完全可以在手机上直接下——按钮置灰纯粹是执行器门槛卡住。
+
+### 42.2 修复：画质表一步回落本机（与 degradeToLocal / downloadFromBrowser 同一先例）
+
+- **`canPickFormats` 放开执行器门槛**：只保留「嗅探成功 + 下载流程不冲突」，
+  顺手清掉叠了两层的 KDoc；
+- **`pickFormats()` 回落**：设置选「电脑下载」但引擎未就绪（`UiState.engineReady` 公开供判定）→
+  自动切 `LOCAL_DIRECT`（**持久化**设置，与 `downloadFromBrowser`/`degradeToLocal` 一致）、
+  `mergeSelected` 复位、**可见提示** `ENGINE_UNAVAILABLE_LOCAL_HINT`「电脑引擎不可用，已改用手机本机下载」
+  （既有 `sniffNotice` 横幅，零新 UI）、审计 `download_fallback` / `merge_ignored(reason=engine_unavailable)`；
+- **换腿后重取快照**：`outputDir` 用手机沙箱根（`localSandboxRoot`）而非引擎目录；
+- 心跳不动：嗅探腿仍可能走引擎（如自检白名单为空但引擎可达的场景），下载回落不影响嗅探节拍。
+
+### 42.3 验证
+
+- `HomeViewModelBehaviorTest` 35/35（34 旧 + 1 新）：引擎未就绪 + 本机嗅探成功 →
+  按钮可点 → pickFormats 落 `LOCAL_DIRECT`（provider.lastDownloadExecutor）→
+  设置落盘 → 提示文案 → `download_fallback` + `merge_ignored` 审计 →
+  prepare.outputDir = 手机沙箱根；
+- 全仓 JVM：549 = M20 基线 548 + 1；`:android:app:assembleDebug` 通过。
+
+### 42.4 边界说明
+
+- 引擎「连上但自检白名单为空」同样触发回落——引擎可达却没给输出目录时，手机本机是唯一能下的腿；
+- 离线窗口期（心跳两拍未满、`Connection.Connected` 还成立）点下载：走引擎 prepare → 失败 →
+  M16 中途降级老路，行为不变；
+- 回落持久化意味着引擎恢复后下载仍在「本机直链」档——设置里一键切回，提示横幅已说明换腿事实。

@@ -204,21 +204,17 @@ data class HomeUiState(
             (sniffExecutor == SniffExecutor.LOCAL_WEBVIEW || engineReady || connection is Connection.Failed)
 
     /**
-     * 嗅探成功后才谈得上选画质；下载流程自己也在跑时不允许重复发起。
-     *
-     * 本地直链的「画质表」由嗅探结果合成，不需要引擎在线；引擎下载才要等自检。
-     * 等授权时不再让重挑画质——那张表本身就是重试要用的东西。
-     */
-    /**
      * 嗅探成功后才谈得上选画质；画质表正在拉时不允许重复发起。
      *
-     * 本地直链的「画质表」由嗅探结果合成，不需要引擎在线；引擎下载才要等自检。
+     * 不再按执行器卡门：本地直链的画质表由嗅探结果合成，引擎下载才要等自检——
+     * 设置选了「电脑下载」但引擎没就绪时，[pickFormats] 会回落到本机直链，
+     * 把按钮卡死在灰色只会把手机明明能下的链接堵在门外。
+     * 等授权时不再让重挑画质——那张表本身就是重试要用的东西。
      */
     val canPickFormats: Boolean
         get() = sniff is SniffPhase.Success &&
             download !is DownloadPhase.Preparing &&
-            download !is FormatPickable &&
-            (downloadExecutor == DownloadExecutor.LOCAL_DIRECT || engineReady)
+            download !is FormatPickable
 
     val selectedFormat: FormatInfo?
         get() = (download as? FormatPickable)?.formats?.firstOrNull { it.formatId == selectedFormatId }
@@ -229,7 +225,8 @@ data class HomeUiState(
     val canStartDownload: Boolean
         get() = download is FormatPickable && selectedFormat != null && namingTemplateError == null
 
-    private val engineReady: Boolean
+    /** 引擎下载的门槛：连上且自检白名单非空。画质表回落判定也认它。 */
+    val engineReady: Boolean
         get() = connection is Connection.Connected &&
             connection.selfcheck.outputDirAllowlist.isNotEmpty()
 }
@@ -880,9 +877,27 @@ class HomeViewModel(
 
     /** 嗅探结果出来后，另起一个 `mode=download` 任务向引擎要可选画质表。 */
     fun pickFormats() {
-        val snapshot = _state.value
+        var snapshot = _state.value
         val sourceUrl = snapshot.sourceUrl.trim()
         if (sourceUrl.isEmpty() || !snapshot.canPickFormats) return
+
+        // 设置选了「电脑下载」但引擎没就绪：回落到本机直链，别让按钮卡死在灰色里。
+        // 手机本机对直链与 HLS 都是完整支持；换腿必须让用户看见（与 degradeToLocal
+        // 同一条铁律），审计也留下「链路为什么和设置里写的不一样」。
+        if (snapshot.downloadExecutor == DownloadExecutor.ENGINE && !snapshot.engineReady) {
+            val hadMerge = snapshot.mergeSelected
+            settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+            _state.update {
+                it.copy(
+                    downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+                    mergeSelected = false,
+                    sniffNotice = ENGINE_UNAVAILABLE_LOCAL_HINT,
+                )
+            }
+            if (hadMerge) audit.log("merge_ignored", mapOf("reason" to "engine_unavailable"))
+            audit.log("download_fallback", mapOf("reason" to "engine_unavailable"))
+            snapshot = _state.value
+        }
 
         val connected = snapshot.connection as? Connection.Connected
         val outputDir = when (snapshot.downloadExecutor) {
@@ -1144,6 +1159,9 @@ class HomeViewModel(
 
         /** 离线时点「嗅探」的前端拦截文案：红色失败卡当场给出，不等请求超时。 */
         const val ENGINE_OFFLINE_HINT = "电脑引擎已离线，请检查电脑或在上方切换为手机嗅探"
+
+        /** 画质表回落提示：设置选了「电脑下载」但引擎没就绪，这一步已改走手机本机。 */
+        const val ENGINE_UNAVAILABLE_LOCAL_HINT = "电脑引擎不可用，已改用手机本机下载"
 
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
         fun factory(

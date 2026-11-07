@@ -301,6 +301,49 @@ class HomeViewModelBehaviorTest {
     }
 
     /**
+     * 手机嗅探出了结果、下载却设着「电脑引擎」且电脑不在：画质表这一步回落到本机直链，
+     * 按钮不能卡死在灰色里。换腿要留提示与审计，设置同步落盘（下次启动不再先撞南墙）。
+     */
+    @Test
+    fun engineDownloadWithUnreadyEngineFallsBackToLocalAtPickFormats() = runTest(dispatcher) {
+        val settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW)
+        val provider = FakeBackendProvider()
+        val history = FakeHistoryRepository()
+        val audit = FakeAuditLogger()
+        val vm = HomeViewModel(
+            settings,
+            provider,
+            FakeEngineInfo(healthResult = null),
+            audit,
+            history,
+            FakeCookieConsentStore(),
+            DownloadCoordinator(provider, history, this, audit),
+            heartbeatIntervalMs = null,
+        )
+
+        vm.editSourceUrl("https://example.com/watch")
+        vm.sniff()
+        provider.localSniffBackend.emit(SniffEvent.Results(listOf(sniffResult())))
+        assertTrue(vm.state.value.sniff is SniffPhase.Success)
+        assertTrue("引擎没就绪也不许卡死下载按钮", vm.state.value.canPickFormats)
+
+        vm.pickFormats()
+
+        assertEquals("画质表改由本机直链合成", DownloadExecutor.LOCAL_DIRECT, provider.lastDownloadExecutor)
+        assertEquals("回落要落盘", DownloadExecutor.LOCAL_DIRECT, settings.downloadExecutor)
+        assertEquals(DownloadExecutor.LOCAL_DIRECT, vm.state.value.downloadExecutor)
+        assertEquals(
+            "换腿必须让用户看见：${vm.state.value.sniffNotice}",
+            HomeViewModel.ENGINE_UNAVAILABLE_LOCAL_HINT,
+            vm.state.value.sniffNotice,
+        )
+        assertTrue("回落要留审计行", audit.has("download_fallback"))
+        assertTrue("被丢弃的合并选择也要留痕", audit.has("merge_ignored"))
+        val prepare = provider.downloadBackend.prepareRequests.single()
+        assertEquals("本机画质表的 outputDir 是手机沙箱根，不是引擎目录", FakeBackendProvider.DEFAULT_SANDBOX, prepare.outputDir)
+    }
+
+    /**
      * 开局引擎就不可达：M20 起首连/心跳已实时标「离线」，点「嗅探」当场给红色失败卡，
      * 不发引擎请求、也不再静默降级——切回手机嗅探是显式选择（离线提示卡有直达入口）。
      * 按钮本身仍可点：永远灰着的按钮只会让用户以为 App 坏了。
