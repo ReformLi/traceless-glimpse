@@ -795,8 +795,7 @@ class Launcher:
         url = connection_url()
         log(f"引擎就绪：{url}  (pid={self.engine.pid})")
         self._set_icon(False, f"{APP_NAME} · {url}")
-        # 核心目标「自动显示局域网连接信息」：启动成功弹一次 + 托盘气泡。
-        self.notify(f"引擎已启动：{url}", "无痕掠影 · 连接地址")
+        # 「引擎已启动」不再弹托盘气泡：托盘悬停标题已经带连接地址，气泡只会反复打扰。
         if not _HEADLESS:
             message_box("连接地址", address_text())
 
