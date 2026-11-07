@@ -3207,10 +3207,13 @@ UI 只新增设置页「下载保活」一行与通知权限被拒时的一句�
 
 1. **MuMu 是模拟器，真实 Doze/省电策略没有覆盖**：宿主一直供电，`dataSync` 在 Android 14+ 的单次
    6 小时、每 24 小时累计 24 小时额度也没跑到边界。真机长时挂后台仍需一次实测。
-2. **`dumpsys notification --noredact` 在本机只吐 channel 与 `AppSettings`，找不到 NotificationRecord
-   段**，命令行无法复读标题与进度；本轮以通知栏截图为准，原因未查明，登记在此。
-3. **R8 包未出**：本轮只装 debug 包；§31 遗留的「R8 下 HLS 转封装音频判据」仍欠一次，
-   服务与通知在 R8 包上也还没跑过。
+2. ~~**`dumpsys notification --noredact` 在本机只吐 channel 与 `AppSettings`，找不到 NotificationRecord
+   段**~~ **更正：该命令能查到**。复测时同一台 MuMu 上可见
+   `NotificationRecord(... id=1301 ... channel=download_keep_alive ...)` 以及
+   `android.title=正在下载 1 项`、`android.text=… 已下载 38%` 和 `contentIntent=… startActivity`；
+   上一轮的「查不到」是误读，缺口撤销。
+3. ~~**R8 包未出**~~ **已补测，见 §32.6**。debug 包的结论不变；R8 包上服务、通知、点通知回下载页
+   与下载完成自收摊全部复跑通过。
 4. **「不再询问」后的路径没实测**：两次拒绝后系统不再弹窗，当前只有「去设置」这一个出口，
    文案沿用同一句红字。
 
@@ -3221,4 +3224,104 @@ UI 只新增设置页「下载保活」一行与通知权限被拒时的一句�
   `KeepAliveWiringTest` 10、`KeepAlivePolicyTest` 3。
 - 未新增依赖（`ServiceCompat`、`ActivityResultContracts` 都在现有版本内）；除 Manifest 的
   权限与 `foregroundServiceType` 外没有构建配置改动。
+
+### 32.6 R8 补测（2026-11-07，测试签名 Release 包）
+
+R8 最容易把 Service、Receiver、`PendingIntent` 之类「只被 Manifest / 系统反射引用」的东西裁掉，
+所以这一腿不跑单测、只跑真实链路。流程同 `docs/release-checklist.md` §1 第 6 步：
+
+```
+./gradlew :android:app:assembleRelease
+zipalign -f -p 4 app-release-unsigned.apk aligned.apk      # 5,289,817 → 5,304,662
+apksigner sign --ks ~/.android/debug.keystore ...          # 测试签名，cert SHA-256 73866dbc…
+```
+
+| 腿 | 现场证据 |
+| --- | --- |
+| 包装上了、R8 生效 | `dumpsys package com.hpu.browseguard`：`flags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ]`（**无 DEBUGGABLE**，所以 `run-as` 被拒，这本身是 R8/非调试包的旁证）；`POST_NOTIFICATIONS: granted=true` |
+| 冷启动无闪退 | 冷启→首页→内置浏览器→深嗅，ListTile 出 1 条 mp4，无 DRM 标记 |
+| 服务没被裁 | 下载开始后 `dumpsys activity services` 有 `DownloadKeepAliveService`、`isForeground=true foregroundId=1301 types=0x00000001`，`createdFromFg=true` |
+| 通知没被裁 | 通知栏「正在下载 1 项 … 已下载 9%」；`dumpsys notification --noredact` 可见 `NotificationRecord(id=1301, channel=download_keep_alive)`、`ONGOING_EVENT\|ONLY_ALERT_ONCE\|NO_CLEAR\|FOREGROUND_SERVICE`、`contentIntent=PendingIntent{… startActivity}` |
+| PendingIntent 没被裁 | 点通知正文 → 落在「下载」Tab；再回首页转横屏不会二次跳转（一次性消费仍然成立） |
+| 下载完成自收摊 | 10:30 开始、10:34 落库 `已完成`，产物 `m13_keepalive.mp4` 57,861,784 B 与源文件逐字节同尺寸；随后 `dumpsys activity services` 已无本条，通知栏无通知 |
+| 30 秒内的假警报 | 第一次灭屏截图通知栏显示「无通知」，但 `dumpsys notification` 明明有 `id=1301`；collapse + re-expand 后正常显示 9%。是截图早于系统刷新，不是 App 缺陷，也顺带纠正了 §32.4 第 2 条的误判 |
+
+仍未覆盖：**R8 包上没有跑 HLS→TS 转封装音频判据**（§31 起就欠着的那条，M14 已在 debug 包上用
+加密 HLS 补齐，见 §33.4；R8 包那一条仍未跑），以及正式签名包（必须由维护者本机打，测试签名包不得分发）。
+
+## 33. M14：HLS AES-128 分片解密（2026-11-07）
+
+`HlsDownloader` 的下载本体（并发槽位、重试、落盘顺序）与 `TsRemuxer` 一行未动，只在
+「取到密文之后、交给转封装之前」插了一段解密；`DownloadCoordinator` / 队列 / UI 均未改。
+解密器是纯 Kotlin + JCA（`Aes128SegmentDecryptor`），没有新增依赖。
+
+### 33.1 三条协议坑的落实方式
+
+| 坑 | 落实 | 反例（本轮实际踩过） |
+| --- | --- | --- |
+| 无显式 `IV` 时用 `EXT-X-MEDIA-SEQUENCE + 下标` 的 16 字节大端序 | `ivForSequence` 从低 8 字节倒着写：`iv[15 - i] = seq ushr (8*i)` | 最初写成 `ByteBuffer.allocate(16).putLong(seq)`，序号落进高 8 字节，首块解出来是乱码（第 7 字节起全错）。单测用 openssl 按正确 IV 生成的向量把这个形状钉死 |
+| 规范不带 PKCS7，但服务端可能补 | `AES/CBC/NoPadding`；解密后若长度已是 188 的整数倍就原样返回，否则才检查尾部 `1..16` 个同值字节并裁掉 | 直接用 `AES/CBC/PKCS5Padding` 在真实素材上会抛 `IllegalBlockSizeException`/`BadPaddingException`；`withoutTrailingPadding` 只在「非 188 对齐」时才敢裁，避免误伤合法末包 |
+| `.key` 必须带同一套请求头 | 解密走的是既有的 `execute()`：`SniffHeaderPolicy.sanitize(headersHint)`（白名单只剩 Referer/UA）+ `cookies.cookieFor(url)` | key 请求复用了清单/切片的同一条构建路径，没有另开请求分支——少一条分支就少一条漏头的可能 |
+
+解析层同时补了两处：`#EXT-X-KEY` 只对**后续**分片生效，`METHOD=NONE` 复位；相对 URI 按清单地址
+解析。`ivHex` 原样保留给解密器解析（含 `0x` 前缀、奇数位补 0、左补零到 16 字节），非法 hex 返回
+`null` 由下载器报「HLS 清单里的 IV 不合法」，不猜。
+
+### 33.2 JVM 向量（openssl 生成，固定进仓库）
+
+素材 key = `00112233445566778899aabbccddeeff`，三段明文来自实测 TS，用 openssl
+`-aes-128-cbc -nopad` 加密，IV 分别按序号 5 / 7 的大端序，或显式 `0x2021…2f`：
+
+- `decryptsOpenSslNoPaddingVector`：752 B 无填充，逐字节相等；
+- `stripsPkcs7ThatSomeServersStillAdd`：200 B 补到 208（补 8 个 `0x08`），裁后相等；
+- `tsAlignedDataIsNeverMistakenForPadding`：明文长度是 188 的倍数时即使末字节像填充也不动；
+- `missingIvFallsBackToBigEndianSequence` / `explicitIvWinsAndShortHexIsLeftPadded`：IV 选择顺序；
+- `malformedInputReturnsNullInsteadOfThrowing`：key 长度错、密文非 16 对齐、坏 hex 一律返回 `null`；
+- `HlsConcurrentDownloadTest.explicitIvAndUnpaddedSegmentsDecryptEndToEnd`：3 段 × 752 B、显式 IV、
+  并发下载 → 产物逐字节等于明文拼接；
+- `HlsPlaylistParserTest.keyRotationOnlyAppliesToFollowingSegments`：密钥轮换、`METHOD=NONE`、
+  相对 URI、`sequence = MEDIA-SEQUENCE + 下标`。
+
+### 33.3 设备素材与链路（MuMu 15 / SM-S9080 / Android 15）
+
+- 素材：宿主 `E:/tmp/m14aes/siteseq/`，`index_loop.m3u8` 无 `IV` 属性，`EXT-X-MEDIA-SEQUENCE:100`，
+  3 段 `seg000..002.ts` 按序号 100/101/102 派生 IV 重新加密（openssl），密钥 `key.bin` 走 HTTP。
+  三段明文 6,101,916 + 5,305,172 + 2,163,692 = **13,570,780 B**（各段尾部分别补 4/12/4 字节 PKCS7）。
+- 页面 `p.html` 内联 `<video src="seq/index_loop.m3u8" controls autoplay muted>`；本机 Python 服务
+  监听 8000，设备侧走 `adb reverse tcp:8732 tcp:8000` 缩短输入地址。
+- 链路：首页输入 `http://127.0.0.1:8732/p` → 嗅探出 1 条 `hls · 画质未标注 / 无 DRM / m3u8`
+  → 选择画质 → 开始下载 → 下载页 `已完成`。
+
+### 33.4 现场证据
+
+| 腿 | 现场证据 |
+| --- | --- |
+| WebView 侧确实被加密 | 服务端日志出现 `index_loop.m3u8` → `key.bin` → `seg000/001/002.ts`，UA 为 `wv`，带 cookie `bgvtest=1` |
+| 下载器确实走了同一条加密流 | `10:44:50` 出现 `Background started FGS ... DownloadKeepAliveService`；日志尾段是**乱序并发**的 `seg001/000/002` + `key.bin`（并发槽位 4，本素材只有 3 段所以顺序被打乱），全部带 `Referer=http://127.0.0.1:8732/p`、`Cookie=bgvtest=1`、WebView UA |
+| 解密字节数对得上 | `BgvAudit: hls_download_done host=127.0.0.1 segments=3 bytes=13570780 retries=0` —— 与本地 openssl 解出的明文总长 **13,570,780 B** 完全一致 |
+| 转封装完成 | `hls_remux_done bytes=13182852 ms=20016 audio=124 srcFrames=862 outFrames=862 srcContentMs=20015 outContentMs=20015 outMaxGapMs=23` |
+| 产物是带声 MP4 | 拉回 `index_loop.mp4`（13,182,852 B）后 `ffprobe`：`h264` 19.97s + `aac` 44.1 kHz 单声道 20.02s |
+| 音频内容与源逐样本相同 | 本地 openssl 解出的明文 TS 与设备产物各解 PCM：`md5 = 2d71de2c853689fe3fd13d7b361c90e9` **两边一致**；`volumedetect` 出 `mean_volume -21.1 dB / max_volume -14.4 dB`（不是静音） |
+| 画面帧一致 | 逐帧 framemd5 对比：599 帧完全相同，只有明文侧多出最后 1 帧（见缺口 1） |
+
+### 33.5 本轮自报的缺口
+
+1. **产物比明文少最后一帧（600 → 599）**：`MediaExtractor` 报的样本数比 ffmpeg 少 1，末帧没有后继
+   PTS 可推时长，转封装侧丢掉了它；时间差 33 ms。该行为在未加密流上就存在，不是解密引入的，
+   按「不碰 `TsRemuxer`」的边界不做改动，登记观察。
+2. **显式 IV 与密钥轮换只在 JVM 覆盖**：设备腿用的是「无 IV 属性、按序号派生」的版本（也就是最容易
+   写反的那条）；显式 `IV=0x…` 与 `EXT-X-KEY` 轮换只有单测与并发端到端测试。真实站点两者都可能出现，
+   下一轮遇到带显式 IV 的站点再补一条设备腿。
+3. **R8 包上没跑加密 HLS**：M14 的设备腿是 debug 包；R8 包只覆盖过直链 mp4（§31）与保活通知（§32.6）。
+   BouncyCastle/JCA 的 `Cipher` 不在常见裁剪名单里，但按既有规矩，发版前要用 Release 包再跑一遍加密 HLS。
+4. **日志里分不清「WebView 拉的」和「下载器拉的」**：下载器刻意伪装成 WebView UA（防盗链要求），
+   两组请求只能靠并发顺序与审计行区分。这是设计代价，不是缺陷；排查时以 `hls_download_done`
+   的 `segments/bytes` 为准。
+
+### 33.6 回归与提交
+
+- 全量 JVM（发版基线命令）：**513 tests**（app 451 + shared 11 + engine-client 12 + cli 26 + mcp 13），
+  0 失败 0 错误 0 跳过。相对 M13 的 504 多出 9 项，全部来自 M14：`Aes128SegmentDecryptorTest` 6、
+  `HlsPlaylistParserTest` +2、`HlsConcurrentDownloadTest` +1。
+- 未新增依赖；APK 体积基线待下次 `assembleRelease` 更新。
 

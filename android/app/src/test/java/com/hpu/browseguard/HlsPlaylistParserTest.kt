@@ -82,9 +82,9 @@ class HlsPlaylistParserTest {
         )!!
 
         assertEquals("mp4", playlist.outputContainer)
-        assertNotNull(playlist.initMap)
-        assertEquals("https://cdn.example.com/a/init.mp4", playlist.initMap!!.url)
-        assertEquals(720L, playlist.initMap!!.range!!.length)
+        val initMap = requireNotNull(playlist.initMap)
+        assertEquals("https://cdn.example.com/a/init.mp4", initMap.url)
+        assertEquals(720L, requireNotNull(initMap.range).length)
         assertTrue(playlist.encrypted)
         assertEquals("https://cdn.example.com/a/key.bin", playlist.segments[0].key!!.uri)
         assertEquals(0L, playlist.segments[0].range!!.offset)
@@ -114,6 +114,64 @@ class HlsPlaylistParserTest {
             "https://cdn.example.com/live/index.m3u8",
         )!!
         assertFalse("直播没有 ENDLIST", live.endList)
+    }
+
+    @Test
+    fun keyRotationOnlyAppliesToFollowingSegments() {
+        val playlist = HlsPlaylistParser.parse(
+            """
+            #EXTM3U
+            #EXT-X-MEDIA-SEQUENCE:42
+            #EXT-X-KEY:METHOD=AES-128,URI="key1.bin",IV=0x000102030405060708090a0b0c0d0e0f
+            #EXTINF:4,
+            seg0.ts
+            #EXTINF:4,
+            seg1.ts
+            #EXT-X-KEY:METHOD=NONE
+            #EXTINF:4,
+            plain.ts
+            #EXT-X-KEY:METHOD=AES-128,URI="../keys/key2.bin"
+            #EXTINF:4,
+            seg2.ts
+            #EXT-X-ENDLIST
+            """.trimIndent(),
+            "https://cdn.example.com/a/b/index.m3u8",
+        )!!
+
+        assertEquals("第一段带密钥", "https://cdn.example.com/a/b/key1.bin", playlist.segments[0].key!!.uri)
+        assertEquals("密钥沿用，直到下一条 EXT-X-KEY", "AES-128", playlist.segments[1].key!!.method)
+        assertNull("METHOD=NONE 必须把密钥复位", playlist.segments[2].key)
+        assertEquals(
+            "新密钥按清单位置解析相对地址",
+            "https://cdn.example.com/a/keys/key2.bin",
+            playlist.segments[3].key!!.uri,
+        )
+        assertNull("未写 IV 时留给序号推导", playlist.segments[3].key!!.ivHex)
+        assertEquals("序号 = MEDIA-SEQUENCE + 分片下标", 44L, playlist.segments[2].sequence)
+        assertEquals(45L, playlist.segments[3].sequence)
+        assertEquals(
+            "IV 原样保留，由解密器解析",
+            "0x000102030405060708090a0b0c0d0e0f",
+            playlist.segments[0].key!!.ivHex,
+        )
+    }
+
+    @Test
+    fun aes128WithoutUriIsKeptButRejectedLaterInsteadOfGuessing() {
+        val playlist = HlsPlaylistParser.parse(
+            """
+            #EXTM3U
+            #EXT-X-KEY:METHOD=AES-128
+            #EXTINF:4,
+            seg.ts
+            #EXT-X-ENDLIST
+            """.trimIndent(),
+            "https://cdn.example.com/a/index.m3u8",
+        )!!
+
+        assertTrue(playlist.encrypted)
+        assertNotNull(playlist.segments[0].key)
+        assertNull("没有 URI 就不能编一个出来", playlist.segments[0].key!!.uri)
     }
 
     @Test

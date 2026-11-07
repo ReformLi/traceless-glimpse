@@ -157,15 +157,18 @@ GRADLE_USER_HOME=D:/Android/GradleUserHome ./gradlew.bat \
 cd engine && ./.venv/Scripts/python.exe -m pytest -q
 ```
 
-JVM 侧 **504 tests**（app 442 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
+JVM 侧 **513 tests**（app 451 + shared 11 + engine-client 12 + cli 26 + mcp 13），0 失败 0 错误 0 跳过。
 注意 `:shared` 是 KMP 模块，任务名是 `jvmTest` 不是 `testDebugUnitTest`。引擎桩套件 235 passed
-是 M9 的记录，本轮（只改界面与前台服务）未复跑。引擎 `-m real` 套件不要与桩套件并发跑，
+是 M9 的记录，本轮（只改 HLS 解密与单测）未复跑。引擎 `-m real` 套件不要与桩套件并发跑，
 也不要在重启引擎时跑，否则会出现假失败。
 
-上面这组数字是 **2026-11-07（M13 收官）现场复跑**的结果。上一版基线是 483 项（app 421，M12.5），
-app 从 421 涨到 442 是 M13 的 `KeepAliveSnapshotTest`（8 项，字节池化/未知总大小/转封装态）、
-`KeepAliveWiringTest`（10 项，通知无按钮、文案表、开关默认值与权限文案的接线钉子）与
-`KeepAlivePolicyTest`（3 项，开关 × 队列的启停判据）。
+上面这组数字是 **2026-11-07（M14 收官）现场复跑**的结果。上一版基线是 504 项（app 442，M13），
+app 从 442 涨到 451 是 M14 的 `Aes128SegmentDecryptorTest`（6 项，IV 派生/显式 IV/PKCS7 裁尾/
+188 对齐不误伤/坏输入）、`HlsPlaylistParserTest`（+2 项，密钥轮换与无 URI 的 KEY）与
+`HlsConcurrentDownloadTest`（+1 项，显式 IV 三段并发下载端到端）。
+再往前一版是 483 项（app 421，M12.5），app 从 421 涨到 442 是 M13 的 `KeepAliveSnapshotTest`（8 项，
+字节池化/未知总大小/转封装态）、`KeepAliveWiringTest`（10 项，通知无按钮、文案表、开关默认值与权限
+文案的接线钉子）与 `KeepAlivePolicyTest`（3 项，开关 × 队列的启停判据）。
 
 再往前一版是 475 项（app 413，M12），app 从 413 涨到 421 是 M12.5 的 `AdBlockLedgerTest`（6 项，一页一域一行的边界）与 `PlayerWiringTest`
 （2 项，手势落系统 + 离场强制销毁的接线钉子）。
@@ -228,10 +231,11 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
   冷启动、深嗅出候选、下载已完成、下载管理→打开文件、ExoPlayer 画面推进、续播 `resume=25221`、
   `adblock_hit` 每域每页一行，`JsonDecodingException`/`SerializationException` 0 命中，全程无闪退。
   **§6 的 HLS→TS 转封装音频判据本轮没在 R8 包上复跑**（只跑过 mp4 直链），下次发版前必须补一条
-  HLS 链接的 R8 设备腿；M8/M9 的音频结论仍来自 debug 包。
+  HLS 链接的 R8 设备腿；M8/M9 的音频结论仍来自 debug 包。M14 已把加密 HLS 的完整音频判据在 debug
+  包上跑通（`docs/smoke-report.md` §33.4：本地明文与产物 PCM md5 一致），R8 包这一腿继续欠着。
 - **APK 体积基线（unsigned）**：M11-2（`a107dc0`）3,793,903 B → M11-3B（`924c350`）5,271,453 B →
-  M12.5（2026-11-06）5,284,313 B。相对 M11-3B 只涨 12,860 B，M12/M12.5 未新增依赖，与当初的预判一致；
-  预算 2 MB 一档内，下次发版继续对比这个数。
+  M12.5（2026-11-06）5,284,313 B → M13（2026-11-07）5,289,817 B。相对 M11-3B 只涨 18,364 B，
+  M12/M12.5/M13 未新增依赖，与当初的预判一致；预算 2 MB 一档内，下次发版继续对比这个数。
 - **`adblock_hit` 现在按地址认页**（M12.5 裁决落地）：`AdBlockLedger` 用「地址变了才重开账」而不是
   「第几次导航」，同时挡住两类跨界——preload 抢在 `onPageStarted` 之前、reload 时子资源横跨
   `onPageStarted` 前后。R8 包实测：同域 3 张图 → 1 行；点刷新重新加载同一地址（主文档确实 304 重验）→
@@ -263,10 +267,15 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
   但模拟器宿主一直供电，**真实 Doze / 厂商省电策略没覆盖**；Android 14+ `dataSync` 的单次 6 小时、
   每 24 小时累计 24 小时额度也没跑到边界。下次在实体机上长时挂后台时补一次
   （建议一条 ≥20 分钟的限速下载，期间锁屏并抽查 `dumpsys activity services` 与服务器侧已发字节）。
-- **通知内容无法从 `dumpsys notification` 复读**（M13 登记）：本机 `dumpsys notification --noredact`
-  只输出 channel 与 `AppSettings`，找不到 NotificationRecord 段，命令行核不到标题与进度；
-  M13 取证以通知栏截图为准。原因未查明，别把它当「通知没发出去」。
-- **M13 的前台服务与通知没在 R8 包上跑过**：本轮只装了 debug 包。和上面那条 HLS 音频判据一样，
-  下次出 Release 时一并补：下载开始 → 切后台 → 锁屏 1 分钟 → 通知进度在动 → 点通知落下载页。
+- ~~**通知内容无法从 `dumpsys notification` 复读**~~（M13 登记，2026-11-07 撤销）：复测时
+  `adb shell dumpsys notification --noredact | grep -E "com.hpu.browseguard|android.title|android.text"`
+  能直接读到 `NotificationRecord(id=1301, channel=download_keep_alive)`、标题与百分比、以及
+  `contentIntent=… startActivity`；上一轮「查不到」是误读，不是 App 缺陷。
+- ~~**M13 的前台服务与通知没在 R8 包上跑过**~~（2026-11-07 已补）：测试签名 Release 包
+  （unsigned 5,289,817 B，签名后 5,308,900 B，cert `73866dbc…`，`flags` 无 DEBUGGABLE）上完成了
+  冷启动→深嗅→下载→服务 `isForeground=true foregroundId=1301`→通知进度 9%→点通知落下载页
+  →10:34 `已完成`、产物 57,861,784 B→服务与通知自收摊。R8 对 Service / `PendingIntent` 的裁剪风险
+  这一腿已经排除。仍未覆盖：**R8 包上的 HLS→TS 转封装音频判据**（M14 已在 debug 包上用加密 HLS
+  补齐，R8 包仍欠）、正式签名包（必须由维护者本机打）。
 - **「不再询问」的通知权限路径没实测**：两次拒绝后系统不再弹窗，当前只靠设置页那句红字 +
   「去设置」出口；文案与引导在那种状态下是否够用，实体机遇到时再确认。

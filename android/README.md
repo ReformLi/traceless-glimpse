@@ -22,9 +22,12 @@
 
 本机的 HLS 链路是这条路径上最重的一段，值得单列：
 
-1. `HlsPlaylistParser` 解析清单（master/media、EXTINF、密钥 URI、分片地址）。
+1. `HlsPlaylistParser` 解析清单（master/media、EXTINF、密钥 URI、分片地址），`#EXT-X-KEY` 只对后续分片生效。
 2. `HlsDownloader` 固定 4 个并发槽位、按清单顺序落盘，每段 1 次正常 + 2 次退避重试
    （401/403/404/405/410 不重试）；密钥按 URI 缓存并串行化获取；内存峰值钉在 4 段以内。
+   `METHOD=AES-128` 的段在落盘前解密（M14）：key 请求复用同一条 `execute()`，带同样的 Referer/UA/Cookie；
+   无显式 `IV` 时用 `EXT-X-MEDIA-SEQUENCE + 下标` 的 16 字节大端序；`AES/CBC/NoPadding`，解密后
+   只在非 188 对齐时裁掉尾部 PKCS7。SAMPLE-AES / Widevine / FairPlay 仍按 DRM 拒绝。
 3. `TsRemuxer` 用 `MediaExtractor` + `MediaMuxer` 做**纯拷贝**容器转换：不合并、不重编码、不引入 FFmpeg。
    AAC 音频按访问单元（AU）拆开重封——TS 里常见「一个样本并十几个 AU 还带着 ADTS 头」，
    直接抄进 MP4 就是不合规的 `mp4a`，Android 解得开、严格播放器解不开。
@@ -124,7 +127,7 @@ com.hpu.browseguard
 - blob/MSE 不伪造可下载的 `SniffResult`。
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
 - 下载保活只在 MuMu 模拟器上验证过：真实 Doze/厂商省电策略与 `dataSync` 时长额度上限未实测；
-  R8 包也还没跑过服务与通知（见 `../docs/release-checklist.md` §7）。
+  R8 包已补测服务、通知与 `PendingIntent`（`../docs/smoke-report.md` §32.6），但 R8 包上仍未跑加密 HLS。
 
-里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活）；
+里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活、§33 M14 AES-128 解密）；
 M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。

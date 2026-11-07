@@ -8,6 +8,7 @@ import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.NoCookieProvider
 import com.hpu.browseguard.data.backend.REMUX_PHASE
 import com.hpu.browseguard.data.backend.StartRequest
+import com.hpu.browseguard.data.backend.hls.Aes128SegmentDecryptor
 import com.hpu.browseguard.data.backend.hls.HlsDownloader
 import com.hpu.browseguard.data.backend.hls.HlsKey
 import com.hpu.browseguard.data.backend.hls.HlsOutcome
@@ -19,7 +20,6 @@ import com.hpu.browseguard.shared.model.MediaStreamType
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.TaskStatus
 import java.io.File
-import java.nio.ByteBuffer
 import java.util.Collections
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -36,6 +36,7 @@ import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -293,6 +294,49 @@ class HlsConcurrentDownloadTest {
         }
     }
 
+    /**
+     * 显式 `IV` + 规范里的「不填充」：这是绝大多数真实加密 HLS 的形状。
+     * 旧实现用 `PKCS5Padding` 解这种密文会直接抛 `BadPaddingException`，整段下载失败。
+     */
+    @Test
+    fun explicitIvAndUnpaddedSegmentsDecryptEndToEnd() = runBlocking {
+        val key = ByteArray(16) { (it * 3 + 1).toByte() }
+        val iv = ByteArray(16) { (0x20 + it).toByte() }
+        val count = 3
+        val plain = (0 until count).map { segment ->
+            ByteArray(752) { index -> ((index + segment) % 251).toByte() }
+        }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.url.encodedPath
+                if (path == "/v/key.bin") return MockResponse.Builder().body(Buffer().write(key)).build()
+                val index = segmentIndexOf(path)
+                return MockResponse.Builder().body(Buffer().write(encryptNoPadding(plain[index], key, iv))).build()
+            }
+        }
+        val plan = HlsPlan(
+            mediaUrl = server.url("/v/index.m3u8").toString(),
+            segments = (0 until count).map { index ->
+                HlsSegment(
+                    url = segmentUrl(index),
+                    key = HlsKey("AES-128", server.url("/v/key.bin").toString(), ivHex = "0x" + iv.toHex()),
+                    range = null,
+                    sequence = index.toLong(),
+                )
+            },
+            initMap = null,
+            encrypted = true,
+            container = "ts",
+            durationSeconds = count * 4,
+        )
+
+        val out = partFile("explicit-iv")
+        val outcome = HlsDownloader().download(plan, link(), out, { false }) { _, _, _ -> }
+
+        assertTrue("应当成功，实际 $outcome", outcome is HlsOutcome.Done)
+        assertArrayEquals(plain.reduce { acc, bytes -> acc + bytes }, out.readBytes())
+    }
+
     /** 端到端：清单 → 并发段 → 落盘 → 分段进度 → 一行收尾审计。 */
     @Test
     fun theEndToEndTaskReportsSegmentProgressAndOneDoneLine() = runBlocking {
@@ -336,9 +380,16 @@ class HlsConcurrentDownloadTest {
     }
 
     private fun encrypt(plain: String, key: ByteArray, sequence: Int): ByteArray {
-        val iv = ByteBuffer.allocate(16).putLong(sequence.toLong()).array()
+        val iv = Aes128SegmentDecryptor.ivForSequence(sequence.toLong())
         return Cipher.getInstance("AES/CBC/PKCS5Padding").apply {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         }.doFinal(plain.toByteArray())
     }
+
+    private fun encryptNoPadding(plain: ByteArray, key: ByteArray, iv: ByteArray): ByteArray =
+        Cipher.getInstance("AES/CBC/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        }.doFinal(plain)
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 }

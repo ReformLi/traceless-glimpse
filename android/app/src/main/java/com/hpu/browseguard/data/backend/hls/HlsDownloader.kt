@@ -9,13 +9,9 @@ import com.hpu.browseguard.shared.model.SniffResult
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
-import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -259,7 +255,9 @@ internal class HlsDownloader(
             val key = segment.key?.takeIf { it.method == "AES-128" } ?: return SegmentRead.Ok(raw)
             val keyBytes = fetchKey(key.uri.orEmpty(), link, keys, keyMutex)
                 ?: return SegmentRead.Bad(LocalFailures.unsupportedLink("HLS 解密密钥取不到"))
-            val plain = decrypt(raw, keyBytes, key, segment.sequence)
+            val iv = Aes128SegmentDecryptor.ivFor(key, segment.sequence)
+                ?: return SegmentRead.Bad(LocalFailures.unsupportedLink("HLS 清单里的 IV 不合法"))
+            val plain = Aes128SegmentDecryptor.decrypt(raw, keyBytes, iv)
                 ?: return SegmentRead.Bad(LocalFailures.unsupportedLink("HLS AES-128 解密失败"))
             return SegmentRead.Ok(plain)
         }
@@ -323,23 +321,6 @@ internal class HlsDownloader(
         cookies.cookieFor(url)?.let { builder.header("Cookie", it) }
         range?.let { builder.header("Range", "bytes=${it.offset}-${it.offset + it.length - 1}") }
         return http.newCall(builder.build()).execute()
-    }
-
-    private fun decrypt(raw: ByteArray, key: ByteArray, spec: HlsKey, sequence: Long): ByteArray? = try {
-        val iv = spec.ivHex?.let(::parseIv) ?: ByteBuffer.allocate(16).putLong(sequence).array()
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        cipher.doFinal(raw)
-    } catch (e: Exception) {
-        null
-    }
-
-    private fun parseIv(hex: String): ByteArray? {
-        val cleaned = hex.removePrefix("0x").removePrefix("0X")
-        if (cleaned.length > 32 || cleaned.length % 2 != 0) return null
-        val value = cleaned.chunked(2).map { it.toIntOrNull(16)?.toByte() ?: return null }.toByteArray()
-        if (value.size == 16) return value
-        return ByteArray(16 - value.size) + value
     }
 
     private companion object {
