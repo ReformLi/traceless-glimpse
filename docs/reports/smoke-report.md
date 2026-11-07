@@ -3486,3 +3486,64 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
 - **随机轮次是确定性伪随机**：固定 seed 保证 CI 可复现，代价是换 seed 可能暴露新问题；
   它不能替代长时间持续 fuzz。
 - **只在 JVM 侧生效**：Py 引擎与桌面端未纳入本轮极值输入，`engine/` 的 `security.py` 另有自己的 SSRF 边界。
+
+## 36. M18：Playwright 反反爬伪装与嗅探雷达增强（2026-11-07）
+
+**用户反馈的场景**：同一网页链接，手机端 WebView 能自动嗅探到媒体流（无需点击播放），
+普通电脑浏览器也能打开，但 PC 引擎（Playwright）抓不到；确认不是网络问题、也不是需要点击播放。
+
+### 36.1 根因（三层叠加，改的是 `engine/services/sniffer.py`，未加任何自定义 JS 嗅探规则）
+
+1. **无头特征裸奔**：旧栈 `pw.chromium.launch(headless=True)` + 空白 `new_context()`——
+   默认 UA 带 `HeadlessChrome` 字样、`navigator.webdriver === true`、无 locale / 时区 / 视口，
+   反爬站点可以直接拒绝或降级响应；
+2. **媒体过滤只有一层**：`_classify` 只看 URL 路径后缀（`.m3u8/.mpd/.mp4/.m4a/.aac/.webm`）。
+   B站式 DASH 分发（XHR 拉 `.m4s` 分片、无 `.mpd`）与「URL 无扩展名但 `Content-Type` 是
+   `video/*`」的站点整类漏掉；
+3. **等待策略太短**：`domcontentloaded` 后只 settle 800 ms——懒加载站点主请求还没发出。
+
+### 36.2 修复形状
+
+- **伪装**：真实 Chrome 131 桌面 UA + 1920×1080 视口 + `locale=zh-CN` + `Asia/Shanghai`，
+  `add_init_script` 抹 `navigator.webdriver`、补 `chrome/plugins/languages` 形状、对齐
+  `permissions.query` 与通知权限；`BGV_SNIFF_HEADED=1` 时改用有头 + 窗口扔到
+  `(-32000,-32000)` 屏幕外（真实渲染管线，不弹窗）；
+- **三层雷达**（rank 越小越优先）：URL 后缀（新增 `.ts/.m4s/.flv/.mp3`）→ Response
+  Content-Type（`video/*`、`audio/*`、m3u8 四别名、`dash+xml`、`octet-stream`）→
+  URL 关键字（`playlist/master/stream/manifest` 兜底，主文档导航不参与，误报率天然高所以
+  rank 最大）。同 URL 低可信信号可被高可信信号升级覆盖（关键字先命中、Content-Type 后到时升级）；
+- **等待与懒加载**：`domcontentloaded` 拿到响应对象（惰性 Cookie 判 401/403 依赖它）后追加
+  `wait_for_load_state("networkidle", ≤4s)`（长轮询页面超时即视为可观察，不视为失败）+
+  `window.scrollTo(0, document.body.scrollHeight)` 触底滚动 + 原 settle 窗口；
+- **全量抓包审计**：`BGV_SNIFF_DEBUG=1` 时把 `page.on("request")` / `page.on("response")`
+  的**所有**请求（URL + resource type + 状态码 + Content-Type）以 `sniff_debug` 行打进日志，
+  不过滤。该行带完整 URL，仅供开发排查（不属于硬约束 ⑥ 的 `sniff_context` 审计行，生产勿开）。
+
+### 36.3 真机取证（本机，`BGV_SNIFF_DEBUG=1`，验证脚本 `.devtmp/m18_verify.py`）
+
+| 目标 | 老栈行为 | 新栈结果 | 关键日志证据 |
+| --- | --- | --- | --- |
+| `test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`（直链播放列表） | 能抓到（后缀命中） | `kind=hls container=m3u8` ✅ | 播放列表 `Content-Type=audio/mpegurl`（老栈连 Content-Type 层都没有，本轮已把该别名与 `audio/x-mpegurl` 一起收入）；`.ts` 分片 `Content-Type=application/octet-stream` 也被记录 |
+| `www.bilibili.com/video/BV1GJ411x7h7`（**用户场景的同类复现**） | **抓不到**（页面无 `.mp4/.m3u8` 请求，B站走 XHR 拉 `.m4s` DASH 分片） | `kind=dash container=m4s` ✅ | 雷达实录：`upgcxcode/.../137649199_da2-1-100023.m4s?e=...&deadline=...` resource=xhr，响应 `status=206 content-type=video/mp4`；视频/音频分片 + `octet-stream` 弹幕接口全部入册，最终按 rank 选中视频分片 |
+| `videojs.org`（首页不自动播放） | None | None（如实） | 全量日志证明页面**确实没发任何媒体请求**（只有 js/css/字体），不是嗅探漏杀——这正是雷达的价值：分清「没抓到」和「根本没发」 |
+| `movie.douban.com/trailer/301194/` | None | None（如实） | 页面本身 **404**（预告片已下线），雷达记录 `status=404 content-type=text/html`，排除了嗅探层问题 |
+
+### 36.4 回归
+
+- 引擎默认套件：**250 passed**（238 基线 + 本轮新增 `test_sniff_radar.py` 12 项：三层识别、
+  rank 排序、同 URL 信号升级、document 导航豁免），176 deselected；
+- 真实嗅探套件（`-m real`）：`test_sniffer_real.py` + `test_lazy_cookie_sniff.py` **12/12 passed**——
+  隔离性、审计行不含 URL/Cookie/UA、惰性 Cookie 一次读取一次重试、profile 无残留全部保持；
+- 有头模式 `BGV_SNIFF_HEADED=1` 实测：窗口在屏幕外不弹窗，mux 流照常嗅出 `hls/m3u8`；
+- 开发中踩坑一处：重写时把 `chromium.launch` 挪出了 `with sync_playwright()` 块，
+  `pw` 未定义（NameError）——真实套件 11 个失败暴露后已修，12/12 复跑通过。
+
+### 36.5 本轮自报的缺口
+
+- **B站抓到的是签名分片 URL，不是完整视频**：`m4s` URL 带 `deadline` 签名且是单分片，
+  yt-dlp 对它解析不出完整画质表。M18 只承诺「嗅探层看到媒体」；B站这类站点的完整下载
+  要走站点级解析（yt-dlp 原生 extractor 按 sourceUrl 解析），是后续里程碑的活；
+- **`octet-stream` 层有误报面**：弹幕接口等二进制 API 也会入册（rank=5），
+  只有当页面上没有更可信信号时才会被选中。rank 排序已在测试里钉死；
+- **关键字层（`playlist/master/stream`）只在全空时兜底**：命中它不代表一定是媒体，
+  选中后交给 yt-dlp 解析失败会按既有 `formats_extract_failed` 路径降级，不阻塞嗅探结果。

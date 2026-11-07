@@ -116,6 +116,7 @@ cd engine
 | M16 | 下载控制台接通引擎网络层，纯电脑端「嗅探 → 选画质 → 下载」闭环 | `33ebc21` |
 | M16.5 | 环境依赖自检面板与 `BGV_FFMPEG_PATH` 自定义路径 | `a92db88` |
 | M17 | 解析器模糊测试与极值防御（清单 / TS+ADTS / URL 三组极值输入） | `d1b3a0a` |
+| M18 | PC 引擎 Playwright 反反爬伪装 + 嗅探雷达三层识别（后缀 / Content-Type / 关键字） | [§36](docs/reports/smoke-report.md) |
 
 每阶段的现场证据、协议坑与自报缺口记在 [`docs/reports/smoke-report.md`](docs/reports/smoke-report.md)（§33 起按阶段编号）。
 

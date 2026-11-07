@@ -54,6 +54,23 @@ python -m venv .venv
   桌面启动器注入的完整变量族（另有 `BGV_ENGINE_MODE=real`、`BGV_OUTPUT_DIR_ALLOWLIST`、
   `BGV_LISTEN_HOST/PORT`）与进程树清理方式见 `desktop/README.md` §6。
 
+### 嗅探雷达与反反爬（M18）
+
+`services/sniffer.py` 的 Playwright 上下文默认带三层伪装：真实桌面 Chrome UA（去掉
+`HeadlessChrome` 字样）+ 1920×1080 视口 + `locale=zh-CN` + `Asia/Shanghai` 时区 +
+`add_init_script` 抹掉 `navigator.webdriver`、补齐 `chrome`/`plugins`/`languages` 形状、
+对齐 `permissions.query` 与通知权限。媒体识别扩为三层信号，rank 越小越优先：
+URL 后缀（`.m3u8/.mpd/.mp4/.flv/.ts/.m4s/.m4a/.aac/.mp3/.webm`）→ Response
+Content-Type（`video/*`、`audio/*`、m3u8 四个别名、`dash+xml`、`octet-stream`）→
+URL 关键字（`playlist/master/stream/manifest`，仅兜底，主文档导航不参与）。
+页面加载后追加 `networkidle` 等待（≤4s，长轮询页面超时即视为可观察）与触底滚动（懒加载）。
+
+- `BGV_SNIFF_DEBUG=1`：把 `page.on("request")` / `page.on("response")` 捕获的**全部**
+  请求/响应（URL + resource type + 状态码 + Content-Type）以 `sniff_debug` 行打进日志，
+  不做任何过滤，供联调取证。注意该行带完整 URL，仅供开发排查，生产勿开；
+- `BGV_SNIFF_HEADED=1`：改用「有头 + `--window-position=-32000,-32000`（窗口在屏幕外，
+  不弹到用户眼前）」形态启动 Chromium——无头指纹仍被识别时的最后手段，走真实渲染管线。
+
 ### 开发专用：临时 SSRF 主机白名单（dev only, never in production）
 
 `BGV_SSRF_ALLOWLIST` + `BGV_DEV_ALLOW_SSRF_BYPASS`：仅用于真机 / 本地媒体联调，
