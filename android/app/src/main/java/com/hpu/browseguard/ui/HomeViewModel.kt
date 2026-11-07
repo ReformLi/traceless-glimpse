@@ -42,11 +42,15 @@ import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.Task
 import com.hpu.browseguard.shared.model.TaskStatus
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.net.HttpURLConnection
 import java.util.UUID
@@ -253,10 +257,23 @@ class HomeViewModel(
      * 所以这张卡必须由界面动作打，不能由谁在后台观察队列观察出来。
      */
     private val keepAlive: KeepAliveStarter = KeepAliveStarter.NOOP,
+    /**
+     * 引擎心跳周期（毫秒）；`null` = 关闭心跳。
+     *
+     * 心跳是 `while + delay` 的无限周期任务——JVM 测试的 `advanceUntilIdle` 会把
+     * 虚拟时间推到天荒地老都不肯停，所以测试必须显式传 `null` 关掉它。
+     */
+    private val heartbeatIntervalMs: Long? = HEARTBEAT_INTERVAL_MS,
 ) : ViewModel() {
 
     private var sniffJob: Job? = null
     private var downloadJob: Job? = null
+
+    /** 引擎模式专属的存活检测定时器；切回本机或自动降级即停。 */
+    private var heartbeatJob: Job? = null
+
+    /** 心跳连续失败计数：一拍波动不判离线，连续 [HEARTBEAT_FAILURES_TO_OFFLINE] 拍才判。 */
+    private var heartbeatFailures = 0
 
     /**
      * 授权之后要自动接着做下去的画质 id。
@@ -314,6 +331,8 @@ class HomeViewModel(
 
     init {
         refreshConnection()
+        // 冷启动就是引擎模式：心跳立即上岗，让「电脑关机了」在 10 秒内反映到状态胶囊上。
+        if (settings.sniffExecutor == SniffExecutor.ENGINE) startHeartbeat()
         // 队列里排队等授权的任务由这里接住：主页已经复位，只有这个页面还能问用户「同意吗」。
         viewModelScope.launch {
             downloads.consentWaits.collect { waits -> applyConsentWaits(waits.firstOrNull()) }
@@ -333,6 +352,62 @@ class HomeViewModel(
 
     fun refreshConnection() {
         viewModelScope.launch { connect() }
+    }
+
+    /**
+     * 启动引擎心跳：每 [heartbeatIntervalMs] 一拍，向 `GET /v1/health` 打点。
+     *
+     * 已在跑就不叠第二层——重复定时器会让失败计数互相踩。挂靠 `viewModelScope`，
+     * `onCleared` 随作用域一起安全取消；与本页的嗅探/下载协程互不相干，
+     * 心跳超时只取消自己的请求，碰不到正在下载的任务流。
+     */
+    private fun startHeartbeat() {
+        val interval = heartbeatIntervalMs ?: return
+        if (heartbeatJob?.isActive == true) return
+        heartbeatFailures = 0
+        heartbeatJob = viewModelScope.launch {
+            while (isActive) {
+                delay(interval)
+                heartbeatTick()
+            }
+        }
+    }
+
+    /** 切回本机嗅探（或自动降级）即停：本机模式没有要盯的电脑。 */
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        heartbeatFailures = 0
+    }
+
+    /**
+     * 一拍心跳：3 秒超时内答上来算活着。
+     *
+     * 成功 → 失败计数清零；若当前已是「离线」则完整重建连接（health + selfcheck），
+     * 状态胶囊自动回绿——`Checking` 态说明用户正点着「测试连接」，让那一次 connect
+     * 自己说话，心跳不抢。失败 → 计数 +1；连续 [HEARTBEAT_FAILURES_TO_OFFLINE] 拍
+     * 且当前仍是「在线」才落「离线」，一次网络波动不值得让状态闪红。
+     */
+    private suspend fun heartbeatTick() {
+        val alive = try {
+            withTimeout(HEARTBEAT_TIMEOUT_MS) { engineInfo.health(settings.baseUrl) }
+            true
+        } catch (e: EngineException) {
+            false
+        } catch (e: TimeoutCancellationException) {
+            false
+        }
+        if (alive) {
+            heartbeatFailures = 0
+            if (_state.value.connection is Connection.Failed) connect()
+        } else {
+            heartbeatFailures++
+            if (heartbeatFailures >= HEARTBEAT_FAILURES_TO_OFFLINE &&
+                _state.value.connection is Connection.Connected
+            ) {
+                _state.update { it.copy(connection = Connection.Failed(ENGINE_OFFLINE_REASON)) }
+            }
+        }
     }
 
     fun editEngineUrl(value: String) {
@@ -394,6 +469,8 @@ class HomeViewModel(
         if (snapshot.sniff is SniffPhase.Running && !deepRunning) return
         settings.sniffExecutor = executor
         closeBrowserSession()
+        // 心跳跟着模式走：选电脑盯电脑，回本机立刻停拍，别让定时器空转。
+        if (executor == SniffExecutor.ENGINE) startHeartbeat() else stopHeartbeat()
         _state.update {
             it.copy(
                 sniffExecutor = executor,
@@ -484,6 +561,8 @@ class HomeViewModel(
             settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
             if (snapshot.mergeSelected) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
         }
+        // 浏览器这一腿全程本机：心跳没有意义，停拍。
+        stopHeartbeat()
         sniffJob?.cancel()
         downloadJob?.cancel()
         resumeFormatId = null
@@ -555,6 +634,15 @@ class HomeViewModel(
         val snapshot = _state.value
         val sourceUrl = snapshot.sourceUrl.trim()
         if (sourceUrl.isEmpty() || !snapshot.canSniff) return
+
+        // 心跳已判定电脑离线：红色失败卡当场给出，不发请求也不等超时。
+        // 不自动降级——切回手机嗅探是显式选择，交给设置里的模式开关（离线提示卡有直达入口）。
+        if (snapshot.sniffExecutor == SniffExecutor.ENGINE && snapshot.connection is Connection.Failed) {
+            _state.update {
+                it.copy(sniff = SniffPhase.Failed(ENGINE_OFFLINE_HINT, null, retryable = true))
+            }
+            return
+        }
 
         // 被新一次嗅探取代的旧记录不能停在「嗅探中/下载中」：它已经没有任何协程在推进。
         if (snapshot.sniff is SniffPhase.Running || snapshot.downloadInFlight) {
@@ -694,6 +782,8 @@ class HomeViewModel(
         val hadMerge = _state.value.mergeSelected
         settings.sniffExecutor = SniffExecutor.LOCAL_WEBVIEW
         if (switchDownload) settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+        // 已经自动换到手机这条腿：电脑不再是要盯的对象，心跳停拍。
+        stopHeartbeat()
         _state.update {
             it.copy(
                 sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
@@ -1039,6 +1129,21 @@ class HomeViewModel(
 
         /** 交给下载队列那一下的轻提示文案；测试与界面都认这一句。 */
         const val QUEUED_HINT = "已加入下载队列，请在下载管理查看"
+
+        /** 心跳周期（毫秒）：引擎模式专属的存活检测节拍。 */
+        const val HEARTBEAT_INTERVAL_MS = 5_000L
+
+        /** 单拍健康检查超时：拔了网线也不能拖慢节拍，比 OkHttp 的连接超时更紧。 */
+        const val HEARTBEAT_TIMEOUT_MS = 3_000L
+
+        /** 连续失败几拍才判离线：一次网络波动不值得让状态胶囊闪红。 */
+        const val HEARTBEAT_FAILURES_TO_OFFLINE = 2
+
+        /** 心跳判离线时写进连接态的原因；界面据此点亮「离线」。 */
+        const val ENGINE_OFFLINE_REASON = "电脑引擎已离线"
+
+        /** 离线时点「嗅探」的前端拦截文案：红色失败卡当场给出，不等请求超时。 */
+        const val ENGINE_OFFLINE_HINT = "电脑引擎已离线，请检查电脑或在上方切换为手机嗅探"
 
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
         fun factory(

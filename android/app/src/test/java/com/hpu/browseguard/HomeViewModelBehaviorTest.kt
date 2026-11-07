@@ -285,6 +285,7 @@ class HomeViewModelBehaviorTest {
             history,
             FakeCookieConsentStore(),
             DownloadCoordinator(provider, history, this, audit),
+            heartbeatIntervalMs = null,
         )
 
         assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
@@ -299,9 +300,13 @@ class HomeViewModelBehaviorTest {
         assertTrue("本地直链的画质表不依赖引擎", vm.state.value.canPickFormats)
     }
 
-    /** 开局引擎就不可达：默认「电脑」也得能点下去，否则自动降级没有入口。 */
+    /**
+     * 开局引擎就不可达：M20 起首连/心跳已实时标「离线」，点「嗅探」当场给红色失败卡，
+     * 不发引擎请求、也不再静默降级——切回手机嗅探是显式选择（离线提示卡有直达入口）。
+     * 按钮本身仍可点：永远灰着的按钮只会让用户以为 App 坏了。
+     */
     @Test
-    fun offlineEngineStillLetsTheDefaultEngineModeStartAndFallBack() = runTest(dispatcher) {
+    fun offlineEngineSniffIsBlockedWithARedHintInsteadOfFallingBack() = runTest(dispatcher) {
         val provider = FakeBackendProvider()
         val audit = FakeAuditLogger()
         val history = FakeHistoryRepository()
@@ -313,17 +318,25 @@ class HomeViewModelBehaviorTest {
             history,
             FakeCookieConsentStore(),
             DownloadCoordinator(provider, history, this, audit),
+            heartbeatIntervalMs = null,
         )
 
         assertEquals(Connection.Failed::class.java, vm.state.value.connection.javaClass)
-        assertTrue("引擎不可达时嗅探按钮不能灰着：降级要靠这次点击触发", vm.state.value.canSniff)
+        assertTrue("离线也要能点下去，提示由状态机当场给出", vm.state.value.canSniff)
 
         vm.editSourceUrl("https://example.com/watch")
         vm.sniff()
 
-        assertEquals(listOf(SniffExecutor.LOCAL_WEBVIEW), provider.sniffExecutors)
-        assertTrue("降级提示必须可见", vm.state.value.sniffNotice != null)
-        assertEquals("pc_unreachable", audit.of("audit_sniff_fallback").single().fields["reason"])
+        val failed = vm.state.value.sniff as SniffPhase.Failed
+        assertEquals(
+            "提示要说清电脑离线：${failed.message}",
+            HomeViewModel.ENGINE_OFFLINE_HINT,
+            failed.message,
+        )
+        assertTrue("失败可重试：修好电脑后原按钮就能再点", failed.retryable)
+        assertNull("前端拦截是本地判定，不借 §5 码", failed.code)
+        assertEquals("拦截不得发出任何引擎请求", emptyList<SniffExecutor>(), provider.sniffExecutors)
+        assertEquals("不再静默降级，降级审计不该出现", emptyList<FakeAuditLogger.Entry>(), audit.of("audit_sniff_fallback"))
     }
 
     /** 降级后本地也失败：提示必须升级为「检查网络或引擎」，不能只留一句本地超时。 */
@@ -810,7 +823,17 @@ class HomeViewModelBehaviorTest {
             DownloadCoordinator(provider, history, scope.backgroundScope, audit, consent, progressIntervalMs = 0L)
 
         fun connectedViewModel(): HomeViewModel {
-            val vm = HomeViewModel(settings, provider, FakeEngineInfo(), audit, history, consent, downloads)
+            // 心跳是无限周期任务：advanceUntilIdle 会把虚拟时间推到地老天荒，测试一律关掉。
+            val vm = HomeViewModel(
+                settings,
+                provider,
+                FakeEngineInfo(),
+                audit,
+                history,
+                consent,
+                downloads,
+                heartbeatIntervalMs = null,
+            )
             assertEquals(Connection.Connected::class.java, vm.state.value.connection.javaClass)
             return vm
         }

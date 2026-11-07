@@ -122,6 +122,7 @@ cd engine
 | M18 | PC 引擎 Playwright 反反爬伪装 + 嗅探雷达三层识别（后缀 / Content-Type / 关键字） | `8770bac` |
 | M18.5 | 下载进度在总大小未知时可见（HLS 分片估算 + 桌面不确定进度） | `9e9c52f` |
 | M19 | 自定义引擎 IP 的 HTTP 白名单封装与网络安检门（零信任 OkHttp 拦截器） | `eb9e966` |
+| M20 | 电脑引擎心跳检测：5s/拍 3s 超时，连续两拍失败判离线，离线点嗅探前端拦截 | （见 smoke-report §41） |
 
 每阶段的现场证据、协议坑与自报缺口记在 [`docs/reports/smoke-report.md`](docs/reports/smoke-report.md)（§33 起按阶段编号）。
 
@@ -142,6 +143,6 @@ cd engine
 - 提交前跑 `python scripts/check_schema.py` 与各端测试（仓库未接托管 CI，这道对账靠本地跑）：
 
 ```powershell
-.\gradlew.bat test --rerun                     # 全项目 JVM 单测（当前 544 项）
+.\gradlew.bat test --rerun                     # 全项目 JVM 单测（当前 548 项）
 cd engine; .\.venv\Scripts\python -m pytest -q  # 引擎单测
 ```

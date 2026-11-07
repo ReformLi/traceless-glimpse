@@ -3726,3 +3726,57 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
   注释钉死而非代码强制，是本轮刻意取舍；
 - 公网判定不含 DNS 解析（域名一律按公网对待）：设置页输入时做 DNS 查询会卡 UI
   且离线时误报，宁可对合法域名多弹一次确认。
+
+## 41. M20：电脑引擎心跳检测与实时离线状态同步（2026-11-07）
+
+**背景**：手机端连上电脑引擎后，如果电脑关机或断网，`Connection` 只在点「测试连接」时更新一次，
+顶栏会一直显示「在线」。M20 给引擎模式加一拍一拍的存活检测：**5 秒一拍、3 秒超时、
+连续两拍失败才判离线**，状态胶囊实时绿↔离线扭转。
+
+### 41.1 落地（HomeViewModel 层，UI 零改动）
+
+- **心跳定时器**：`startHeartbeat()` 在 `viewModelScope` 里跑 `while(isActive) { delay(5s); tick() }`，
+  启动时机 = init 时已是引擎模式 / `selectSniffExecutor(ENGINE)`；停止时机 =
+  切回本机 / `degradeToLocal` 自动降级 / `downloadFromBrowser` 进浏览器腿。
+  已在跑不叠第二层，失败计数随启停归零；
+- **单拍判定 `heartbeatTick()`**：`withTimeout(3s) { engineInfo.health(baseUrl) }`——
+  比 OkHttp 的连接超时（3s connect / 15s read）更紧，拔网线也不拖慢节拍。
+  成功 → 计数清零；若当前已离线则走完整 `connect()` 重建（health + selfcheck，恢复自检白名单），
+  `Checking` 态让位给用户点的「测试连接」；失败 → 计数 +1，连续 2 拍且当前在线才落
+  `Connection.Failed("电脑引擎已离线")`——一次波动不闪红；
+- **离线点嗅探的前端拦截**：`startSniff()` 开头，引擎模式 + `Connection.Failed` 直接给
+  `SniffPhase.Failed(ENGINE_OFFLINE_HINT)` 红色失败卡（retryable，无 §5 码），
+  不发请求、不等超时，**也不再静默降级**——切回手机嗅探交给用户显式选择
+  （首页既有 `OfflineHint` 卡有「切换到本机」直达按钮）。注意：嗅探**中途**断连
+  （请求已发出、引擎答到一半）仍走 M16 的自动降级，两条路径语义不同；
+- **并发与生命周期**：心跳是独立协程，只碰 `engineInfo.health`，与嗅探/下载协程互不相干，
+  3s 超时只取消自己的请求；`onCleared` 随 `viewModelScope` 安全取消；
+- **UI 零改动的原因**：`ConnectionStatusPill` / 设置页状态点本来就逐 `Connection` 分支渲染，
+  `SniffPhase.Failed` 已有红色失败卡——状态实时化后界面自动跟上。
+
+### 41.2 验证（JVM 全离线）
+
+- **全仓 JVM：548 passed = M19 基线 544 + 本轮 4**（app 482 → 486），0 失败；
+- `HeartbeatTest`（4，虚拟时间精确推拍，**绝不能用 advanceUntilIdle**）：
+  - 连续两拍失败才判离线（一拍波动保持绿）；
+  - 离线后心跳成功自动回绿，且重建自检白名单（画质表 outputDir 可用）；
+  - 切回本机心跳立刻停拍（`FakeEngineInfo.healthCalls` 计数冻结）；
+  - 切到电脑模式心跳上岗（每拍一次 health）；
+- `HomeViewModelBehaviorTest` 34/34：「开局不可达点嗅探」用例从「自动降级」改写为
+  「红色拦截」——断言拦截不发引擎请求（`sniffExecutors` 为空）、无降级审计、
+  提示文案 = `ENGINE_OFFLINE_HINT`；
+- `:android:app:assembleDebug` BUILD SUCCESSFUL。
+
+### 41.3 本轮踩坑与自报缺口
+
+- **runTest 与无限周期任务的水火不容**：心跳 `while+delay` 会让 `advanceUntilIdle`
+  （含 runTest 收尾阶段的自动推进）把虚拟时间推到天荒地老——首轮单测直接挂死到 SIGTERM。
+  对策：`heartbeatIntervalMs` 构造参数可禁用（既有测试全传 `null`），心跳专项测试
+  用 `advanceTimeBy + runCurrent` 推拍并在 finally 里 `viewModelScope.cancel()`；
+- **行为演进**：M16 时代「开局不可达靠点嗅探触发自动降级」的入口被心跳 + 红色提示替代，
+  旧用例改写而非删除；中途断连的自动降级保持不变；
+- 「测试连接」保留真实请求（它是恢复入口，拦截会堵死手动重连）：引擎挂掉时 TCP 拒绝
+  或 3s 连接超时即回 `Failed` 红态，无傻等；
+- 心跳无法验证「离线窗口期」（引擎刚挂、两拍未满时点嗅探）：该窗口 `Connection.Connected`
+  仍成立，走引擎请求→失败→自动降级的 M16 老路，行为正确但延迟至多 10 秒；
+- 真机验收（连引擎→杀进程→10 秒内变离线→重启→自动回绿）留给 EMUI 实机回归。

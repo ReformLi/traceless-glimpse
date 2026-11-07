@@ -197,8 +197,14 @@ class FakeEngineInfo(
     ),
 ) : EngineInfo {
 
-    override suspend fun health(baseUrl: String): HealthResponse =
-        healthResult ?: throw EngineException(EngineFailure.Transport("引擎离线（测试）"))
+    /** 健康检查调用次数：心跳测试靠它证明「定时器停了」或「拍了几下」。 */
+    var healthCalls: Int = 0
+        private set
+
+    override suspend fun health(baseUrl: String): HealthResponse {
+        healthCalls += 1
+        return healthResult ?: throw EngineException(EngineFailure.Transport("引擎离线（测试）"))
+    }
 
     override suspend fun selfcheck(baseUrl: String): SelfcheckResponse =
         selfcheckResult ?: throw EngineException(EngineFailure.Transport("引擎离线（测试）"))
