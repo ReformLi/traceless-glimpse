@@ -127,7 +127,7 @@ com.hpu.browseguard
 - blob/MSE 不伪造可下载的 `SniffResult`。
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
 - 下载保活只在 MuMu 模拟器上验证过：真实 Doze/厂商省电策略与 `dataSync` 时长额度上限未实测；
-  R8 包已补测服务、通知与 `PendingIntent`（`../docs/smoke-report.md` §32.6），但 R8 包上仍未跑加密 HLS。
+  R8 包已补测服务、通知与 `PendingIntent`（`../docs/smoke-report.md` §32.6）与加密 HLS 解密（§33.7）。
 
 里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活、§33 M14 AES-128 解密）；
 M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。

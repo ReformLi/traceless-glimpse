@@ -3308,20 +3308,43 @@ apksigner sign --ks ~/.android/debug.keystore ...          # 测试签名，cert
 
 1. **产物比明文少最后一帧（600 → 599）**：`MediaExtractor` 报的样本数比 ffmpeg 少 1，末帧没有后继
    PTS 可推时长，转封装侧丢掉了它；时间差 33 ms。该行为在未加密流上就存在，不是解密引入的，
-   按「不碰 `TsRemuxer`」的边界不做改动，登记观察。
+   按「不碰 `TsRemuxer`」的边界不做改动。**已裁决：接受，记入已知限制。**
 2. **显式 IV 与密钥轮换只在 JVM 覆盖**：设备腿用的是「无 IV 属性、按序号派生」的版本（也就是最容易
    写反的那条）；显式 `IV=0x…` 与 `EXT-X-KEY` 轮换只有单测与并发端到端测试。真实站点两者都可能出现，
-   下一轮遇到带显式 IV 的站点再补一条设备腿。
-3. **R8 包上没跑加密 HLS**：M14 的设备腿是 debug 包；R8 包只覆盖过直链 mp4（§31）与保活通知（§32.6）。
-   BouncyCastle/JCA 的 `Cipher` 不在常见裁剪名单里，但按既有规矩，发版前要用 Release 包再跑一遍加密 HLS。
+   下一轮遇到带显式 IV 的站点再补一条设备腿。**已裁决：接受。**
+3. ~~**R8 包上没跑加密 HLS**~~ **已补测，见 §33.7**。M14 的首轮设备腿是 debug 包；收尾时用测试签名
+   Release 包复跑了同一条加密流，解密、转封装与音频逐样本一致。
 4. **日志里分不清「WebView 拉的」和「下载器拉的」**：下载器刻意伪装成 WebView UA（防盗链要求），
-   两组请求只能靠并发顺序与审计行区分。这是设计代价，不是缺陷；排查时以 `hls_download_done`
-   的 `segments/bytes` 为准。
+   两组请求只能靠并发顺序与审计行区分。**已裁决：接受**，这是防盗链必须付出的代价；排查时以
+   `hls_download_done` 的 `segments/bytes` 为准。
 
 ### 33.6 回归与提交
 
 - 全量 JVM（发版基线命令）：**513 tests**（app 451 + shared 11 + engine-client 12 + cli 26 + mcp 13），
   0 失败 0 错误 0 跳过。相对 M13 的 504 多出 9 项，全部来自 M14：`Aes128SegmentDecryptorTest` 6、
   `HlsPlaylistParserTest` +2、`HlsConcurrentDownloadTest` +1。
-- 未新增依赖；APK 体积基线待下次 `assembleRelease` 更新。
+- 未新增依赖；收尾时 `assembleRelease` 的 unsigned 体积 5,289,817 B，与 M13 完全一致。
+
+### 33.7 R8 补测与收尾清理（2026-11-07，测试签名 Release 包）
+
+出包流程同 §32.6：`assembleRelease` → unsigned 5,289,817 B → zipalign → `apksigner`（cert
+`73866dbc…`）。`dumpsys package` 的 `flags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ]` 无 DEBUGGABLE。
+
+先看静态件：`usage.txt` 里 `Aes128SegmentDecryptor` 只剩类名与常量，方法体被 R8 内联进
+`HlsDownloader`——「类名还在」不等于「逻辑还在」，所以这一腿只能跑设备。
+
+| 腿 | 现场证据 |
+| --- | --- |
+| 冷启动与嗅探 | R8 包冷启动无闪退；输入 `http://127.0.0.1:8732/p` 后嗅探出 1 条 `hls / 无 DRM`，服务端收到 WebView 的 m3u8/key/三段 ts |
+| 前台服务 | 点「开始下载」后 `dumpsys activity services`：`DownloadKeepAliveService isForeground=true foregroundId=1301 types=0x00000001 foregroundNoti=… channel=download_keep_alive category=progress` |
+| 解密路径没被裁 | `BgvAudit: hls_download_done host=127.0.0.1 segments=3 bytes=13570780 retries=0`，与 debug 包和本地 openssl 明文总长一致；下载器请求全带 `Referer`、`Cookie`、WebView UA |
+| 转封装与音频 | `hls_remux_done bytes=13182852 ms=20016 audio=124 outFrames=862`；产物 13,182,852 B |
+| 逐样本对拍 | R8 产物解 PCM 的 md5 仍是 `2d71de2c853689fe3fd13d7b361c90e9`，与 debug 产物 / 本地明文完全一致 |
+| 服务自收摊 | 下载完成后 `Stop FGS`，服务记录消失 |
+
+收尾清理（按用户要求）：下载页两条 `127.0.0.1 · p` 记录（10:44 debug、10:58 R8）连同
+`index_loop.mp4` 一起多选删除，Toast「已删除 2 条记录」，列表回到 19 条 / 168.5 MB；
+`adb reverse --remove tcp:8732`；宿主 8000 端口测试服务已停。
+
+仍未覆盖：正式签名包（必须由维护者本机打，测试签名包不得分发）。
 
