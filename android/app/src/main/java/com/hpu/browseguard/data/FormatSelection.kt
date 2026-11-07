@@ -12,7 +12,7 @@ import com.hpu.browseguard.shared.model.SelectionStrategy
  * 引擎不接受 `exact`（real 模式对 formatId 透传返回 `FORMAT_UNAVAILABLE`，PROTOCOL §3.4
  * 也明确不做 yt-dlp `-f` 字符串透传），因此这里把选择降级成引擎能表达的能力级约束。
  * 降级只在元数据说话的时候做：编解码未知时猜 `audio_only` 会让 yt-dlp 报
- * `Requested format is not available`（见 docs/smoke-report.md §9.8），所以宁可不猜。
+ * `Requested format is not available`（见 docs/reports/smoke-report.md §9.8），所以宁可不猜。
  *
  * 列表文案与点击后的行为都取自 [kindOf]，不允许两处各自从 `hasVideo` 推断。
  */

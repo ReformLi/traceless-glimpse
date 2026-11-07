@@ -85,7 +85,7 @@
 
 未授权前连 WebView 自己的 CookieStore 都不碰；授权后 Cookie 值只注入同站点的本机下载请求，
 不进 `SniffResult.headersHint`、不上行引擎。审计行只出现域名与 `present|absent`，值出现即为泄漏面。
-端到端取证见 `../docs/acceptance-m6-5.md`。
+端到端取证见 `../docs/reports/acceptance-m6-5.md`。
 
 ## 包结构
 
@@ -102,7 +102,7 @@ com.hpu.browseguard
 # 出 debug 包（产物在 android/app/build/outputs/apk/debug/app-debug.apk）
 .\gradlew.bat :android:app:assembleDebug
 
-# 本模块 JVM 单测：442 项，不需要设备
+# 本模块 JVM 单测：471 项，不需要设备
 .\gradlew.bat :android:app:testDebugUnitTest --rerun
 ```
 
@@ -115,7 +115,7 @@ com.hpu.browseguard
   只能真机跑的调用点，用扫源码文本的方式钉住形状——包括反向钉子「临时诊断层不许留在生产代码里」。
   这类钉子防的是「改对了逻辑、漏了一处调用」，真机复跑仍然是最后一道。
 
-`unitTests.isReturnDefaultValues = true` 是保留项（评估过程见 `docs/smoke-report.md` §15），
+`unitTests.isReturnDefaultValues = true` 是保留项（评估过程见 `../docs/reports/smoke-report.md` §15），
 代价是 Android framework 的假对象会静默返回默认值，所以凡调用点必须靠接线测试与真机复跑兜住。
 
 ## 已知边界（登记，不掩饰）
@@ -127,9 +127,9 @@ com.hpu.browseguard
 - blob/MSE 不伪造可下载的 `SniffResult`。
 - 项目不引入 FFmpeg/ffmpeg-kit，APK 体积不因此变大。
 - 下载保活只在 MuMu 模拟器上验证过：真实 Doze/厂商省电策略与 `dataSync` 时长额度上限未实测；
-  R8 包已补测服务、通知与 `PendingIntent`（`../docs/smoke-report.md` §32.6）与加密 HLS 解密（§33.7）。
+  R8 包已补测服务、通知与 `PendingIntent`（`../docs/reports/smoke-report.md` §32.6）与加密 HLS 解密（§33.7）。
 
-里程碑与逐轮取证见 `../docs/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活、§33 M14 AES-128 解密）；
+里程碑与逐轮取证见 `../docs/reports/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活、§33 M14 AES-128 解密）；
 M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。
 
 ## 后续优化方向

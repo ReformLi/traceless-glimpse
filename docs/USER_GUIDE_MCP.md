@@ -1,4 +1,4 @@
-# MCP 真客户端验收指南（Claude Desktop / Cursor）
+# MCP 使用指南（Claude Desktop / Cursor 接入验收）
 
 这份指南按「从零到第一次真实下载」的顺序写，命令均可直接复制。路径以本机仓库 `E:\code\android\TracelessGlimpse` 为准；换机器时只替换仓库根目录。
 

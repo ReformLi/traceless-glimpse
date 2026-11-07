@@ -127,7 +127,7 @@ server PID 补杀，避免 Windows venv 重定向器留下孤儿 uvicorn 进程�
 | `cd engine; .\.venv\Scripts\python.exe -m pytest -q` | 引擎回归（桌面端改了 `services/` 后必跑） |
 
 M16.5 收官现场：`gui-smoke 85/85`、`e2e_m16 27/27`、`e2e_m16_5 33/33`、exe 内 `gui-smoke 76/76`（连跑两次）、
-引擎 `pytest 238 passed`。逐轮取证见 `docs/smoke-report.md` §34。
+引擎 `pytest 238 passed`。逐轮取证见 `docs/reports/smoke-report.md` §34。
 
 ## 8. 已知边界
 

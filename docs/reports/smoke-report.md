@@ -11,9 +11,9 @@
 
 > 本文件从 M0 冒烟单一路写成了项目的逐轮取证与遗留登记日志：§1–§17 是 M0–M3，§18–§26 是 M4，
 > §27–§29 是 M7–M9，§30 是文档回写，§31 是 M12.5，§32 是 M13。M5（CLI/MCP）与 M6（Android 完整功能六轮）当轮写在
-> `MCP_USER_GUIDE.md` 与 `acceptance-m6-*.md` 里，没有回填本文件。
+> `USER_GUIDE_MCP.md` 与 `reports/acceptance-m6-*.md` 里，没有回填本文件。
 > 下面这张表只描述 §1–§6 那一轮（M0 桩引擎），后面的轮次各有自己的前提块。
-> 里程碑对应关系见 `PRD.md` §15；Android 端当前实现形态见 `../android/README.md`。
+> 里程碑对应关系见 `PRD.md` §15；Android 端当前实现形态见 `../../android/README.md`。
 
 复现前置条件（smoke 依赖 venv 内的 python 取 JSON，不依赖 jq）：
 

@@ -41,7 +41,7 @@ Kotlin/JVM，复用 `:shared` 协议模型与 `:engine-client`，向 AI 客户�
 .\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat
 ```
 
-Claude Desktop / Cursor 的 MCP 配置示例（`command` 指向安装目录下的启动脚本；完整验收步骤见 `docs/MCP_USER_GUIDE.md`）：
+Claude Desktop / Cursor 的 MCP 配置示例（`command` 指向安装目录下的启动脚本；完整验收步骤见 `docs/USER_GUIDE_MCP.md`）：
 
 ```json
 {

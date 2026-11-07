@@ -110,9 +110,9 @@ Caused by: java.lang.NullPointerException
 
 | versionName / code | APK sha256 | APK 字节 | mapping 归档 | 设备腿结论 | 验收报告 |
 |---|---|---|---|---|---|
-| 1.0 / 1（2026-11-03 09:02，M6-6 测试签名） | `d486c26851138b865dededee6811fd5bb2d2e7bb550a68fa2b42975486f5ad68` | 3,206,651 | 旧 mapping（sha256 `7922724d…`，已被下行取代） | MuMu SM-S9080 / Android 15 十四腿全过，反序列化异常 0 命中 | [acceptance-m6-6.md](acceptance-m6-6.md) |
+| 1.0 / 1（2026-11-03 09:02，M6-6 测试签名） | `d486c26851138b865dededee6811fd5bb2d2e7bb550a68fa2b42975486f5ad68` | 3,206,651 | 旧 mapping（sha256 `7922724d…`，已被下行取代） | MuMu SM-S9080 / Android 15 十四腿全过，反序列化异常 0 命中 | [reports/acceptance-m6-6.md](reports/acceptance-m6-6.md) |
 | 1.0 / 1（2026-11-03 10:33，定名「无痕掠影」重建，**未签名**） | 待签名后补 | 3,194,363（`app-release-unsigned.apk`） | `release-artifacts/mapping-v1.0-code1.txt.gz`（原 36,442,414 B，sha256 `7f6ae9fc519ed91d2c7e590261ea032cee1b4ab7d92e439e48cf1bbc7de2959e`） | 未跑设备腿（本机无签名口令，未出可安装包） | 本文件 §3 备注 |
-| 1.1.0 / 1（2026-11-06 20:33，M12.5 **测试签名** R8 包） | `d5ef93af3a0940e7bf7444ce3277b861448c28ec3c257b04b664c2c20abf4979` | 5,304,748（签前 unsigned 5,284,313） | `release-artifacts/mapping-v1.1.0-code1.txt.gz`（源 `mapping.txt` sha256 前缀 `f612f7b8`，往返校验一致） | MuMu SM-S9080 / Android 15：冷启动无闪退、深嗅出候选、下载「已完成 1.4 MB」、下载管理→打开文件播放、续播 `resume=25221`、`adblock_hit` 每域每页一行；`JsonDecodingException`/`SerializationException` 0 命中 | 本文件 §7 + `docs/smoke-report.md` §31 |
+| 1.1.0 / 1（2026-11-06 20:33，M12.5 **测试签名** R8 包） | `d5ef93af3a0940e7bf7444ce3277b861448c28ec3c257b04b664c2c20abf4979` | 5,304,748（签前 unsigned 5,284,313） | `release-artifacts/mapping-v1.1.0-code1.txt.gz`（源 `mapping.txt` sha256 前缀 `f612f7b8`，往返校验一致） | MuMu SM-S9080 / Android 15：冷启动无闪退、深嗅出候选、下载「已完成 1.4 MB」、下载管理→打开文件播放、续播 `resume=25221`、`adblock_hit` 每域每页一行；`JsonDecodingException`/`SerializationException` 0 命中 | 本文件 §7 + `docs/reports/smoke-report.md` §31 |
 
 三条备注（2026-11-03 定名重建；**这份台账的有效性问题见 §7，下次发版先读 §7**）：
 
@@ -232,7 +232,7 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
   `adblock_hit` 每域每页一行，`JsonDecodingException`/`SerializationException` 0 命中，全程无闪退。
   **§6 的 HLS→TS 转封装音频判据本轮没在 R8 包上复跑**（只跑过 mp4 直链），下次发版前必须补一条
   HLS 链接的 R8 设备腿；M8/M9 的音频结论仍来自 debug 包。M14 已在 2026-11-07 收尾时用测试签名
-  Release 包跑通加密 HLS（`docs/smoke-report.md` §33.7：`hls_download_done bytes=13570780`、
+  Release 包跑通加密 HLS（`docs/reports/smoke-report.md` §33.7：`hls_download_done bytes=13570780`、
   产物 PCM md5 与 debug/本地明文一致），这条缺口关闭。
 - **APK 体积基线（unsigned）**：M11-2（`a107dc0`）3,793,903 B → M11-3B（`924c350`）5,271,453 B →
   M12.5（2026-11-06）5,284,313 B → M13（2026-11-07）5,289,817 B → M14（2026-11-07）5,289,817 B。
@@ -279,7 +279,7 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
   →10:34 `已完成`、产物 57,861,784 B→服务与通知自收摊。R8 对 Service / `PendingIntent` 的裁剪风险
   这一腿已经排除。**R8 包上的 HLS→TS 转封装音频判据已于 M14 收尾补齐**（2026-11-07，加密 HLS：
   `hls_download_done bytes=13570780`、`hls_remux_done audio=124 outFrames=862`、产物 PCM md5 与
-  debug/本地明文一致，见 `docs/smoke-report.md` §33.7）。仍未覆盖：正式签名包（必须由维护者本机打）。
+  debug/本地明文一致，见 `docs/reports/smoke-report.md` §33.7）。仍未覆盖：正式签名包（必须由维护者本机打）。
 - **「不再询问」的通知权限路径没实测**：两次拒绝后系统不再弹窗，当前只靠设置页那句红字 +
   「去设置」出口；文案与引导在那种状态下是否够用，实体机遇到时再确认。
 
@@ -306,4 +306,4 @@ M9 还出现过一次 290 → 283：掉的是撤除临时诊断层时一起删�
 M16 第二步加 `engine_client`、M16.5 加 `services.ffmpeg_path` 都是按这条做的。
 
 桌面端字段、环境变量与验收脚本的完整说明见 `desktop/README.md`；逐轮取证见
-`docs/smoke-report.md` §34。桌面端目前**无签名、无自动更新**，分发前由维护者自行校验哈希。
+`docs/reports/smoke-report.md` §34。桌面端目前**无签名、无自动更新**，分发前由维护者自行校验哈希。

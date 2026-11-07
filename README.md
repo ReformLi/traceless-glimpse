@@ -8,16 +8,104 @@
 ## 三端架构
 
 1. **桌面本地引擎**（主力）：本地 HTTP 服务，承载 Playwright 嗅探、yt-dlp 下载、FFmpeg 处理。
-   M15 起附带 `desktop/` 控制面板与单文件 `BrowseGuardEngine.exe`：一键启停引擎、显示局域网地址、
-   环境依赖自检；M16 起内置「下载控制台」，不连手机也能在电脑上完成嗅探 → 选画质 → 下载。
-   默认监听 `0.0.0.0:8730`（协议文档与引擎桩模式仍以 `127.0.0.1:8730` 为缺省值）。
-2. **Android App**：`com.hpu.browseguard`，既是引擎客户端，也能完全离线自足——内置浏览器嗅探 + 本机直连下载 + TS→MP4 转封装 + 内置播放器（断点续播）（见下节）。
+   `desktop/` 是它的控制面板——一键启停、显示局域网地址、环境依赖自检、内置「下载控制台」，
+   不连手机也能在电脑上完成嗅探 → 选画质 → 下载；打包形态是单文件 `BrowseGuardEngine.exe`。
+2. **Android App**：`com.hpu.browseguard`，既是引擎客户端，也能完全离线自足——
+   内置浏览器嗅探 + 本机直连下载 + TS→MP4 转封装 + 内置播放器（断点续播）。
 3. **CLI / MCP Server**：`bgv` 命令与 MCP 工具，供技术用户与 AI 客户端调用。
 
 三端通过 `docs/PROTOCOL.md` 定义的 HTTP/JSON 协议通信；协议模型在 `shared/`（Kotlin Multiplatform）单一来源实现。
 
-> **信任边界**：引擎无入站鉴权（M15.3 裁决不补 Token）。桌面启动器默认监听 `0.0.0.0:8730`
+> **信任边界**：引擎无入站鉴权（M15.3 裁决不补 Token）。桌面端默认监听 `0.0.0.0:8730`
 > 是为了让手机连得上，代价是只能在可信的家庭局域网使用，切勿暴露公网。
+
+## 快速开始
+
+依赖：JDK 17+、Gradle wrapper（自带）、Python 3.11+。
+
+### 电脑端（普通用户推荐）
+
+```powershell
+# 已有打包产物：双击 desktop\dist\BrowseGuardEngine.exe →「引擎设置」点「启动」
+# 源码态：
+engine\.venv\Scripts\python.exe -m pip install -r desktop\requirements.txt
+engine\.venv\Scripts\python.exe desktop\gui_app.py
+
+# 打包单文件 exe（产物不入库）
+engine\.venv\Scripts\python.exe desktop\build_exe.py
+```
+
+面板能设监听地址 / 端口 / 输出目录、显示手机要填的局域网 IP、隐藏到托盘，
+并自检环境依赖（自定义 `ffmpeg.exe` 路径、一键安装 Chromium 内核）。
+**完整操作步骤见 [`docs/USER_GUIDE_DESKTOP.md`](docs/USER_GUIDE_DESKTOP.md)**。
+
+### 手机端
+
+```powershell
+.\gradlew.bat :android:app:assembleDebug
+# 产物：android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+装好后有两种活法：连电脑引擎（解析更强），或完全本机离线（开箱即用）。
+**安装、配对与排障见 [`docs/USER_GUIDE_ANDROID.md`](docs/USER_GUIDE_ANDROID.md)**。
+
+### 命令行（bgv）
+
+```powershell
+.\gradlew.bat :cli:installDist
+.\cli\build\install\bgv\bin\bgv.bat sniff https://example.com/watch
+.\cli\build\install\bgv\bin\bgv.bat download-url https://example.com/watch --format=max_height=720
+```
+
+`--json` 下 stdout 只有协议 JSON，提示与进度走 stderr；退出码表见 [`cli/README.md`](cli/README.md)。
+
+### MCP Server（Claude Desktop / Cursor）
+
+```powershell
+.\gradlew.bat :mcp:installDist
+.\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat
+```
+
+只支持 stdio：stdout 仅承载 JSON-RPC，日志走 stderr。客户端配置示例与工具清单见
+[`mcp/README.md`](mcp/README.md)，从零验收步骤见 [`docs/USER_GUIDE_MCP.md`](docs/USER_GUIDE_MCP.md)。
+
+### 引擎单独跑（无 GUI / 排障）
+
+```powershell
+cd engine
+.\.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8730
+```
+
+## 文档地图
+
+| 我想… | 读这份 |
+|---|---|
+| 在电脑上下载视频 | [`docs/USER_GUIDE_DESKTOP.md`](docs/USER_GUIDE_DESKTOP.md) |
+| 在手机上下载视频 | [`docs/USER_GUIDE_ANDROID.md`](docs/USER_GUIDE_ANDROID.md) |
+| 让 AI 客户端调引擎 | [`docs/USER_GUIDE_MCP.md`](docs/USER_GUIDE_MCP.md) |
+| 先看懂目录与模块职责 | [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md) |
+| 查需求与验收标准 | [`docs/PRD.md`](docs/PRD.md) |
+| 查接口合同 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) + [`docs/PROTOCOL-CHANGELOG.md`](docs/PROTOCOL-CHANGELOG.md) |
+| 改某个模块的代码 | `android/` · `desktop/` · `engine/` · `cli/` · `mcp/` 各自的 `README.md` |
+| 出包发版 | [`docs/release-checklist.md`](docs/release-checklist.md) |
+| 看某轮改动到底验了什么 | [`docs/reports/smoke-report.md`](docs/reports/smoke-report.md)（逐阶段取证总账） |
+| 看专项议题的深度验收 | `docs/reports/acceptance-m*.md` |
+
+`docs/reports/` 存放历史取证，只追加不回改；合同与用户指南在 `docs/` 根。
+
+## 仓库结构
+
+| 目录 | 职责 |
+|---|---|
+| `android/` | Android 客户端（Compose + 内置浏览器 + 本机下载/转封装，见 `android/README.md`） |
+| `engine/` | 本地引擎（Python 3.11+ / FastAPI / Pydantic v2） |
+| `desktop/` | PC 控制面板与单文件封装（customtkinter + pystray + PyInstaller，见 `desktop/README.md`） |
+| `shared/` | KMP 协议模型（kotlinx.serialization），Android / CLI / MCP 共用 |
+| `engine-client/` | 纯 JVM 的 HTTP 引擎客户端，供 `cli` 与 `mcp` 复用 |
+| `cli/` | `bgv` 命令行工具（Kotlin/JVM） |
+| `mcp/` | MCP Server（Kotlin/JVM，仅 stdio transport） |
+| `docs/` | 需求、协议、用户指南与历史取证（索引见上方「文档地图」） |
+| `scripts/` | Schema 一致性校验、冒烟测试脚本 |
 
 ## 里程碑
 
@@ -30,151 +118,25 @@
 | M16.5 | 环境依赖自检面板与 `BGV_FFMPEG_PATH` 自定义路径 | `a92db88` |
 | M17 | 解析器模糊测试与极值防御（清单 / TS+ADTS / URL 三组极值输入） | `d1b3a0a` |
 
-每阶段的现场证据、协议坑与自报缺口记在 `docs/smoke-report.md`（§33 起按阶段编号）。
+每阶段的现场证据、协议坑与自报缺口记在 [`docs/reports/smoke-report.md`](docs/reports/smoke-report.md)（§33 起按阶段编号）。
 
-## 仓库结构
+## 设计底线
 
-| 目录 | 职责 |
-|---|---|
-| `android/` | Android 客户端（Compose + 内置浏览器 + 本机下载/转封装，见 `android/README.md`） |
-| `engine/` | 本地引擎（Python 3.11+ / FastAPI / Pydantic v2） |
-| `desktop/` | PC 控制面板与单文件封装（customtkinter + pystray + PyInstaller，见 `desktop/README.md`） |
-| `shared/` | KMP 协议模型（kotlinx.serialization），Android / CLI / MCP 共用 |
-| `cli/` | `bgv` 命令行工具（Kotlin/JVM，复用 `:shared` 与 `:engine-client`） |
-| `mcp/` | MCP Server（Kotlin/JVM，仅 stdio transport，复用 `:shared` 与 `:engine-client`） |
-| `docs/` | PRD 与接口协议，协议是三端的合同 |
-| `scripts/` | Schema 一致性校验、冒烟测试脚本 |
-
-## 如何运行
-
-依赖：JDK 17+、Gradle wrapper 9.3.1（自带）、Python 3.11+。
-
-```powershell
-# Gradle 项目结构（应列出 :shared / :android:app / :engine-client / :cli / :mcp）
-.\gradlew.bat projects
-
-# Android：出 debug 包 + 跑本模块 JVM 单测（471 项，不需要设备）
-.\gradlew.bat :android:app:assembleDebug
-.\gradlew.bat :android:app:testDebugUnitTest --rerun
-
-# Python 引擎（阶段 3 起可用；venv 固定 engine/.venv，已 gitignore）
-cd engine
-python -m venv .venv
-.\.venv\Scripts\pip install -r requirements-lock.txt
-.\.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8730
-
-# Schema 一致性校验（阶段 4 起可用）
-python scripts/check_schema.py
-```
-
-### 桌面端一键启动（M15 起，普通用户推荐）
-
-```powershell
-# 已有打包产物：双击 desktop\dist\BrowseGuardEngine.exe，在「引擎设置」点「启动」
-# 源码态：
-engine\.venv\Scripts\python.exe -m pip install -r desktop\requirements.txt
-engine\.venv\Scripts\python.exe desktop\gui_app.py
-
-# 打包单文件 exe（产物不入库）
-engine\.venv\Scripts\python.exe desktop\build_exe.py
-```
-
-控制面板可设置监听地址 / 端口 / 输出目录、显示手机要填的局域网 IP、隐藏到托盘、自检环境依赖
-（自定义 `ffmpeg.exe` 路径、一键安装 Chromium 内核）；「下载控制台」标签可在电脑上直接嗅探与下载。
-配置字段、注入引擎的环境变量与全套验收命令见 `desktop/README.md`。
-
-从零配置引擎、手机连接电脑的排障步骤见 `docs/ENGINE_USER_GUIDE.md`；命令行方式保留给无 GUI 环境、
-引擎单测与手工排障场景。
-
-### 命令行（bgv）
-
-```powershell
-.\gradlew.bat :cli:installDist
-.\cli\build\install\bgv\bin\bgv.bat sniff https://example.com/watch
-.\cli\build\install\bgv\bin\bgv.bat formats <taskId>
-.\cli\build\install\bgv\bin\bgv.bat download <taskId> --format=best --watch
-.\cli\build\install\bgv\bin\bgv.bat download-url https://example.com/watch --format=max_height=720
-```
-
-`--json` 模式下 stdout 只有协议 JSON，提示与进度全部走 stderr，可直接接入管道（如 `bgv sniff ... --json | jq '.formats'`）。退出码：`0` 成功、`2` 输入错误、`3` 安全拒绝、`4` 内容不可用、`5` 引擎不可达、`6` 存储错误、`7` 内部错误、`8` 用户主动取消（**客户端本地语义，不占用协议错误码**）。
-
-Windows 用户建议在 Windows Terminal 或 PowerShell 7 下使用；若中文仍显示为乱码，先执行 `chcp 65001` 切到 UTF-8 代码页。
-
-### MCP Server（Claude Desktop / Cursor）
-
-```powershell
-.\gradlew.bat :mcp:installDist
-.\mcp\build\install\bgv-mcp\bin\bgv-mcp.bat
-```
-
-只支持 stdio：stdout 仅承载 JSON-RPC，所有日志走 stderr。配置示例（`BGV_ENGINE_URL` 可按需覆盖）：
-
-```json
-{
-  "mcpServers": {
-    "traceless-glimpse": {
-      "command": "cmd",
-      "args": [
-        "/c",
-        "E:\\code\\android\\TracelessGlimpse\\mcp\\build\\install\\bgv-mcp\\bin\\bgv-mcp.bat"
-      ],
-      "env": { "BGV_ENGINE_URL": "http://127.0.0.1:8730" }
-    }
-  }
-}
-```
-
-工具：`sniff`（嗅探并返回格式）、`probe`（查格式表）、`download`（下发并轮询到终态，支持 `timeoutSeconds`）、`status`、`cancel`。从零验收步骤见 `docs/MCP_USER_GUIDE.md`，工具细节见 `mcp/README.md`。
-
-
-## 本机直连下载：不连引擎也能出可播文件
-
-设置页把下载执行者在「引擎」与「本机」之间切换。切到本机后，发现、下载、封装全在设备内完成，
-**代码路径上不出现引擎地址**（`TaskNeverGoesOnTheWireTest` 扫源码钉住），也不需要 yt-dlp 或 FFmpeg：
-
-- **HLS**：`HlsPlaylistParser` 解析清单，`HlsDownloader` 固定 4 个并发槽位按清单顺序拼出 `.ts`，
-  段级重试（401/403/404/405/410 不重试），密钥按 URI 缓存并串行化获取。
-- **TS→MP4**：平台 `MediaExtractor` + `MediaMuxer` 做纯拷贝容器转换——不合并、不重编码、
-  **不引入任何第三方 native 库**，APK 体积不因此增大。
-- **音频按访问单元重封**：TS 里的 AAC 常见「一个样本并十几个 AU 还带着 ADTS 头」，
-  直接抄进 MP4 就是不合规的 `mp4a`，Android 解得开而相册/网页/电视盒子解不开（听感即「没声音」）。
-  本机端逐样本剥头、一帧一个样本、PTS 按 1024/采样率匀铺，产出对严格播放器合规的音轨。
-- **音频完整性门禁**：探测阶段两道前置拒绝（探不到音轨、AAC 无可用解码配置），
-  复检六道——样本非空、产物音轨落地、相邻样本无注水间隔、可播内容够长、切片密度不塌、音视频总时长对得上，
-  拆分音频时再加第七道「产物样本数 == 源 AU 数」三方对账。
-  **任何一道不过就保留 `.ts` 并在完成卡如实说明原因**——宁可给一个系统播放器不认的 `.ts`，
-  也绝不产出一个看着成功、点开来哑巴或播到一半报错的 `.mp4`。只有 `.mp4` 落地成功才允许删源。
-
-降级理由是一个可枚举集合，新增理由忘记登记会让 JVM 门禁测试直接转红；每条理由对应一句不误导的文案。
-逐轮取证见 `docs/smoke-report.md` §27–§29，需求条目见 `docs/PRD.md` §6.9，实现细节见 `android/README.md`。
-
-## 下载管理与播放
-
-下载页把历史记录当成可操作的文件台账：打开、分享、重命名、删除（记录 / 记录+文件），支持批量选择；
-库里已经不存在的产物会被对账标出，冷启动还会物理清理沙盒里的孤儿文件。删除用户可见记录必须二次确认。
-
-完成记录默认用内置 ExoPlayer 全屏播放（`media3-exoplayer` + `media3-ui`，**不引 FFmpeg / RTMP / Cast 扩展**）。
-退出时回写进度：起播 2 秒内不记；距结尾 15 秒内或达到 97% 视为看完、归零重看；其余从断点续播。
-列表直接展示时长与观看进度，播放器右上角保留「用其他应用打开」兜底。
-
-## 隐私：Cookie 只留在手机
-
-手机端的「本机直连下载」可能需要站点认出你是登录态。这件事默认**关闭**，且只以域名为单位授权：
-
-- 第一次遇到需要登录状态的直链（通常是 HTTP 403），App 弹阻断式确认框，问「允许读取 `<域名>` 的登录状态吗」。
-  同意之前，代码连 WebView 的 CookieStore 都不碰（审计行 `cookie_blocked`）。
-- 授权后，Cookie 值只从 WebView 自己的 CookieStore 读一次，只注入**同一站点**的本机下载请求。
-  它不进任何发给电脑引擎的请求体或请求头——协议层就没有承载它的字段（§「如何贡献」的结构性约束）。
-- 设置页「Cookie 授权」按域列出已授权站点与最近使用时间。「撤销」只收回读取许可，下次会重新询问；
-  要抹掉值用「清除所有 Cookie」（二次确认，执行系统的 `removeAllCookies`）。
-  系统没有提供按站点删值的 API，界面不假装能做到。
-- 引擎侧每个请求都有一行 `http_request … cookie=present|absent` 的可 grep 证据，只记存在性；
-  日志脱敏兜底会把 `Cookie:` / `Set-Cookie:` 的整值抹掉，键值对形态的参数化日志也不例外。
-  端到端取证与已知缺口见 `docs/acceptance-m6-5.md`。
+- **本机直连不上线**：切到「本机」执行者后，发现、下载、转封装全在设备内完成，代码路径上不出现引擎地址
+  （由 `TaskNeverGoesOnTheWireTest` 扫源码钉住）。代价与收益见 [`android/README.md`](android/README.md)。
+- **Cookie 只留在手机**：默认关闭，按域名单次授权；不进任何发给引擎的请求，协议层就没有承载它的字段。
+- **零第三方 native**：APK 不含 FFmpeg / ffmpeg-kit / yt-dlp，体积变化只来自本项目代码。
+- **安全约束是结构性的**：Task 无 `cookieFile` / `browser` / `userAgent` / `headers` 字段；
+  `formatSelector` 只接受结构化对象；`headersHint` 与错误 `detail` 输出前必须脱敏。
 
 ## 如何贡献
 
-- 先读 `docs/PRD.md` 与 `docs/PROTOCOL.md`；协议字段增删需三端确认，删除或改语义必须升版本。
-- 安全约束是结构性的：Task 无 `cookieFile` / `browser` / `userAgent` / `headers` 字段；`formatSelector` 只接受结构化对象；`headersHint` 与错误 `detail` 输出前必须脱敏。
+- 先读 [`docs/PRD.md`](docs/PRD.md) 与 [`docs/PROTOCOL.md`](docs/PROTOCOL.md)；协议字段增删需三端确认，
+  删除或改语义必须升版本，并在 `PROTOCOL-CHANGELOG.md` 留裁决记录。
 - 依赖版本全部固定（Gradle 版本目录 / `engine/requirements-lock.txt`），不引入文档外依赖；新增先提出讨论。
-- 提交前跑 `python scripts/check_schema.py` 与各端测试（仓库未接托管 CI，这道对账靠本地跑）。
+- 提交前跑 `python scripts/check_schema.py` 与各端测试（仓库未接托管 CI，这道对账靠本地跑）：
+
+```powershell
+.\gradlew.bat test --rerun                     # 全项目 JVM 单测（当前 533 项）
+cd engine; .\.venv\Scripts\python -m pytest -q  # 引擎单测
+```
