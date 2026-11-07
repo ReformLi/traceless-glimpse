@@ -30,6 +30,7 @@ from security import (
     validate_output_target,
 )
 from services import cookies as cookies_service
+from services import ffmpeg_path as ffmpeg_paths
 from services.formats import validate_download_urls
 from services.redirect import resolve_redirects
 
@@ -49,7 +50,12 @@ class DownloadCancelled(Exception):
 
 
 def _ffprobe_duration(path: Path) -> float:
-    ffprobe = shutil.which("ffprobe")
+    # M16.5：PATH 里没有 FFmpeg 时，从 BGV_FFMPEG_PATH 的同目录推导 ffprobe，
+    # 否则分轨下载会在「合并之前」就被产物完整性校验拦下。
+    try:
+        ffprobe = ffmpeg_paths.ffprobe_executable(which=shutil.which)
+    except ffmpeg_paths.FFmpegNotFoundError as exc:
+        raise DownloadIntegrityError(str(exc)) from exc
     if not ffprobe:
         raise DownloadIntegrityError("本机缺少 ffprobe，无法校验产物")
     proc = subprocess.run(
@@ -376,7 +382,13 @@ def download_media(
         }
         if should_abort is not None or on_progress is not None:
             options["progress_hooks"] = [_progress_hook]
-        ffmpeg = shutil.which("ffmpeg")
+        # yt-dlp 的 HLS/DASH 原生下载器也会自己调 ffmpeg 转封装；自定义路径必须
+        # 一并给它，否则「PATH 里没有 FFmpeg」时分轨下载会先于合并失败。
+        try:
+            ffmpeg = ffmpeg_paths.ffmpeg_executable(which=shutil.which)
+        except ffmpeg_paths.FFmpegNotFoundError as exc:
+            logger.warning("ffmpeg_path_invalid reason=%s", exc)
+            ffmpeg = None
         if ffmpeg:
             options["ffmpeg_location"] = ffmpeg
         if cookiefile is not None:

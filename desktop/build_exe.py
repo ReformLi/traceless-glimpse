@@ -51,6 +51,7 @@ GUI_HIDDEN_IMPORTS = [
 ENGINE_HIDDEN_IMPORTS = [
     "main", "models", "persistence", "security", "log_redaction",
     "services", "services.environment", "services.cookies", "services.downloader",
+    "services.ffmpeg_path",  # M16.5：BGV_FFMPEG_PATH 统一解析（merger/downloader/environment 共用）
     "services.failures", "services.formats", "services.merger", "services.redirect",
     "services.sniffer", "services.task_worker",
     "uvicorn", "fastapi", "starlette", "pydantic", "httpx",

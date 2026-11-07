@@ -162,7 +162,57 @@ def playwright_browser_ready() -> bool:
 
 
 def ffmpeg_ready() -> bool:
+    """纯托盘模式沿用：只看系统 PATH。GUI 模式请用 :func:`probe_dependencies`。"""
     return shutil.which("ffmpeg") is not None
+
+
+# --------------------------------------------------------------------------- M16.5 依赖面板
+#: GUI 把用户选的 ffmpeg.exe 绝对路径经这个变量注入引擎子进程（引擎侧由
+#: ``services/ffmpeg_path.py`` 统一读取）。
+FFMPEG_ENV = "BGV_FFMPEG_PATH"
+
+
+def ffmpeg_resolve(configured: str | None = None) -> tuple[str | None, str]:
+    """解析当前生效的 ffmpeg：``(绝对路径 | None, 来源)``。
+
+    ``来源`` 为 ``"custom"``（用户配置）或 ``"path"``（系统 PATH）。配了自定义
+    路径但文件不存在时返回 ``(None, "custom")`` 而不是悄悄用 PATH 里的版本——
+    界面要能如实显示「自定义路径失效」，引擎侧同样不会静默回落。
+    """
+    raw = (configured or "").strip().strip('"').strip("'")
+    if raw:
+        path = Path(raw).expanduser()
+        return (str(path.resolve()), "custom") if path.is_file() else (None, "custom")
+    found = shutil.which("ffmpeg")
+    return (str(Path(found).resolve()), "path") if found else (None, "path")
+
+
+def ffmpeg_version(executable: str | None) -> str:
+    """``ffmpeg -version`` 首行的版本号；拿不到返回空串（不抛异常）。"""
+    if not executable:
+        return ""
+    try:
+        proc = subprocess.run(
+            [executable, "-version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=8,
+            creationflags=_creation_flags(), check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"ffmpeg version (\S+)", proc.stdout or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def probe_dependencies(configured_ffmpeg: str | None = None) -> dict:
+    """一次算齐依赖面板要显示的全部事实，供后台线程调用（不碰 Tk）。"""
+    exe, source = ffmpeg_resolve(configured_ffmpeg)
+    return {
+        "ffmpeg_found": exe is not None,
+        "ffmpeg_path": exe or "",
+        "ffmpeg_source": source,
+        "ffmpeg_version": ffmpeg_version(exe) if exe else "",
+        "chromium": playwright_browser_ready(),
+    }
 
 
 def engine_python() -> str:
@@ -184,7 +234,9 @@ FFMPEG_HINT = (
     "安装方式（任选其一）：\n"
     "  · winget install --id Gyan.FFmpeg -e\n"
     "  · 从 https://www.gyan.dev/ffmpeg/builds/ 下载，把 bin 目录加入 PATH\n"
-    "装完重启本程序即可。"
+    "装完重启本程序即可。\n\n"
+    "M16.5：也可在「引擎设置 → 环境依赖自检」点「浏览…」直接指定 "
+    "ffmpeg.exe 的绝对路径，无需改动 PATH。"
 )
 
 CHROMIUM_HINT = (
@@ -198,8 +250,19 @@ CHROMIUM_HINT = (
 )
 
 
-def install_chromium_async(on_done) -> None:
-    """后台装 Chromium，绝不阻塞托盘与引擎启动。"""
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def install_chromium_async(on_done, on_line=None) -> None:
+    """后台装 Chromium，绝不阻塞托盘与引擎启动。
+
+    M16.5 起支持 ``on_line(line)`` 逐行回吐安装日志：Playwright 的下载进度条
+    用 ``\\r`` 而不是 ``\\n`` 刷新，所以这里按字符读、``\\r``/``\\n`` 都切行，
+    GUI 才能实时看到「下载 xx MiB / xx%」而不是结束后一次性弹个结果。
+
+    回调都在后台线程触发，GUI 侧必须经 ``ui_call`` 回主线程再碰控件。
+    不传 ``on_line`` 时行为与纯托盘模式一致（只在结束时汇总末尾 1200 字符）。
+    """
     def _run() -> None:
         if FROZEN:
             # 打包版没有独立解释器，让 exe 以 --playwright-install 子命令再启动一次，
@@ -209,16 +272,55 @@ def install_chromium_async(on_done) -> None:
         else:
             cmd = [engine_python(), "-m", "playwright", "install", "chromium"]
             cwd = str(ENGINE_DIR)
+        lines: list[str] = []
+
+        def emit(raw: str) -> None:
+            text = _ANSI_ESCAPE.sub("", raw).strip()
+            if not text:
+                return
+            lines.append(text)
+            if on_line is not None:
+                try:
+                    on_line(text)
+                except Exception as exc:  # 日志回调异常不能拖垮安装
+                    log(f"安装日志回调失败: {exc!r}")
+
+        proc = None
+        ok = False
         try:
-            proc = subprocess.run(
-                cmd, cwd=cwd, capture_output=True, text=True,
-                timeout=900, creationflags=_creation_flags(),
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                creationflags=_creation_flags(),
             )
+            started = time.monotonic()
+            buf = ""
+            while proc.stdout is not None:
+                ch = proc.stdout.read(1)
+                if not ch:
+                    break
+                if ch in "\r\n":
+                    emit(buf)
+                    buf = ""
+                else:
+                    buf += ch
+                    if len(buf) >= 400:  # 无换行的超长进度条也要能刷出来
+                        emit(buf)
+                        buf = ""
+                if time.monotonic() - started > 900:
+                    raise subprocess.TimeoutExpired(cmd, 900)
+            if buf:
+                emit(buf)
+            proc.wait(timeout=30)
             ok = proc.returncode == 0
-            detail = (proc.stdout or "") + (proc.stderr or "")
         except Exception as exc:
-            ok, detail = False, repr(exc)
-        on_done(ok, detail.strip()[-1200:])
+            if proc is not None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            emit(f"安装进程异常：{exc!r}")
+        on_done(ok, "\n".join(lines).strip()[-1200:])
 
     threading.Thread(target=_run, name="bgv-install-chromium", daemon=True).start()
 

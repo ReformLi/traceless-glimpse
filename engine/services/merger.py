@@ -2,6 +2,10 @@
 
 不依赖 yt-dlp 内置 merger：显式构造 ffmpeg 命令（``-c copy``，不转码），
 ``runner`` 可注入，便于单测断言命令与错误映射。
+
+M16.5：可执行文件改由 :func:`resolve_ffmpeg` 统一解析——桌面控制面板配的
+``BGV_FFMPEG_PATH`` 优先，未配置才回落系统 PATH；显式 ``ffmpeg_path`` 参数
+（单测注入）优先级最高，保证既有断言一成不变。
 """
 from __future__ import annotations
 
@@ -10,6 +14,8 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
+
+from services.ffmpeg_path import FFmpegNotFoundError, ffmpeg_executable
 
 logger = logging.getLogger("bgv.engine")
 
@@ -47,6 +53,26 @@ def build_merge_command(
     ]
 
 
+def resolve_ffmpeg(explicit: str | None = None) -> str:
+    """``显式参数 > BGV_FFMPEG_PATH > PATH``，三处都找不到就抛明确错误。
+
+    配置无效时**不**回落 PATH：用户明确指定了路径却静默用了另一个 ffmpeg，
+    比直接报错更难排查（也正是 M16.5 真机验收要排除的情况）。
+    """
+    if explicit:
+        return explicit
+    try:
+        found = ffmpeg_executable(which=shutil.which)
+    except FFmpegNotFoundError as exc:
+        raise MergeError(str(exc)) from exc
+    if not found:
+        raise MergeError(
+            "本机缺少 ffmpeg（PATH 中未找到；可在控制面板「环境依赖自检」"
+            "里指定 ffmpeg.exe 的绝对路径）"
+        )
+    return found
+
+
 def merge_streams(
     video_path: str | Path,
     audio_path: str | Path,
@@ -67,9 +93,7 @@ def merge_streams(
         if not source.is_file() or source.stat().st_size <= 0:
             raise MergeError(f"输入无效：{source.name}")
 
-    ffmpeg = ffmpeg_path or shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise MergeError("本机缺少 ffmpeg")
+    ffmpeg = resolve_ffmpeg(ffmpeg_path)
     command = build_merge_command(ffmpeg, video, audio, output)
     try:
         proc = runner(command, capture_output=True, text=True, timeout=timeout)

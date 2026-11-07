@@ -7,7 +7,8 @@
 M16 起主界面拆成 :class:`customtkinter.CTkTabview` 两个标签：
 
 * **引擎设置** —— M15 的全部能力（连接地址、监听设置、启停、日志、环境自检、
-  托盘联动）原样保留，只是父容器由主窗口换成第一个 tab；
+  托盘联动）原样保留，只是父容器由主窗口换成第一个 tab；M16.5 在这里新增
+  「环境依赖自检」卡片（FFmpeg / Chromium 状态、自定义 FFmpeg 路径、一键装内核）；
 * **下载控制台** —— :mod:`download_console` 提供的独立嗅探/下载界面。
   M16 第二步已接通 :mod:`engine_client`：``POST /v1/tasks`` → 每秒轮询
   ``GET /v1/tasks/{id}`` → ``/formats`` → ``POST /download`` → 进度回抛。
@@ -31,6 +32,10 @@ header 与黄色安全警告、底部状态栏是**全局常驻**的：切到哪
   所有 httpx 请求都在 daemon 后台线程，渲染动作经 :meth:`ControlPanel._emit`
   做「投递前 + 执行前」双重代次校验后回抛主线程。用户中途停止引擎时，
   轮询线程最多再等 1 秒就退出，不会碰已销毁的 Tk 控件。
+* **M16.5 FFmpeg 路径**：``config.json`` 的 ``ffmpeg_path`` 为空则走系统 PATH；
+  非空则启动引擎时以 ``BGV_FFMPEG_PATH`` 注入子进程，引擎侧
+  ``services/ffmpeg_path.py`` 统一读取（含同目录 ffprobe 推导）。依赖探测、
+  版本号、``playwright install`` 全在后台线程，日志经 ``ui_call`` 回主线程。
 
 验证入口（不需要人工点鼠标）::
 
@@ -88,6 +93,8 @@ DEFAULTS: dict = {
     "output_dir": DEFAULT_OUTPUT_DIR,
     "auto_start": False,
     "appearance": "system",
+    # M16.5：空串 = 未自定义，走系统 PATH；否则是 ffmpeg.exe 的绝对路径。
+    "ffmpeg_path": "",
 }
 
 STATE_STOPPED = "stopped"
@@ -123,6 +130,7 @@ TRAY_COLOR = {
 
 SECURITY_NOTICE = "⚠ 引擎无密码保护，请仅在信任的家庭局域网使用，切勿暴露在公网！"
 TRAY_REQUIRED_LABELS = ("打开主界面", "启动引擎", "停止引擎", "退出")
+DEP_LOG_HINT = "· 安装日志（点击「一键安装内核」后在此显示实时下载进度）"
 
 # 禁用态必须连底色一起变灰：只靠 CTk 默认的 text_color_disabled，
 # 亮蓝/亮红底上的「禁用」仍会被看成可点按钮（截图复核后补的）。
@@ -255,12 +263,18 @@ class Config:
         appearance = str(d.get("appearance", "system"))
         if appearance not in APPEARANCE_LABELS:
             appearance = "system"
+        # 路径只做「去引号 + 相对转绝对」的归一化，不检查文件是否存在：
+        # 让用户能看见「上次选的路径现在失效了」，而不是悄悄被抹成默认值。
+        ffmpeg = str(d.get("ffmpeg_path") or "").strip().strip('"').strip("'")
+        if ffmpeg and not Path(ffmpeg).is_absolute():
+            ffmpeg = str(Path(ffmpeg).resolve())
         self.data = {
             "host": host,
             "port": port,
             "output_dir": out,
             "auto_start": bool(d.get("auto_start", False)),
             "appearance": appearance,
+            "ffmpeg_path": ffmpeg,
         }
 
     def update(self, **kwargs) -> None:
@@ -300,8 +314,10 @@ class ControlPanel(ctk.CTk):
         self.title(f"{APP_NAME} · 控制面板")
         # M16 多了一个标签页与结果区/任务列表，比 M15 的 720x560 略高；
         # 卡片按内容自然收拢（不 expand），640 已能容纳完整流程且底部不空旷。
-        self.geometry("760x660")
-        self.minsize(720, 610)
+        # M16.5 多一张依赖自检卡片，比 M16 的 660 略高；卡片按内容自然收拢，
+        # 不 expand，两个标签页都留得住底部状态栏。
+        self.geometry("760x850")
+        self.minsize(720, 780)
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
         # -- 运行期状态 -------------------------------------------------------
@@ -322,6 +338,9 @@ class ControlPanel(ctk.CTk):
         self._net_cancels = 0
         self._net_threads: list[threading.Thread] = []
         self._save_job: str | None = None
+        #: M16.5：安装内核期间的防重入标志 + 最近一次依赖探测结果（供冒烟断言）。
+        self._installing = False
+        self._dep_info: dict = {}
         self._log_window = None
         self._log_text = None
         self._smoke_results: list[tuple[str, bool, str]] = []
@@ -485,6 +504,69 @@ class ControlPanel(ctk.CTk):
         )
         self.output_hint.pack(side="right")
 
+        # ---- M16.5：环境依赖自检（Tab① 引擎设置区） ----
+        # 状态圆点用 Tk 的「●」+ text_color 着色，不用 🟢/🔴 emoji：实测在
+        # Microsoft YaHei UI 下 emoji 会退化成斜线填充圆圈，颜色语义全丢。
+        dep = ctk.CTkFrame(tab, corner_radius=12)
+        dep.pack(fill="x", padx=10, pady=(0, 8))
+        self.dep_card = dep
+        dep_head = ctk.CTkFrame(dep, fg_color="transparent")
+        dep_head.pack(fill="x", padx=16, pady=(10, 2))
+        ctk.CTkLabel(dep_head, text="环境依赖自检", font=_font(13, "bold"),
+                     anchor="w").pack(side="left")
+        self.dep_recheck_button = ctk.CTkButton(
+            dep_head, text="重新检测", width=84, height=26, font=_font(11),
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            command=self._dep_refresh,
+        )
+        self.dep_recheck_button.pack(side="right")
+
+        ff_row = ctk.CTkFrame(dep, fg_color="transparent")
+        ff_row.pack(fill="x", padx=16, pady=(4, 2))
+        self.dep_ffmpeg_dot = ctk.CTkLabel(ff_row, text="●", font=_font(15), width=18,
+                                           text_color=LED_COLOR[STATE_STOPPED])
+        self.dep_ffmpeg_dot.pack(side="left")
+        self.dep_ffmpeg_label = ctk.CTkLabel(ff_row, text="FFmpeg · 检测中…",
+                                             font=_font(12), anchor="w")
+        self.dep_ffmpeg_label.pack(side="left", fill="x", expand=True)
+        self.dep_ffmpeg_clear = ctk.CTkButton(
+            ff_row, text="清除", width=54, height=26, font=_font(11),
+            fg_color=BTN_SECONDARY, hover_color=BTN_SECONDARY_HOVER,
+            text_color_disabled=BTN_DISABLED_TEXT, command=self._clear_ffmpeg,
+        )
+        self.dep_ffmpeg_clear.pack(side="right", padx=(6, 0))
+        self.dep_ffmpeg_browse = ctk.CTkButton(
+            ff_row, text="浏览…", width=72, height=26, font=_font(11),
+            text_color_disabled=BTN_DISABLED_TEXT, command=self._browse_ffmpeg,
+        )
+        self.dep_ffmpeg_browse.pack(side="right")
+        self.dep_ffmpeg_hint = ctk.CTkLabel(
+            dep, text="未自定义路径时，在系统 PATH 中查找 ffmpeg", font=_font(10),
+            text_color=("gray50", "gray65"), anchor="w", justify="left", wraplength=650)
+        self.dep_ffmpeg_hint.pack(fill="x", padx=34, pady=(0, 4))
+
+        cr_row = ctk.CTkFrame(dep, fg_color="transparent")
+        cr_row.pack(fill="x", padx=16, pady=(2, 4))
+        self.dep_chromium_dot = ctk.CTkLabel(cr_row, text="●", font=_font(15), width=18,
+                                             text_color=LED_COLOR[STATE_STOPPED])
+        self.dep_chromium_dot.pack(side="left")
+        self.dep_chromium_label = ctk.CTkLabel(
+            cr_row, text="Playwright Chromium · 检测中…", font=_font(12), anchor="w")
+        self.dep_chromium_label.pack(side="left", fill="x", expand=True)
+        self.dep_install_button = ctk.CTkButton(
+            cr_row, text="一键安装内核", width=110, height=26, font=_font(11),
+            fg_color=BTN_START, hover_color=BTN_START_HOVER,
+            text_color_disabled=BTN_DISABLED_TEXT, command=self._on_install_chromium,
+        )
+        self.dep_install_button.pack(side="right")
+        # 日志区**常驻可见**。试过「点安装才 pack 展开」：卡片变高会把下方控制区
+        # 整条挤出窗口（真机截图复核抓到），布局还会突然跳动。固定占位既不裁切，
+        # 也不打断既有布局；空态写一行占位提示，不留一块突兀的空白。
+        self.dep_log = ctk.CTkTextbox(dep, height=68, font=_font(10))
+        self.dep_log.pack(fill="x", padx=16, pady=(0, 10))
+        self.dep_log.configure(state="disabled")
+        self._dep_log_clear()
+
         # 控制区
         control = ctk.CTkFrame(tab, corner_radius=12)
         control.pack(fill="x", padx=10, pady=(0, 6))
@@ -522,7 +604,7 @@ class ControlPanel(ctk.CTk):
 
         # 记下主题原始配色：引擎运行时把设置区统一刷成灰色禁用态，
         # 否则 CTk 的 disabled 只改文字颜色，白底输入框/蓝底下拉框仍像可编辑。
-        for widget in (self.host_menu, self.port_entry, self.output_entry, self.browse_button):
+        for widget in self._lockable_widgets():
             saved: dict = {}
             for key in ("fg_color", "button_color", "border_color"):
                 try:
@@ -530,6 +612,11 @@ class ControlPanel(ctk.CTk):
                 except Exception:  # 部分控件没有该选项
                     pass
             self._settings_look.append((widget, saved))
+
+    def _lockable_widgets(self) -> tuple:
+        """引擎运行时需一并置灰的设置类控件；构建与状态切换共用，防漏改。"""
+        return (self.host_menu, self.port_entry, self.output_entry, self.browse_button,
+                self.dep_ffmpeg_browse, self.dep_ffmpeg_clear, self.dep_install_button)
 
     # -- 下载控制台网络层（M16 第二步：全部 httpx 请求在后台线程） -------------
     def _cancel_network(self) -> None:
@@ -639,6 +726,9 @@ class ControlPanel(ctk.CTk):
             self.auto_start_switch.select()
         else:
             self.auto_start_switch.deselect()
+        if self.cfg["ffmpeg_path"]:
+            self.dep_ffmpeg_hint.configure(
+                text=f"已配置自定义路径：{self.cfg['ffmpeg_path']}（重启引擎后生效）")
         self._refresh_address()
 
     def _schedule_save(self) -> None:
@@ -758,7 +848,7 @@ class ControlPanel(ctk.CTk):
         self._safe_state(self.stop_button, "normal" if stoppable else "disabled")
         self._paint_button(self.start_button, running, BTN_START, BTN_START_HOVER)
         self._paint_button(self.stop_button, not stoppable, BTN_STOP, BTN_STOP_HOVER)
-        for widget in (self.host_menu, self.port_entry, self.output_entry, self.browse_button):
+        for widget in self._lockable_widgets():
             self._safe_state(widget, "disabled" if running else "normal")
         self._paint_settings(running)
         if detail:
@@ -806,6 +896,15 @@ class ControlPanel(ctk.CTk):
             L.log(f"设置按钮配色失败: {exc!r}")
 
     # -- 引擎启停 -------------------------------------------------------------
+    @staticmethod
+    def _build_engine_env(output_dir: str, ffmpeg_path: str = "") -> dict:
+        """组装注入引擎子进程的环境变量；单独成函数便于冒烟硬断言。"""
+        extra = {"BGV_OUTPUT_DIR_ALLOWLIST": output_dir}
+        if ffmpeg_path:
+            # M16.5：自定义 FFmpeg 绝对路径 → BGV_FFMPEG_PATH（引擎侧优先读取）
+            extra[L.FFMPEG_ENV] = ffmpeg_path
+        return extra
+
     def _on_start(self) -> None:
         if self.engine_state in (STATE_STARTING, STATE_RUNNING, STATE_STOPPING):
             return
@@ -818,10 +917,13 @@ class ControlPanel(ctk.CTk):
         self._gen += 1
         gen = self._gen
         self._set_state(STATE_STARTING, f"正在启动引擎（{host}:{port}）…")
-        threading.Thread(target=self._start_worker, args=(gen, host, port, out),
+        ffmpeg_path = str(self.cfg["ffmpeg_path"] or "").strip()
+        threading.Thread(target=self._start_worker,
+                         args=(gen, host, port, out, ffmpeg_path),
                          name="bgv-engine-start", daemon=True).start()
 
-    def _start_worker(self, gen: int, host: str, port: int, out: str) -> None:
+    def _start_worker(self, gen: int, host: str, port: int, out: str,
+                      ffmpeg_path: str = "") -> None:
         if self._quitting or self._gen != gen:
             return
         if L.port_in_use(port):
@@ -834,7 +936,7 @@ class ControlPanel(ctk.CTk):
                 if self._quitting or self._gen != gen:
                     return
                 self.engine.start(host=host, port=port,
-                                  extra_env={"BGV_OUTPUT_DIR_ALLOWLIST": out})
+                                  extra_env=self._build_engine_env(out, ffmpeg_path))
             proc = self.engine.proc
         except Exception as exc:
             self.ui_call(self._set_state, STATE_ERROR,
@@ -931,33 +1033,161 @@ class ControlPanel(ctk.CTk):
         except Exception as exc:
             self._set_detail(f"打不开日志：{exc!r} | 路径 {L.LOG_PATH}")
 
-    # -- 环境自检 -------------------------------------------------------------
-    def _env_worker(self) -> None:
-        ffmpeg = L.ffmpeg_ready()
-        chromium = L.playwright_browser_ready()
-        self.ui_call(self._env_report, ffmpeg, chromium)
-        if not chromium:
-            L.install_chromium_async(
-                lambda ok, detail: self.ui_call(self._chromium_done, ok, detail))
+    # -- 环境依赖自检（M16.5：卡片 + 路径持久化 + 一键安装） -------------------
+    def _env_worker(self, show_dialog: bool = False) -> None:
+        """后台线程只算事实（含 ``ffmpeg -version`` 子进程），不碰任何 Tk 控件。"""
+        info = L.probe_dependencies(self.cfg["ffmpeg_path"])
+        self.ui_call(self._env_report, info, show_dialog)
 
-    def _env_report(self, ffmpeg: bool, chromium: bool) -> None:
+    def _dep_refresh(self, show_dialog: bool = True) -> None:
+        """「重新检测」：另起后台探测，避免版本号探测阻塞主循环。"""
+        self.dep_ffmpeg_label.configure(text="FFmpeg · 检测中…")
+        self.dep_chromium_label.configure(text="Playwright Chromium · 检测中…")
+        threading.Thread(target=self._env_worker, args=(show_dialog,),
+                         name="bgv-envcheck", daemon=True).start()
+
+    def _env_report(self, info: dict, show_dialog: bool = False) -> None:
+        """仅主线程：把探测结果画到卡片上。"""
+        self._dep_info = dict(info)
+        found = bool(info.get("ffmpeg_found"))
+        version = str(info.get("ffmpeg_version") or "")
+        custom = info.get("ffmpeg_source") == "custom"
+        path = str(info.get("ffmpeg_path") or "")
+        self.dep_ffmpeg_dot.configure(
+            text_color=LED_COLOR[STATE_RUNNING] if found else LED_COLOR[STATE_STOPPED])
+        if found:
+            short = version if len(version) <= 28 else version[:27] + "…"
+            self.dep_ffmpeg_label.configure(
+                text=f"FFmpeg · 已就绪（{short or '版本未知'}）")
+            self.dep_ffmpeg_hint.configure(
+                text=f"来源：{'自定义路径' if custom else '系统 PATH'} · {path}")
+        else:
+            self.dep_ffmpeg_label.configure(text="FFmpeg · 未找到")
+            self.dep_ffmpeg_hint.configure(text=(
+                "自定义路径已失效，请点「浏览…」重新选择 ffmpeg.exe" if custom
+                else "系统 PATH 里没有 ffmpeg；可点「浏览…」指定绝对路径"))
+        chromium = bool(info.get("chromium"))
+        self.dep_chromium_dot.configure(
+            text_color=LED_COLOR[STATE_RUNNING] if chromium else LED_COLOR[STATE_STOPPED])
+        self.dep_chromium_label.configure(
+            text="Playwright Chromium · 已就绪" if chromium
+            else "Playwright Chromium · 未安装")
+        self.dep_install_button.configure(
+            text="重新安装内核" if chromium else "一键安装内核")
         self.env_label.configure(
-            text=f"环境自检 · FFmpeg {'✓' if ffmpeg else '✗ 缺失'} · "
-                 f"Playwright Chromium {'✓' if chromium else '✗ 正在自动安装'}"
-        )
-        if self.smoke:
-            return
-        if not ffmpeg:
-            messagebox.showwarning("环境自检 · 缺少 FFmpeg", L.FFMPEG_HINT)
+            text=f"环境自检 · FFmpeg {'已就绪' if found else '未找到'} · "
+                 f"Playwright Chromium {'已就绪' if chromium else '未安装（可一键安装）'}")
         if not chromium:
-            messagebox.showwarning("环境自检 · 缺少 Chromium", L.CHROMIUM_HINT)
+            self._dep_log_show()
+            self._dep_log_append("· 缺少浏览器内核；点「一键安装内核」下载 Chromium。")
+        # 卡片本身已经把红字/路径显示得很清楚，首次自检不再弹模态框打断用户；
+        # 只有用户主动点「重新检测」仍缺失时才给完整安装指引。
+        if show_dialog and not self.smoke:
+            if not found:
+                messagebox.showwarning("环境自检 · 缺少 FFmpeg", L.FFMPEG_HINT)
+            if not chromium:
+                messagebox.showwarning("环境自检 · 缺少 Chromium", L.CHROMIUM_HINT)
 
-    def _chromium_done(self, ok: bool, detail: str) -> None:
-        self.env_label.configure(text=f"环境自检 · Chromium {'安装完成 ✓' if ok else '自动安装失败 ✗'}")
+    def _browse_ffmpeg(self) -> None:
+        """选本机 ffmpeg.exe → 校验可执行 → 绝对路径写进 config.json。"""
+        configured = str(self.cfg["ffmpeg_path"] or "")
+        initial = (str(Path(configured).parent) if configured
+                   and Path(configured).parent.is_dir() else str(Path.home()))
+        try:
+            chosen = filedialog.askopenfilename(
+                parent=self, title="选择 ffmpeg 可执行文件", initialdir=initial,
+                filetypes=[("FFmpeg", "ffmpeg.exe"), ("可执行文件", "*.exe"),
+                           ("所有文件", "*.*")],
+            )
+        except Exception as exc:
+            self._set_detail(f"打开文件选择器失败：{exc!r}")
+            return
+        if not chosen:
+            return
+        path = str(Path(chosen).resolve())
+        info = L.probe_dependencies(path)
+        if not info["ffmpeg_found"] or not info["ffmpeg_version"]:
+            self._set_detail(f"所选文件不是可执行的 FFmpeg：{path}", error=True)
+            if not self.smoke:
+                messagebox.showerror("无效的 FFmpeg 路径",
+                                     f"无法从该文件读取版本号：\n{path}\n\n请选择 ffmpeg.exe。")
+            return
+        self.cfg.update(ffmpeg_path=path)
+        self.cfg.save()
+        self._set_detail(f"已保存自定义 FFmpeg 路径：{path}（重启引擎后生效）")
+        self._dep_log_show()
+        self._dep_log_append(f"· FFmpeg 路径已设为：{path}")
+        self._dep_refresh(show_dialog=False)
+
+    def _clear_ffmpeg(self) -> None:
+        """清除自定义路径，回到系统 PATH 查找。"""
+        self.cfg.update(ffmpeg_path="")
+        self.cfg.save()
+        self._set_detail("已清除自定义 FFmpeg 路径，改用系统 PATH（重启引擎后生效）")
+        self._dep_refresh(show_dialog=False)
+
+    def _on_install_chromium(self) -> None:
+        """「一键安装内核」：后台跑 playwright install，日志逐行回主线程。"""
+        if self._installing:
+            return
+        self._installing = True
+        self._dep_log_clear(placeholder=False)
+        self._dep_log_show()
+        self._dep_log_append("> playwright install chromium")
+        self._dep_log_append("· 首次安装需下载约 100 MB；下方为实时安装日志…")
+        self._safe_state(self.dep_install_button, "disabled")
+        self.dep_install_button.configure(text="安装中…")
+        self.dep_chromium_label.configure(text="Playwright Chromium · 正在安装…")
+        L.install_chromium_async(
+            lambda ok, detail: self.ui_call(self._install_done, ok, detail),
+            on_line=lambda line: self.ui_call(self._dep_log_append, line),
+        )
+
+    def _install_done(self, ok: bool, detail: str) -> None:
+        """仅主线程：恢复按钮、补一条收尾日志、复查内核状态。"""
+        self._installing = False
+        running = self.engine_state in (STATE_STARTING, STATE_RUNNING, STATE_STOPPING)
+        self.dep_install_button.configure(text="一键安装内核")
+        self._safe_state(self.dep_install_button, "disabled" if running else "normal")
+        self._paint_button(self.dep_install_button, running, BTN_START, BTN_START_HOVER)
+        if detail:
+            self._dep_log_append(detail[-400:])
+        self._dep_log_append("✓ 安装完成，正在复查内核状态…" if ok
+                             else "✖ 安装失败，请查看上方日志")
         if not ok and not self.smoke:
-            messagebox.showerror("Chromium 自动安装失败",
-                                "请手动执行：\n  .venv\\Scripts\\python.exe -m playwright install chromium\n\n"
-                                f"错误摘要：\n{detail}")
+            messagebox.showerror(
+                "Chromium 安装失败",
+                "可手动执行：\n  .venv\\Scripts\\python.exe -m playwright install chromium\n\n"
+                f"错误摘要：\n{detail}")
+        self._dep_refresh(show_dialog=False)
+
+    def _dep_log_show(self) -> None:
+        """幂等确保日志区可见（常态已常驻；这里只是防御性兜底，不再改变布局）。"""
+        if self.dep_log.winfo_manager() == "":
+            self.dep_log.pack(fill="x", padx=16, pady=(0, 10))
+
+    def _dep_log_append(self, line: str) -> None:
+        """仅主线程。保留最近 120 行，避免长时间安装把 Textbox 撑爆。"""
+        try:
+            self.dep_log.configure(state="normal")
+            self.dep_log.insert("end", line.rstrip() + "\n")
+            count = int(str(self.dep_log.index("end-1c")).split(".")[0])
+            if count > 120:
+                self.dep_log.delete("1.0", f"{count - 120}.0")
+            self.dep_log.see("end")
+            self.dep_log.configure(state="disabled")
+        except Exception as exc:
+            L.log(f"安装日志写入失败: {exc!r}")
+
+    def _dep_log_clear(self, placeholder: bool = True) -> None:
+        try:
+            self.dep_log.configure(state="normal")
+            self.dep_log.delete("1.0", "end")
+            if placeholder:
+                self.dep_log.insert("1.0", DEP_LOG_HINT + "\n")
+            self.dep_log.configure(state="disabled")
+        except Exception as exc:
+            L.log(f"清空安装日志失败: {exc!r}")
 
     # -- 托盘（后台模式） -----------------------------------------------------
     def _setup_tray(self) -> None:
@@ -1126,6 +1356,83 @@ class ControlPanel(ctk.CTk):
                   self.hide_button, self.led, self.env_label)
         self._smoke_check("引擎设置页保留 M15 全部控件",
                           all(w.winfo_exists() for w in legacy), f"{len(legacy)} 个控件")
+
+        # ---- M16.5：环境依赖自检卡片 / 路径解析 / 环境变量注入 ----
+        dep_widgets = (self.dep_card, self.dep_recheck_button,
+                       self.dep_ffmpeg_dot, self.dep_ffmpeg_label,
+                       self.dep_ffmpeg_browse, self.dep_ffmpeg_clear,
+                       self.dep_ffmpeg_hint, self.dep_chromium_dot,
+                       self.dep_chromium_label, self.dep_install_button, self.dep_log)
+        self._smoke_check("依赖自检卡片控件齐备",
+                          all(w.winfo_exists() for w in dep_widgets),
+                          f"{len(dep_widgets)} 个控件")
+        self._smoke_check("安装日志区常驻可见且带空态提示（布局不跳动）",
+                          self.dep_log.winfo_manager() == "pack"
+                          and "安装日志" in self.dep_log.get("1.0", "end-1c"))
+        # 正常自检在后台线程；冒烟里同步跑一次，确保状态已画到卡片上再断言。
+        self._env_report(L.probe_dependencies(self.cfg["ffmpeg_path"]))
+        self.update_idletasks()
+        ff_text = self.dep_ffmpeg_label.cget("text")
+        self._smoke_check(
+            "FFmpeg 状态显示已就绪（带版本号）或未找到",
+            ("已就绪" in ff_text and bool(self._dep_info["ffmpeg_version"]))
+            or "未找到" in ff_text,
+            f"{ff_text} | version={self._dep_info.get('ffmpeg_version')}",
+        )
+        cr_text = self.dep_chromium_label.cget("text")
+        self._smoke_check("Chromium 状态显示已就绪/未安装",
+                          "已就绪" in cr_text or "未安装" in cr_text, cr_text)
+        dot = str(self.dep_ffmpeg_dot.cget("text_color")).lower()
+        self._smoke_check(
+            "状态圆点按结果着绿/红色",
+            ("2eb872" in dot) if self._dep_info["ffmpeg_found"] else ("e5534b" in dot),
+            f"{dot} | found={self._dep_info['ffmpeg_found']}",
+        )
+        # 用临时占位文件验证「自定义路径优先」，绝不把本机的 D:\ffmpeg 硬编码进
+        # 可分发 exe 的冒烟断言——换台没有该目录的机器会假失败。
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="bgv-ffmpeg-") as tmpdir:
+            custom = str((Path(tmpdir) / "ffmpeg.exe").resolve())
+            Path(custom).write_bytes(b"MZ")
+            resolved = L.ffmpeg_resolve(custom)
+            self._smoke_check("自定义 FFmpeg 路径优先于系统 PATH",
+                              resolved[1] == "custom" and resolved[0] == custom,
+                              str(resolved))
+            self._smoke_check("自定义路径失效时如实报未找到（不回落 PATH）",
+                              L.ffmpeg_resolve(str(Path(tmpdir) / "nope.exe"))
+                              == (None, "custom"))
+            self._smoke_check("未自定义时回落系统 PATH",
+                              L.ffmpeg_resolve("")[1] == "path",
+                              str(L.ffmpeg_resolve("")[0]))
+            tmp_cfg = CONFIG_PATH.with_name("_smoke_ffmpeg_config.json")
+            try:
+                Config(tmp_cfg, {"ffmpeg_path": custom}).save()
+                self._smoke_check("ffmpeg_path 写入 config.json 并可重读",
+                                  Config.load(tmp_cfg)["ffmpeg_path"] == custom,
+                                  json.dumps(Config.load(tmp_cfg).data, ensure_ascii=False))
+            finally:
+                tmp_cfg.unlink(missing_ok=True)
+            env_custom = self._build_engine_env("E:/out", custom)
+            env_plain = self._build_engine_env("E:/out")
+            self._smoke_check(
+                "自定义路径经 BGV_FFMPEG_PATH 注入引擎子进程",
+                env_custom == {"BGV_OUTPUT_DIR_ALLOWLIST": "E:/out",
+                               L.FFMPEG_ENV: custom}
+                and L.FFMPEG_ENV not in env_plain,
+                json.dumps(env_custom, ensure_ascii=False),
+            )
+        self._dep_log_show()
+        self._dep_log_append("M16.5 冒烟：日志区可展开并写入")
+        self.update_idletasks()
+        self._smoke_check("安装日志区可展开并写入文本",
+                          self.dep_log.winfo_manager() == "pack"
+                          and "M16.5 冒烟" in self.dep_log.get("1.0", "end-1c"))
+        self._dep_log_clear()
+        log_text = self.dep_log.get("1.0", "end-1c")
+        self._smoke_check("安装日志可清空并恢复占位提示（区域仍在）",
+                          "安装日志" in log_text and "M16.5 冒烟" not in log_text
+                          and self.dep_log.winfo_manager() == "pack")
+
         c = self.console
         widgets = (c.url_entry, c.sniff_button, c.format_menu, c.download_button,
                    c.result_card, c.tasks_card, c.task_list, c.message_label)
@@ -1251,17 +1558,74 @@ class ControlPanel(ctk.CTk):
 
         self.after(150, self._smoke_hide)
 
+    @staticmethod
+    def _grab_window_dc(hwnd: int):
+        """Win32 ``PrintWindow(PW_RENDERFULLCONTENT)`` 直接抓窗口 DC。
+
+        无人值守跑 GUI 时窗口虽是 ``normal/viewable``，但可能不在屏幕合成层里，
+        ``ImageGrab`` 只会拍到桌面壁纸（M16 第二步 e2e 已踩过一次）。窗口 DC
+        不依赖 Z-order。非 Windows / 调用失败返回 ``None``，由调用方回退。
+        """
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+            from PIL import Image
+
+            class _BMI(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD),
+                ]
+
+            user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            if w <= 0 or h <= 0:
+                return None
+            hdc = user32.GetWindowDC(hwnd)
+            memdc = gdi32.CreateCompatibleDC(hdc)
+            bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
+            gdi32.SelectObject(memdc, bmp)
+            buf = None
+            try:
+                ok = user32.PrintWindow(hwnd, memdc, 2)
+                bi = _BMI()
+                bi.biSize = ctypes.sizeof(_BMI)
+                bi.biWidth, bi.biHeight = w, -h  # 负值 = top-down
+                bi.biPlanes, bi.biBitCount, bi.biCompression = 1, 32, 0
+                buf = ctypes.create_string_buffer(w * h * 4)
+                got = gdi32.GetDIBits(memdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+            finally:
+                gdi32.DeleteObject(bmp)
+                gdi32.DeleteDC(memdc)
+                user32.ReleaseDC(hwnd, hdc)
+            if not ok or not got or buf is None:
+                return None
+            return Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1).copy()
+        except Exception:
+            return None
+
     def _capture(self, path: str, label: str) -> None:
         try:
-            from PIL import ImageGrab
             self.lift()
             self.attributes("-topmost", True)
             self.update_idletasks()
             self.update()
             time.sleep(0.35)
-            x, y = self.winfo_rootx(), self.winfo_rooty()
-            w, h = self.winfo_width(), self.winfo_height()
-            ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(path)
+            image = self._grab_window_dc(int(self.winfo_id()))
+            if image is None:
+                from PIL import ImageGrab
+                x, y = self.winfo_rootx(), self.winfo_rooty()
+                w, h = self.winfo_width(), self.winfo_height()
+                image = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            image.save(path)
             self.attributes("-topmost", False)
             self._smoke_check(label, Path(path).is_file(), path)
         except Exception as exc:
@@ -1513,11 +1877,16 @@ class ControlPanel(ctk.CTk):
 
 
 def _probe_selfcheck(port: int) -> dict | None:
-    """读取 /v1/privacy/selfcheck；失败返回 None，由调用方做成硬断言。"""
+    """读取 /v1/privacy/selfcheck；失败返回 None，由调用方做成硬断言。
+
+    selfcheck 每次都实时探测 ``ffmpeg -version`` / importlib.metadata，
+    PyInstaller 单文件首次冷启动可能超过 2 秒；给 6 秒，别把「慢」误判成
+    「端点坏了」（health 用 2 秒足够，这个端点不一样）。
+    """
     import urllib.request
     try:
         with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/v1/privacy/selfcheck", timeout=2.0) as resp:
+                f"http://127.0.0.1:{port}/v1/privacy/selfcheck", timeout=6.0) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
     except Exception:
         return None

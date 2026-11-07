@@ -12,6 +12,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from services import ffmpeg_path as ffmpeg_paths
+
 # 监听地址不再写死：M15 桌面端把 uvicorn 实际绑定的 host/port 通过
 # BGV_LISTEN_HOST / BGV_LISTEN_PORT 注入，selfcheck 按请求实时读取，避免
 # 「界面显示 0.0.0.0 供手机连接、自检却回 127.0.0.1」的失真。
@@ -92,7 +94,12 @@ def _package_version(name: str) -> str:
 
 
 def _ffmpeg_version() -> str:
-    executable = shutil.which("ffmpeg")
+    # M16.5：自检端点要如实反映引擎实际会用的那个 ffmpeg（自定义路径优先）。
+    # 配置写错时记 unavailable，不让低频只读端点 500。
+    try:
+        executable = ffmpeg_paths.ffmpeg_executable(which=shutil.which)
+    except ffmpeg_paths.FFmpegNotFoundError:
+        return UNAVAILABLE
     if not executable:
         return UNAVAILABLE
     try:
