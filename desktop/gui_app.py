@@ -1435,8 +1435,12 @@ class ControlPanel(ctk.CTk):
             return
         busy = self._engine_busy()
         title, body = close_dialog_copy(busy)
+        # 先收着建、量完再亮：Toplevel 一创建就按默认位置（主窗左上）映射上屏，
+        # 先亮后挪 = 用户看到的「从左上角瞬移到中间」。withdraw → 布局 →
+        # 量需求尺寸 → 算中心 → 一次 geometry 落位 → deiconify，全程不露脸。
         dlg = ctk.CTkToplevel(self, fg_color=T.SURFACE)
         self._close_dialog = dlg
+        dlg.withdraw()
         dlg.title("关闭程序")
         dlg.resizable(False, False)
         dlg.transient(self)
@@ -1489,20 +1493,17 @@ class ControlPanel(ctk.CTk):
             _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left")
             _btn("取消", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, None, "right")
 
-        dlg.after(120, lambda: self._center_dialog(dlg))
+        dlg.update_idletasks()  # 布局收敛后量需求尺寸（设备像素，CTk 已把组件缩放过）
+        # 只定坐标、不定尺寸：CTk 对 geometry("WxH…") 的尺寸部分会再做 DPI 缩放
+        # （150% 屏上 471→706），跟它抢尺寸必错位；"+x+y" 坐标则原样透传。
+        # 弹窗自身按内容定尺寸（实测映射尺寸 == req），拿 req 居中零误差。
+        req_w, req_h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        x = self.winfo_x() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_y() + (self.winfo_height() - req_h) // 2 - 40
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        dlg.deiconify()
         dlg.grab_set()
         dlg.focus_force()
-
-    def _center_dialog(self, dlg) -> None:
-        """CTkToplevel 尺寸确定后居中到主窗口。"""
-        try:
-            dlg.update_idletasks()
-            w, h = dlg.winfo_width(), dlg.winfo_height()
-            x = self.winfo_x() + (self.winfo_width() - w) // 2
-            y = self.winfo_y() + (self.winfo_height() - h) // 2 - 40
-            dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-        except Exception:
-            pass
 
     def hide_to_tray(self) -> None:
         """退出/关闭窗口的行为之一：不退出，只隐藏到托盘（引擎继续跑）。
