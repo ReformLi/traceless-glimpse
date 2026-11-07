@@ -80,6 +80,13 @@ def data_dir() -> Path:
 LOG_PATH = data_dir() / "engine.log"
 
 APP_NAME = "无痕掠影 · 本地引擎"
+
+# Windows 通知来源栏（气泡左上角）显示的应用名。
+APP_DISPLAY_NAME = "无痕掠影引擎"
+
+# 进程级 AppUserModelID：Windows 给气泡/通知归主用的身份；
+# 不设置就归到进程名（python.exe → 来源栏显示「Python 3.11」）。
+APP_ID = "Hpu.TracelessGlimpse.Gui"
 SHIELD_BLUE = (46, 125, 209, 255)   # 正常运行
 SHIELD_RED = (217, 48, 37, 255)     # 异常（端口占用 / 引擎闪退）
 
@@ -97,6 +104,36 @@ READY_TIMEOUT_SECONDS = 75.0 if FROZEN else 30.0
 def log(msg: str) -> None:
     """启动器自己的诊断输出。引擎的 stdout/stderr 不在这里，全部进 engine.log。"""
     print(f"[launcher] {msg}", flush=True)
+
+
+def ensure_windows_app_identity() -> None:
+    """让 Windows 通知来源栏（气泡左上角）显示「无痕掠影引擎」而不是「Python 3.11」。
+
+    两步，缺一不可：
+    1. 进程级 AUMID——气泡归属到这个身份，而不是 python.exe / 打包后的 exe 进程名；
+    2. HKCU 注册表登记该 AUMID 的 ``DisplayName``——没有登记 Windows 解析不到名字，
+       来源栏回退显示进程名。这是未打包（无安装器/开始菜单快捷方式）Win32 应用
+       让通知显示自定义应用名的正规途径。
+    尽力而为：任何一步失败都不影响功能，只影响气泡来源栏的名称。
+    """
+    if not IS_WINDOWS:
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception as exc:
+        log(f"设置 AppUserModelID 失败（不影响功能）: {exc!r}")
+    try:
+        import winreg
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            rf"Software\Classes\AppUserModelId\{APP_ID}",
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_DISPLAY_NAME)
+    except Exception as exc:
+        log(f"登记 AUMID 显示名失败（不影响功能）: {exc!r}")
 
 
 # --------------------------------------------------------------------------- Windows 弹窗
@@ -978,6 +1015,7 @@ def main() -> int:
     if "--tray-smoke" in args:
         Launcher(headless=True).run_tray(smoke_seconds=3.0)
         return 0
+    ensure_windows_app_identity()
     Launcher(headless=False).run_tray()
     return 0
 

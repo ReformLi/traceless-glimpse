@@ -3890,3 +3890,31 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
 
 gui-smoke **88/88**（用例数不变，断言翻转）：「托盘隐藏弹且仅弹一条确认气泡（用户裁决保留）」
 PASS（notify=1 hidden=True）。
+
+## 46. 通知来源栏归属「无痕掠影引擎」（2026-11-07）
+
+**用户反馈**：托盘气泡来源栏（左上角）仍显示「Python 3.11」。§44 只做了进程级
+`SetCurrentProcessExplicitAppUserModelID`——但没有任何地方告诉 Windows 这个 AUMID
+的显示名是什么，解析不到就回退显示进程名（开发运行 = python.exe → 「Python 3.11」）。
+
+### 46.1 修复：AUMID 显示名登记
+
+未打包 Win32 应用让通知显示自定义应用名的正规途径：在
+`HKCU\Software\Classes\AppUserModelId\<AUMID>` 下写 `DisplayName`（REG_SZ）。
+两步合并为 `launcher.ensure_windows_app_identity()`（gui_app 经 `L.` 复用，
+旧 `_set_windows_app_user_model_id` 删除）：
+
+1. 进程级 AUMID `SetCurrentProcessExplicitAppUserModelID("Hpu.TracelessGlimpse.Gui")`；
+2. 注册表 `DisplayName = 无痕掠影引擎`（用户裁决的应用名）。
+
+两处 main 接线（gui_app 非 smoke 路径、launcher 非 smoke 路径）；smoke 不碰注册表；
+失败降级为日志、不影响功能。
+
+### 46.2 验证
+
+- 脚本实跑 `ensure_windows_app_identity()` 后读回注册表：
+  `DisplayName = 无痕掠影引擎`（REG_SZ）——登记真实落盘；
+- gui-smoke **88/88**、launcher 自检 **13/13**、tray-smoke 正常退出，零回归；
+- 如实说明：气泡来源栏名称由 Windows 解析 AUMID 决定，本机制是微软文档认可
+  的未打包应用登记途径；若个别 Windows 版本对「气球通知→Toast」转换仍强制
+  取进程名，打包成 exe 后（exe 有自己的版本信息）来源也会随 exe 名称改善。

@@ -2282,26 +2282,13 @@ def run_gui_smoke(argv: list[str]) -> int:
     return 0 if passed == total else 1
 
 
-def _set_windows_app_user_model_id() -> None:
-    """让 Windows 通知中心把气泡归到应用名下，而不是「Python 3.11」。
-
-    只影响剩余的致命错误气泡（当前仅「引擎意外退出」）；没有开始菜单快捷方式
-    注册同名 AUMID 时 Windows 可能仍显示进程名——尽力而为，失败不影响任何功能。
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Hpu.TracelessGlimpse.Gui")
-    except Exception as exc:  # pragma: no cover - 非 Windows / 缺 shell32
-        L.log(f"设置 AppUserModelID 失败（不影响功能）: {exc!r}")
-
-
 def main() -> int:
     argv = sys.argv[1:]
     if "--gui-smoke" in argv:
         return run_gui_smoke(argv)
-    _set_windows_app_user_model_id()
+    # 进程 AUMID + 注册表 DisplayName 登记：气泡来源栏显示「无痕掠影引擎」
+    # 而非「Python 3.11」（实现与详情见 launcher.ensure_windows_app_identity）。
+    L.ensure_windows_app_identity()
     app = ControlPanel()
     app.mainloop()
     return 0
