@@ -3823,3 +3823,29 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
 - 离线窗口期（心跳两拍未满、`Connection.Connected` 还成立）点下载：走引擎 prepare → 失败 →
   M16 中途降级老路，行为不变；
 - 回落持久化意味着引擎恢复后下载仍在「本机直链」档——设置里一键切回，提示横幅已说明换腿事实。
+
+## 43. 关闭确认框演进：询问模式闲时也弹（2026-11-07）
+
+**用户实测反馈**：点 X 没有二次确认框，直接进托盘。两层原因：① M18.6 默认档 = tray（设计如此）；
+② 即使切到 ask，引擎闲时也直接退出不弹（当时的"闲时询问纯属打扰"裁决）。
+
+### 43.1 修复（用户裁决：每次询问都弹窗）
+
+- `_on_close_window` ask 分支删掉 busy 短路：**一律** `_show_close_dialog(allow_tray=True)`；
+- `_show_close_dialog` 文案抽成模块级纯函数 `close_dialog_copy(busy)` 并忙闲自适应——
+  忙：「引擎正在后台运行 / 现在退出会停止引擎并中断手机 App 连接与下载任务…」；
+  闲：「确定要退出吗？/ 退出后引擎停止，手机 App 将无法连接电脑…」（闲时不再恐吓下载中断）；
+- 默认档仍为 tray（用户未要求改）；「记住我的选择」勾选行为不变；
+- exit 模式的忙时保护闸不变。
+
+### 43.2 验证与踩坑
+
+- gui-smoke **87/87**（85 + 2 新）：
+  - 「关闭确认框文案忙闲自适应」（纯函数双态断言）；
+  - 「询问模式引擎闲时也弹确认框」（猴补丁拦 `_show_close_dialog` → cfg=ask、清 smoke 标志 →
+    dry-run `_on_close_window` → 断言收到 `allow_tray=True` 且没退没改档）；
+- **本轮坑**：smoke 中途**真建 CTkToplevel 会触发 Tk 原生崩溃**（0xC0000005，进程直接死、
+  无 Python traceback）——首版 smoke 断言真建窗即崩；stash 归因确认后改为纯函数 + dry-run。
+  规矩：smoke 里只碰已存在的控件，不新建顶层窗口；
+- 环境备注：gui-smoke 必须用 `engine/.venv/Scripts/python.exe` 跑（customtkinter/pystray 装在这，
+  系统 Python 3.13 与商店版 3.11 都没有）。
