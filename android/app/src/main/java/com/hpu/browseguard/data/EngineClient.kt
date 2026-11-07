@@ -160,10 +160,21 @@ class EngineClient(private val http: OkHttpClient = DEFAULT_HTTP) {
 
         private val JSON = "application/json; charset=utf-8".toMediaType()
 
-        val DEFAULT_HTTP = OkHttpClient.Builder()
-            .connectTimeout(3, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(30, TimeUnit.SECONDS)
-            .build()
+        /**
+         * 默认 HTTP 客户端：第一个应用拦截器就是 M19 的网络安检门。
+         *
+         * [allowedHttpHost] 每次请求求值一次——AppContainer 传「读当前设置里的
+         * 引擎 Host」，设置页改地址立即生效；缺省为空白名单（只放行回环 + HTTPS），
+         * JVM 测试与无 Context 场景不必拖 Android 运行时。
+         */
+        fun defaultHttp(allowedHttpHost: () -> String? = { null }): OkHttpClient =
+            OkHttpClient.Builder()
+                .addInterceptor(NetworkGuardInterceptor(allowedHttpHost))
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .callTimeout(30, TimeUnit.SECONDS)
+                .build()
+
+        val DEFAULT_HTTP: OkHttpClient = defaultHttp()
     }
 }

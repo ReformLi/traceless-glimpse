@@ -47,6 +47,20 @@
 降级理由全部登记在 `RemuxAudioGuard.AUDIO_FALLBACK_REASONS`，有一条 JVM 门禁扫源码里的
 `"...audio..."` 字面量，新增理由没进登记表就测试失败——防止现场出现「不知道为什么会降级」的文案。
 
+## 引擎 HTTP 安检门（M19）
+
+`network_security_config.xml` 为了让内置浏览器打开全网 HTTP 视频站，必须**全局**放行明文——
+它没法在运行时按「当前配置的引擎 IP」动态收窄。于是把收窄下沉到 OkHttp 应用层：
+`data/NetworkGuardInterceptor.kt` 作为 `EngineClient.defaultHttp()` 的第一个应用拦截器，
+规则是——`http://` 请求只放行回环（127.x / localhost / ::1，即 adb reverse 通道）与
+**用户当前保存的引擎 Host**（每次请求时从 `EngineConfig` 现读，设置页改地址立即生效），
+其余一律抛 `CleartextBlockedByNetworkGuardException`（`https://` 不在管辖内）。
+即使 App 内某段代码被注入去请求别的 HTTP 站点，也会在这一层被钉死。
+`LocalDirectDownloader` 的 `LOCAL_HTTP` 不在安检门内——它只访问用户显式点选的那条媒体 URL，
+不做域名枚举，边界写在 `network_security_config.xml` 注释里。
+设置页配套：引擎地址为公网明文（非 127/10/192.168/172.16–31/169.254，`EngineUrl.isRiskyCleartextHost`）
+时先弹确认框，保存后引擎卡显示动态封装的隐私说明。
+
 ## 下载管理、文件操作与播放（M11）
 
 - 下载页是文件台账：打开、分享、重命名、删除（记录 / 记录+文件）、批量选择。存在性与位置探测在

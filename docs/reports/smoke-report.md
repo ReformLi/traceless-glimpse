@@ -3678,3 +3678,51 @@ exe 首次冷启动 selfcheck 超过 2 s 导致超时假失败 → 探测超时 
 
 - 「直接退出」在手机 App 正联机时会把引擎一起杀掉——这是该选项的语义，
   设置卡提示文案已写明托盘模式的作用；`ask` 模式的对话框也明示了退出后果。
+
+## 40. M19：引擎连接安全加固与自定义 IP 封装（2026-11-07）
+
+**背景**：WebView 浏览全网 HTTP 视频站要求 `network_security_config.xml` 全局放行明文，
+但该 XML 无法在运行时按「当前配置的引擎 IP」动态放行。裁决：**XML 保持全局放行，
+在 OkHttp 拦截器层实现极严苛的自定义 IP 按需放行**——明文请求的口子只留给
+「用户明确保存并启用的那台电脑」。
+
+### 40.1 落地（android/app，无新权限、无新依赖）
+
+- **`data/NetworkGuardInterceptor.kt`（新）**：`EngineClient.defaultHttp()` 的第一个
+  应用拦截器。规则：`https://` 一律放行（TLS 自带保护）；`http://` 只放行回环
+  （127.x / localhost / ::1——adb reverse 默认通道）与白名单 Host；其余抛
+  `CleartextBlockedByNetworkGuardException`（继承 IOException，`EngineClient.execute`
+  既有 catch 顺接为 `Transport(UNREACHABLE)`）。白名单 `() -> String?` 惰性求值、
+  每次请求现读 `EngineConfig.baseUrl` 的 Host——改设置立即生效，无需重建客户端；
+- **`AppContainer`**：`EngineClient(EngineClient.defaultHttp { EngineUrl.httpHostOf(settings.baseUrl) })`；
+  `DEFAULT_HTTP` 默认空白名单（只放回环 + HTTPS），JVM 测试不拖 Android 运行时；
+- **设置页（`EngineSection`）**：保存按钮先过 `EngineUrl.isRiskyCleartextHost(draftHost)`——
+  公网明文（非 127/10/192.168/172.16–31/169.254，非 `::1` 的 IPv6、域名一律按公网）
+  先弹确认框（「仍然连接 / 取消」），确认才走既有 `saveEngineUrl`；引擎卡新增
+  `engine_guard_privacy_hint` 小字（动态封装说明，需求原文文案）；
+- **`network_security_config.xml` 注释更新**：写明 XML 与 OkHttp 层的分工与
+  `LocalDirectDownloader` 的边界（只访问用户显式点选的一条媒体 URL，不做域名枚举）。
+
+### 40.2 验证（JVM 全离线）
+
+- **全仓 JVM：544 passed = M17 基线 533 + 本轮 11**（app 471 → 482），0 失败：
+  - `NetworkGuardTest`（6）：非白名单 `http://www.qq.com` 被拦截且
+    **`server.requestCount == 0`（请求未出安检门，未触 DNS/TCP）**；白名单 Host
+    放行并到达假服务器；空白名单时只放回环；回环免白名单；https 绕过安检门；
+    `DEFAULT_HTTP` 默认自带空白名单安检门。全程用假 DNS（任何域名解析到回环）
+    + MockWebServer，离线可复跑；
+  - `EngineUrlPrivateRangeTest`（5）：Host 提取、私网/公网网段边界
+    （100.64 CGN、172.32、192.169、三段/超范围八位组按公网从严）；
+- `:android:app:assembleDebug` BUILD SUCCESSFUL（app-debug.apk 43.8 MB）；
+- 设置页既有链路不动：`HomeViewModel.saveEngineUrl` 零改动，公网确认是 UI 层前置闸。
+
+### 40.3 本轮自报的缺口
+
+- **真机两步验收（改 IP 后请求可达 / 真机日志核对拦截）留给 EMUI 实机回归**：
+  JVM 层已用假 DNS 等价证明了「白名单放行到达、非白名单未出网」，但真机的
+  adb reverse / 局域网 IP 现场行为要在华为设备上复测；
+- `LocalDirectDownloader` 的 `LOCAL_HTTP` 未挂安检门：它的语义就是「下载用户
+  点选的那条链接」，挂门会直接砍掉 M10 以来本机下载的核心能力——边界改用
+  注释钉死而非代码强制，是本轮刻意取舍；
+- 公网判定不含 DNS 解析（域名一律按公网对待）：设置页输入时做 DNS 查询会卡 UI
+  且离线时误报，宁可对合法域名多弹一次确认。

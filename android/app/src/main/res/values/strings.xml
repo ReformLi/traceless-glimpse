@@ -163,6 +163,13 @@
     <string name="engine_url_invalid">需为 http(s)://主机[:端口]，不带路径与参数</string>
     <string name="engine_url_hint">电脑上执行 adb reverse tcp:8730 tcp:8730；非回环地址需引擎启用 TLS（https）</string>
 
+    <!-- M19：公网明文连接确认与动态封装隐私说明 -->
+    <string name="engine_url_public_title">正在连接公网地址</string>
+    <string name="engine_url_public_body">您正在尝试连接公网 IP，明文传输存在被窃听与篡改的风险，请确保您信任该网络。仍要保存并连接吗？</string>
+    <string name="engine_url_public_confirm">仍然连接</string>
+    <string name="engine_url_public_cancel">取消</string>
+    <string name="engine_guard_privacy_hint">引擎连接采用动态封装：只有在您保存并启用的电脑局域网 IP 下，App 才会向其发送明文请求；其余所有网络请求默认受 Android 系统严格网络策略保护。</string>
+
     <string name="download_executor_label">下载执行者</string>
     <string name="download_executor_engine">引擎</string>
     <string name="download_executor_local">本地直链</string>

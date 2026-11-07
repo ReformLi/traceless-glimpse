@@ -3,10 +3,13 @@
   内置浏览器要打开用户自己输入的任意站点：很多视频站与媒体 CDN 仍是 HTTP，
   只放行回环会让 M7「纯手机模式」在第一步就失败。因此全局允许明文。
 
-  代价与边界：
+  代价与边界（M19 起收窄了一半）：
   - 地址栏对 http:// 页面显示「不安全」提示，用户知道自己在明文上；
-  - 电脑引擎仍由 EngineSettings 校验（非回环默认 HTTPS），这条开关只服务网页浏览；
-  - 下载器只访问用户点选的那条媒体 URL，不做域名枚举。
+  - XML 无法按当前配置的引擎 IP 动态放行，所以「零信任收窄」下沉到了 OkHttp
+    应用层：EngineClient 的每个请求都先过 NetworkGuardInterceptor——只有
+    回环与用户当前保存的引擎 Host 才允许 http 明文，其余一律拦截；
+  - LocalDirectDownloader 仍可访问用户点选的那条媒体 URL（下载器只访问
+    用户显式点选的一条，不做域名枚举），不在安检门管辖内。
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">

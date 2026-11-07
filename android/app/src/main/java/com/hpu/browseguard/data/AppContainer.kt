@@ -48,7 +48,14 @@ class AppContainer(context: Context) : BackendProvider {
     private val app = context.applicationContext
     val settings: EngineSettings = EngineConfig(app)
     val audit: AuditLogger = LogcatAuditLogger()
-    private val client = EngineClient()
+
+    /**
+     * 引擎客户端：安检门白名单**每次请求**读当前 baseUrl 的 Host（M19）——
+     * 设置页保存新地址后立刻生效，无需重建客户端或容器。
+     */
+    private val client = EngineClient(
+        EngineClient.defaultHttp { EngineUrl.httpHostOf(settings.baseUrl) },
+    )
     val engineInfo: EngineInfo = HttpEngineInfo(client)
     val outputs = SafOutputDirectory(app, audit)
 

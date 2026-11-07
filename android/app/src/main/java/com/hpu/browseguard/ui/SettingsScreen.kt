@@ -50,6 +50,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
+import com.hpu.browseguard.data.EngineUrl
 import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.history.DownloadRecord
@@ -284,6 +285,19 @@ private fun EngineSection(
     onRefreshConnection: () -> Unit,
 ) {
     val connection = state.connection
+    // M19：明文连公网地址时先弹确认——把「保存并测试」按成两步。
+    var confirmingPublicHost by remember { mutableStateOf(false) }
+
+    /** 保存入口：draft 的 Host 属公网明文时先弹警告，确认后才真正落盘。 */
+    fun requestSave() {
+        val host = EngineUrl.httpHostOf(state.engineUrlDraft)
+        if (host != null && EngineUrl.isRiskyCleartextHost(host)) {
+            confirmingPublicHost = true
+        } else {
+            onSaveEngineUrl()
+        }
+    }
+
     SettingsCard(stringResource(R.string.settings_engine_section)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -327,7 +341,7 @@ private fun EngineSection(
         Spacer(Modifier.height(10.dp))
         BgvButton(
             text = stringResource(R.string.settings_engine_save_test),
-            onClick = onSaveEngineUrl,
+            onClick = ::requestSave,
             enabled = connection !is Connection.Checking,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -335,6 +349,14 @@ private fun EngineSection(
         Spacer(Modifier.height(8.dp))
         Text(
             text = stringResource(R.string.engine_url_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // M19：动态封装的隐私说明——放在引擎卡的最后一行，小字不抢眼但能查证。
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.engine_guard_privacy_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -383,6 +405,21 @@ private fun EngineSection(
                 "${connection.selfcheck.cacheDir} · ${formatBytes(connection.selfcheck.cacheSizeBytes)}",
             )
         }
+    }
+
+    if (confirmingPublicHost) {
+        ConfirmDialog(
+            title = stringResource(R.string.engine_url_public_title),
+            message = stringResource(R.string.engine_url_public_body),
+            confirmLabel = stringResource(R.string.engine_url_public_confirm),
+            dismissLabel = stringResource(R.string.engine_url_public_cancel),
+            onConfirm = {
+                confirmingPublicHost = false
+                onSaveEngineUrl()
+            },
+            onDismiss = { confirmingPublicHost = false },
+            destructive = true,
+        )
     }
 }
 

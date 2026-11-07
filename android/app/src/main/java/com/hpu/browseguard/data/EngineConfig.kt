@@ -18,6 +18,38 @@ object EngineUrl {
         if (url.query != null || url.fragment != null) return null
         return url.toString().trimEnd('/')
     }
+
+    /** 取 baseUrl 的 Host（M19 网络安检门的白名单值）；baseUrl 不合法返回 null。 */
+    fun httpHostOf(baseUrl: String): String? =
+        baseUrl.trim().toHttpUrlOrNull()?.host?.takeIf { it.isNotEmpty() }
+
+    /**
+     * 明文 HTTP 连这个 Host 是否值得弹安全警告（M19）。
+     *
+     * 回环与局域网网段（192.168/10/172.16–31/169.254 链路本地）是引擎的设计
+     * 部署面，不警告；其余——公网 IP 字面量、无法判定归属的域名——都按
+     * 「公网明文」对待，交给设置页弹一次确认。IPv6 只认回环 `::1`，其余
+     * 一律按公网处理（引擎场景不存在公网 IPv6 部署，宁可多问一次）。
+     */
+    fun isRiskyCleartextHost(host: String): Boolean {
+        val h = host.trim().trimStart('[').trimEnd(']').lowercase()
+        if (h.isEmpty()) return false
+        if (h == "localhost" || h == "::1") return false
+        if (h.contains(":")) return true // 其余 IPv6 一律按公网对待
+        val parts = h.split('.')
+        val nums = parts.mapNotNull { it.toIntOrNull() }
+        if (nums.size == 4 && parts.size == 4 && nums.all { it in 0..255 }) {
+            val (a, b) = nums[0] to nums[1]
+            return when {
+                a == 127 || a == 10 || a == 192 && b == 168 -> false
+                a == 172 && b in 16..31 -> false
+                a == 169 && b == 254 -> false
+                else -> true
+            }
+        }
+        // 非 IP 字面量（域名）：引擎部署不会用域名，明文连域名按公网对待。
+        return true
+    }
 }
 
 /**
@@ -50,8 +82,9 @@ interface EngineSettings {
 /**
  * 引擎地址存在 SharedPreferences：只存地址，不含令牌。
  *
- * 手机连 PC 上的引擎走 `adb reverse`，所以默认地址就是回环；局域网部署请配 TLS 后用 `https://`
- * （明文只放行回环，见 `res/xml/network_security_config.xml`）。地址开放给用户覆盖。
+ * 手机连 PC 上的引擎走 `adb reverse`，所以默认地址就是回环；局域网部署请配 TLS 后用 `https://`。
+ * 地址开放给用户覆盖——M19 起，明文 HTTP 的放行白名单就是这里的 baseUrl
+ * Host（`NetworkGuardInterceptor` 每次请求时读），设置页保存公网 IP 会先弹确认。
  */
 class EngineConfig(context: Context) : EngineSettings {
 
