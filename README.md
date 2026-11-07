@@ -86,8 +86,7 @@ cd engine
 | 先看懂目录与模块职责 | [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md) |
 | 查需求与验收标准 | [`docs/PRD.md`](docs/PRD.md) |
 | 查接口合同 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) + [`docs/PROTOCOL-CHANGELOG.md`](docs/PROTOCOL-CHANGELOG.md) |
-| 改某个模块的代码 | `android/` · `desktop/` · `engine/` · `cli/` · `mcp/` 各自的 `README.md` |
-| 出包发版 | [`docs/release-checklist.md`](docs/release-checklist.md) |
+| 改某个模块的代码 | `android/` · `desktop/` · `engine/` · `cli/` · `mcp/` 各自的 `README.md`（含出包与自检命令） |
 | 看某轮改动到底验了什么 | [`docs/reports/smoke-report.md`](docs/reports/smoke-report.md)（逐阶段取证总账） |
 | 看专项议题的深度验收 | `docs/reports/acceptance-m*.md` |
 

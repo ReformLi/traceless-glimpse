@@ -250,8 +250,8 @@ BgvAudit 行                                                              27 行
 |---|---|---|
 | 1 | **v2 签名方案在 minSdk 29 下不落地**（§6 三条排查） | Android 10+ 走 v3 足够，无设备装不上。若将来为兼容 API 24–27 而下调 minSdk，必须回头复核这一条 |
 | 2 | `allowBackup=false` 的换机代价 | 设置、引擎地址、Cookie 授权、历史记录从零开始；产物不受影响。用户已裁决「关死」，这里只登记代价 |
-| 3 | 测试 keystore 不能用于分发 | 自签、`OU=Release Test`、口令只存在本机一个明文文件里。正式签名要换密钥、进密码管理器，并按 [release-checklist.md](../release-checklist.md) §2 归档当次 mapping |
-| 4 | ~~`mapping.txt` 不入库~~ **本轮收尾已关闭** | 见 §10.1：`release-artifacts/mapping-v1.0-code1.txt.gz` 已入库，还原流程已实测跑通，规矩写在 [release-checklist.md](../release-checklist.md) §2 |
+| 3 | 测试 keystore 不能用于分发 | 自签、`OU=Release Test`、口令只存在本机一个明文文件里。正式签名要换密钥、进密码管理器，并按 `release-artifacts/` 的命名约定归档当次 mapping |
+| 4 | ~~`mapping.txt` 不入库~~ **本轮收尾已关闭** | 见 §10.1：`release-artifacts/mapping-v1.0-code1.txt.gz` 已入库，还原流程已实测跑通 |
 | 5 | `HistoryScreen.kt:250` 编译告警：`rememberSwipeToDismissBoxState(confirmValueChange=...)` 已弃用 | 官方替代是 dynamic anchors，改它会动滑动删除的交互行为，本轮未点名 → 不动。这是 release 构建里**唯一**一条编译告警 |
 | 6 | 受保护站点在「本机嗅探 + 引擎下载」组合下只能说「空格式表」，说不出「这是要登录」 | 协议级缺口，用户裁决接受现状、归 V1.1（走 `Task.warnings`）。现象、文案边界与影响面见 §10.2，表格里不塞得下 |
 | 7 | `engine -m real` 本轮未复跑 | 本轮 `git status` 里引擎零改动（只有 `android/`、`.gitignore`、`docs/`）。沿用 M6-5 基线 175 passed + 1 xfailed，未当场复现，按缺口登记 |
@@ -364,7 +364,7 @@ grep -cE "JsonDecodingException|SerializationException" .devtmp/m6-6/release-log
 grep -c BgvAudit .devtmp/m6-6/release-logcat.txt                                          # 期望 > 0
 
 # 7. 归档 mapping（出包后立刻做）+ 还原崩栈
-#    完整流程与实测输出在 docs/release-checklist.md §2；retrace 不在 build-tools 里，
+#    实测往返见 release-artifacts/ 里的归档件；retrace 不在 build-tools 里，
 #    入口类是 Gradle 缓存 AGP builder jar 中的 com.android.tools.r8.retrace.Retrace
 export GRADLE_USER_HOME=D:/Android/GradleUserHome
 BUILDER=$(find "$GRADLE_USER_HOME/caches/modules-2/files-2.1/com.android.tools.build/builder/9.1.0" \

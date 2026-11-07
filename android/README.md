@@ -11,7 +11,13 @@
 - UI 是 Jetpack Compose + Material 3（`buildFeatures.compose = true`），不是模板时代的 Views 栈。
 - 存储用 Room（历史记录 + 播放进度，DB v5），网络用 OkHttp，`WebView` 走 androidx.webkit，播放用 Media3 ExoPlayer。
 - `minSdk 29`（PRD NFR-05 Android 10+）、`targetSdk 36`、`compileSdk 36.1`、AGP 9.1.0 / Gradle 9.3.1。
-- `versionName = "1.1.0"`、`versionCode = 1`。出包与归档流程见 `../docs/release-checklist.md`。
+- `versionName = "1.1.0"`、`versionCode = 1`。发版只需两步：`./gradlew.bat :android:app:assembleRelease`
+  出包，`apksigner verify --verbose --print-certs <apk>` 验签。**出包后当场归档 mapping（不可跳过）**：
+  把 `android/app/build/outputs/mapping/release/mapping.txt` gzip 成
+  `release-artifacts/mapping-v<versionName>-code<versionCode>.txt.gz`。文件名必须带 `versionCode`——
+  崩栈还原时错配 mapping 不会报错，它会安静地把堆栈「还原」成另一个函数的名字。
+  还原用 AGP `builder` jar 里的 `com.android.tools.r8.retrace.Retrace`（SDK 的 build-tools 里没有它），
+  且只吃明文，喂 `.gz` 会报 `InvalidMappingFileException`。
 
 ## 两套后端并存
 
@@ -66,7 +72,9 @@
 - WebView 广告拦截在 `shouldInterceptRequest`：硬编码域名黑名单 `AdBlockRules` 按「相等或 `.` 后缀」匹配
   （`contains` 会把 `notdoubleclick.net` 误杀），命中直接返回 200 空体 `WebResourceResponse`。
   **主文档不拦**——用户在地址栏主动打开的域必须能看到结果，白屏比广告更难解释。
-  审计行 `adblock_hit host=<域名>` 只记域名，同一域名每页去重（去重窗口的边界见 `../docs/release-checklist.md` §7）。
+  审计行 `adblock_hit host=<域名>` 只记域名，同一域名每页去重。去重是**按地址认页**：`AdBlockLedger`
+  在地址变化时才重开账，所以同一页重载不再补第二行——读日志时「一行」代表「这页拦过这个域」，
+  不代表只拦了一次。
 
 ## 下载保活与通知栏（M13）
 
@@ -130,7 +138,7 @@ com.hpu.browseguard
   R8 包已补测服务、通知与 `PendingIntent`（`../docs/reports/smoke-report.md` §32.6）与加密 HLS 解密（§33.7）。
 
 里程碑与逐轮取证见 `../docs/reports/smoke-report.md`（§21 本机直连落地、§27–§29 M7/M8/M9、§31 M12.5 与首次 R8 设备腿、§32 M13 下载保活、§33 M14 AES-128 解密）；
-M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`），发版判据见 `../docs/release-checklist.md`。
+M10/M11/M12 的改动与验收按提交记录追溯（`fc78073` … `924c350`，M12 是 `38fac08`）。
 
 ## 后续优化方向
 

@@ -9,7 +9,7 @@ import org.junit.Test
  *
  * 两件事各自对应一条 M12 遗留：
  * - 亮度手势在模拟器上看不出画面变化，能证的是「它真的落到 `window.attributes.screenBrightness`，
- *   离场也真的还原」——MuMu 上取不到背光，这条只能这样钉（release-checklist §7 记了 TODO）。
+ *   离场也真的还原」——MuMu 上取不到背光，这条只能这样钉（实体机复核亮度仍挂在待办里）。
  * - 「BACK 偶发回到旧播放器实例」要求实例绝对被销毁：release 之后组合外面再摸播放器只能摸到 null。
  */
 class PlayerWiringTest {

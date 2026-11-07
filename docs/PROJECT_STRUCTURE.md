@@ -86,8 +86,8 @@ TracelessGlimpse/
 ### 🏗️ 4. 工程化与辅助 (Engineering & Docs)
 
 * **`docs/`** — 文档库。根目录放**现行有效**的三类：合同（`PROTOCOL.md` / `PROTOCOL-CHANGELOG.md`）、
-  需求与流程（`PRD.md` / `release-checklist.md`）、用户指南（`USER_GUIDE_ANDROID.md` /
-  `USER_GUIDE_DESKTOP.md` / `USER_GUIDE_MCP.md`）；`reports/` 存历史取证（`smoke-report.md` 总账与
+  需求（`PRD.md`）、用户指南（`USER_GUIDE_ANDROID.md` / `USER_GUIDE_DESKTOP.md` / `USER_GUIDE_MCP.md`）、
+  结构说明（`PROJECT_STRUCTURE.md`）；`reports/` 存历史取证（`smoke-report.md` 总账与
   `acceptance-m*.md` 专项），只追加不回改。
 * **`scripts/`** — 自动化脚本。包含 `check_schema.py`（Kotlin 与 Python 的双端模型一致性比对）与 `smoke.sh`（端到端冒烟测试）。
 * **`release-artifacts/`** — 发版归档。存放 Release 包的 `mapping.txt`（R8 混淆映射表），用于追踪线上崩溃。

@@ -3085,7 +3085,7 @@ WebView 与抽屉那几条只能在真机钉的接线，用 `BrowserWiringTest` 
 | `android/README.md` | 整篇重写 | 原文断言「未接入 Gradle 构建」「模板为 Views 栈」「M3 待办：minSdk 24→29」，三条都已是反事实 |
 | `docs/smoke-report.md` | 标题改为逐轮取证日志、§1 头部加轮次地图、补 §27–§30 | 文件早已不是 M0 冒烟单；M7/M8/M9 三轮的取证与遗留不写下来，下一次改音频链路就只能靠猜 |
 | `README.md` | 新增「本机直连下载：不连引擎也能出可播文件」一节 | 「或使用内置轻量下载能力」把转封装、音频门禁链、无 FFmpeg 三项承诺全部藏掉了 |
-| `docs/release-checklist.md` | §5 回归基线用现场复跑数字（245 → 345，引擎 235 未变）；§3 台账登记 mapping 归档与当前源码/版本名的两处不一致 | 基线数字是「对不上就是有问题」的判据，写旧数字等于把判据废掉 |
+| `docs/release-checklist.md`（已于 M17 后随文档精简删除） | §5 回归基线用现场复跑数字（245 → 345，引擎 235 未变）；§3 台账登记 mapping 归档与当前源码/版本名的两处不一致 | 基线数字是「对不上就是有问题」的判据，写旧数字等于把判据废掉 |
 | 全仓 127 处绝对路径 | `E:\code\android\BrowseGuardVid\…` → `TracelessGlimpse` | 11-03 改名遗留：每条链接、每条可复制命令都指到不存在的目录 |
 | `docs/PROTOCOL.md` | **不改** | 里面那行 `remux` 是引擎侧 PostAction 白名单；App 本机转封装不经协议，改它反而制造「协议里能找到本机行为」的错觉 |
 
@@ -3228,7 +3228,7 @@ UI 只新增设置页「下载保活」一行与通知权限被拒时的一句�
 ### 32.6 R8 补测（2026-11-07，测试签名 Release 包）
 
 R8 最容易把 Service、Receiver、`PendingIntent` 之类「只被 Manifest / 系统反射引用」的东西裁掉，
-所以这一腿不跑单测、只跑真实链路。流程同 `docs/release-checklist.md` §1 第 6 步：
+所以这一腿不跑单测、只跑真实链路。流程为「装 Release 包 → 三 Tab 主流程 + 下载管理 + 播放器 + 设置」：
 
 ```
 ./gradlew :android:app:assembleRelease
