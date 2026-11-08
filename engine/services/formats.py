@@ -72,6 +72,11 @@ class FormatUnavailableError(Exception):
         self.reason = reason
 
 
+def is_audio_only(selector: FormatSelector | None) -> bool:
+    """调用方必须据此区分「纯音频」与「选画质」——直链分支尤其不能默默忽略。"""
+    return selector is not None and selector.strategy == SelectionStrategy.AUDIO_ONLY
+
+
 def ytdlp_format_expression(selector: FormatSelector | None) -> str:
     """M1 最小映射（显式拒绝，非静默 best）：best / bestaudio / best[height<=N]。
 

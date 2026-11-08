@@ -6,24 +6,29 @@ DB 路径：``BGV_DATA_DIR``（默认 ``%LOCALAPPDATA%\\BrowseGuardVid``）。
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from models import (
     CookiePolicy,
     ErrorCode,
     ErrorPayload,
     FormatSelector,
+    PostAction,
     Task,
     TaskMode,
     TaskStatus,
     error_payload,
 )
 
-SCHEMA_VERSION = 2
+logger = logging.getLogger("bgv.engine")
+
+SCHEMA_VERSION = 3
 # 重启后无法续跑的活动态：置 failed；queued / awaiting_selection 原样保留
 RECOVER_FAILED_STATES = {
     TaskStatus.SNIFFING,
@@ -34,7 +39,7 @@ RECOVER_FAILED_STATES = {
 
 _SELECT_COLUMNS = (
     "id, status, sourceUrl, mode, cookiePolicy, outputDir, format_selector, "
-    "createdAt, updatedAt, error, output_path"
+    "createdAt, updatedAt, error, output_path, naming_template, post_actions"
 )
 
 # 每条迁移按 user_version 递增执行；之后只追加、不修改已有条目
@@ -54,6 +59,12 @@ _MIGRATIONS: list[tuple[str, ...]] = [
     ),
     # v2：M5 起 done 任务记录真实产物路径；旧库补空列，历史任务保持 null。
     ("ALTER TABLE tasks ADD COLUMN output_path TEXT",),
+    # v3：M24 的产物主名与后处理列表必须活过引擎重启。旧库补空列，
+    # 历史任务保持 null / 空列表（协议语义：留空 = 沿用站点标题、不做后处理）。
+    (
+        "ALTER TABLE tasks ADD COLUMN naming_template TEXT",
+        "ALTER TABLE tasks ADD COLUMN post_actions TEXT",
+    ),
 ]
 
 
@@ -114,18 +125,27 @@ class TaskStore:
         error_json = (
             task.error.model_dump_json(exclude_none=True) if task.error is not None else None
         )
+        post_actions_json = (
+            json.dumps(
+                [action.model_dump(mode="json", exclude_none=True) for action in task.postActions]
+            )
+            if task.postActions
+            else None
+        )
         with self._lock:
             self._conn.execute(
                 "INSERT INTO tasks ("
                 "id, status, sourceUrl, mode, cookiePolicy, outputDir, format_selector, "
-                "createdAt, updatedAt, error, output_path) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "createdAt, updatedAt, error, output_path, naming_template, post_actions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
                 "sourceUrl=excluded.sourceUrl, mode=excluded.mode, "
                 "cookiePolicy=excluded.cookiePolicy, outputDir=excluded.outputDir, "
                 "format_selector=excluded.format_selector, createdAt=excluded.createdAt, "
                 "updatedAt=excluded.updatedAt, error=excluded.error, "
-                "output_path=excluded.output_path",
+                "output_path=excluded.output_path, "
+                "naming_template=excluded.naming_template, "
+                "post_actions=excluded.post_actions",
                 (
                     task.id,
                     task.status.value,
@@ -138,6 +158,8 @@ class TaskStore:
                     task.updatedAt,
                     error_json,
                     task.outputPath,
+                    task.namingTemplate,
+                    post_actions_json,
                 ),
             )
             self._conn.commit()
@@ -150,9 +172,7 @@ class TaskStore:
         return [self._row_to_task(row) for row in rows]
 
     @staticmethod
-    def _row_to_task(
-        row: tuple[str, str, str, str, str, str, str | None, str, str, str | None, str | None]
-    ) -> Task:
+    def _row_to_task(row: tuple[Any, ...]) -> Task:
         (
             task_id,
             status,
@@ -165,6 +185,8 @@ class TaskStore:
             updated_at,
             error_json,
             output_path,
+            naming_template,
+            post_actions_json,
         ) = row
         try:
             selector = (
@@ -174,6 +196,21 @@ class TaskStore:
             )
         except ValueError as exc:
             raise InvalidPersistedSelector(task_id) from exc
+        post_actions: list[PostAction] = []
+        if post_actions_json:
+            try:
+                post_actions = [
+                    PostAction.model_validate(item)
+                    for item in json.loads(post_actions_json)
+                    if isinstance(item, dict)
+                ]
+            except (ValueError, TypeError) as exc:
+                # 旧库 / 损坏值不能让整库恢复崩掉，但必须留痕，不静默伪装成「用户没配」。
+                logger.warning(
+                    "persisted_post_actions_invalid task_id=%s reason=%s",
+                    task_id,
+                    type(exc).__name__,
+                )
         return Task(
             id=task_id,
             sourceUrl=source_url,
@@ -186,6 +223,8 @@ class TaskStore:
             formatSelector=selector,
             error=ErrorPayload.model_validate(json.loads(error_json)) if error_json else None,
             outputPath=output_path,
+            namingTemplate=naming_template,
+            postActions=post_actions,
         )
 
     def recover_restart(self) -> list[Task]:
@@ -214,9 +253,7 @@ class TaskStore:
             tasks.append(task)
         return tasks
 
-    def _repair_invalid_selector(
-        self, row: tuple[str, str, str, str, str, str, str | None, str, str, str | None, str | None]
-    ) -> Task:
+    def _repair_invalid_selector(self, row: tuple[Any, ...]) -> Task:
         task = Task(
             id=row[0],
             sourceUrl=row[2],

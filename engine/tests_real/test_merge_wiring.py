@@ -209,6 +209,8 @@ def test_cancel_during_merge_keeps_product_and_cancelled_wins(monkeypatch, tmp_p
     assert record.task.error is None
     assert (tmp_path / "Sample.mp4").is_file()
     assert "merge_cancelled" in caplog.text
+    # 取消时产物已合好：必须写进台账，否则下载管理页看不见它、也删不掉（死文件）。
+    assert record.task.outputPath == str(tmp_path / "Sample.mp4")
 
 
 def test_direct_source_keeps_single_file_path_and_audits_the_noop(monkeypatch, tmp_path, caplog):

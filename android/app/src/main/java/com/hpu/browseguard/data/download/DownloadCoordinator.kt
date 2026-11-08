@@ -36,8 +36,15 @@ import kotlinx.coroutines.launch
  */
 data class QueuedTask(
     val recordId: String,
-    /** 任务来源页面地址：同一时刻同一条来源只允许一条任务在下（见 [enqueue] 的防踩踏拦截）。 */
-    val sourceUrl: String,
+    /**
+     * 防踩踏用的**实际资源键**，见 [enqueue]：
+     * - 本机直链 = `link.mediaUrl`（真正会被写成 `.part` 的那条直链）；
+     * - 电脑引擎 = 后端 `taskId`（产物由引擎管理，手机端拿不到 mediaUrl）。
+     *
+     * 绝不能用页面 URL：同一页面下「先下视频、再勾纯音频」是两条不同资源，
+     * 用页面地址会把第二条误判成重复；不同页面指向同一条直链反倒拦不住。
+     */
+    val dedupeKey: String,
     val executor: DownloadExecutor,
     val request: StartRequest,
     /** 只用于回填记录里的人读画质描述，如 `720p · mp4`。 */
@@ -91,19 +98,26 @@ class DownloadCoordinator(
     val consentWaits: StateFlow<List<ConsentWait>> = _consentWaits.asStateFlow()
 
     /** 入队即接管。同一个 recordId 再次入队（授权后原地重下）会先掐掉上一条流。 */
-    fun enqueue(task: QueuedTask): Boolean {
-        // 同一直链同时只许下一条（封板审计·并发踩踏）：两支并发会共用同一个
+    fun enqueue(task: QueuedTask, rejectSilently: Boolean = false): Boolean {
+        // 同一条实际资源同时只许下一条（封板审计·并发踩踏）：两支并发会共用同一个
         // `.part` 文件与同一套取消标志，先完成的 rename 走文件后另一支还往旧
-        // 句柄上写，产物直接损坏。命中就把新行落「失败」并留审计，绝不静默吞。
+        // 句柄上写，产物直接损坏。判定键是 [QueuedTask.dedupeKey]，不是页面地址。
         val duplicate = queued.entries.any { (otherId, other) ->
             otherId != task.recordId &&
-                other.sourceUrl == task.sourceUrl &&
+                other.dedupeKey == task.dedupeKey &&
                 jobs[otherId]?.isActive == true
         }
         if (duplicate) {
             scope.launch {
-                history.markFailed(task.recordId, null, "同一直链已有任务在下载中，请等它完成或先取消")
-                audit.log("download_duplicate_blocked", mapOf("id" to task.recordId))
+                // 授权续跑被拦时不落失败：那条记录还挂着「待授权」，
+                // 用户取消另一条之后应该能从对话框直接重试。
+                if (!rejectSilently) {
+                    history.markFailed(task.recordId, null, "同一直链已有任务在下载中，请等它完成或先取消")
+                }
+                audit.log(
+                    "download_duplicate_blocked",
+                    mapOf("id" to task.recordId, "origin" to if (rejectSilently) "resume" else "enqueue"),
+                )
             }
             return false
         }
@@ -119,8 +133,15 @@ class DownloadCoordinator(
      * 用同一个请求、同一行记录再来一次。
      */
     fun resume(recordId: String) {
-        clearConsent(recordId)
-        queued[recordId]?.let(::enqueue)
+        val task = queued[recordId] ?: return
+        // 只有真正接管成功才清授权等待：被拦时这次「同意」不能把等待吃掉，
+        // 否则任务既没启动、对话框也消失，用户只剩一条失败记录。
+        val accepted = enqueue(task, rejectSilently = true)
+        if (accepted) {
+            clearConsent(recordId)
+        } else {
+            scope.launch { audit.log("download_resume_blocked", mapOf("id" to recordId)) }
+        }
     }
 
     /**

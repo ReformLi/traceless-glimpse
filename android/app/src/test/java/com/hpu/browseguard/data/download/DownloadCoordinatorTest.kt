@@ -367,6 +367,56 @@ class DownloadCoordinatorTest {
         assertTrue(coordinator.consentWaits.value.isEmpty())
     }
 
+    /** M24 回归：同一页面先下视频、再勾纯音频，是两条不同资源，绝不能按页面 URL 判重。 */
+    @Test
+    fun samePageVideoAndPureAudioAreNotDuplicates() = runTest(dispatcher) {
+        val coordinator = coordinator(this)
+        seedRow(RECORD_ID)
+        seedRow("rec-2")
+        // 同一页面两次嗅探 → 两个不同引擎任务（旧实现共用页面 URL，第二条会被拦死）。
+        assertEquals(true, coordinator.enqueue(engineTask(recordId = RECORD_ID, taskId = "01a1")))
+        assertEquals(true, coordinator.enqueue(engineTask(recordId = "rec-2", taskId = "01a2")))
+        assertEquals(2, coordinator.activeCount())
+    }
+
+    /** 拦截仍然有效：真正指向同一条直链的两条任务只留一条。 */
+    @Test
+    fun sameDirectLinkIsStillBlocked() = runTest(dispatcher) {
+        val coordinator = coordinator(this)
+        seedRow(RECORD_ID)
+        seedRow("rec-2")
+        assertEquals(true, coordinator.enqueue(localTask(recordId = RECORD_ID)))
+        assertEquals(false, coordinator.enqueue(localTask(recordId = "rec-2")))
+        advanceUntilIdle()
+        assertEquals(RecordStatus.FAILED, history.rows.single { it.id == "rec-2" }.status)
+        assertEquals("enqueue", audit.of("download_duplicate_blocked").single().fields["origin"])
+    }
+
+    /** 授权续跑被拦：等待不能丢、不能偷偷起新流、更不能把待授权的行标失败。 */
+    @Test
+    fun resumeBlockedByDuplicateKeepsTheConsentWait() = runTest(dispatcher) {
+        val coordinator = coordinator(this)
+        seedRow("rec-2")
+        seedRow(RECORD_ID)
+        // B 先因 403 挂起（detachStream 后它不再是活跃流）
+        coordinator.enqueue(localTask(recordId = "rec-2"))
+        push(DownloadEvent.Started(task(TaskStatus.DOWNLOADING)))
+        push(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
+        assertEquals(true, coordinator.consentWaits.value.any { it.recordId == "rec-2" })
+
+        // A 随后占住同一条直链
+        assertEquals(true, coordinator.enqueue(localTask(recordId = RECORD_ID)))
+        val startsBefore = provider.downloadBackend.startRequests.size
+        consent.grant("cdn.example.com")
+        coordinator.resume("rec-2")
+        advanceUntilIdle()
+
+        assertEquals(true, coordinator.consentWaits.value.any { it.recordId == "rec-2" })
+        assertEquals("被拦不能偷偷起一条新流", startsBefore, provider.downloadBackend.startRequests.size)
+        assertEquals(true, history.calls.none { it == "markFailed" })
+        assertEquals(1, audit.of("download_resume_blocked").size)
+    }
+
     /** 两行各归各：点名取消只动那一行。 */
     @Test
     fun twoTasksInFlightAreCancelledIndividually() = runTest(dispatcher) {
@@ -421,7 +471,8 @@ class DownloadCoordinatorTest {
 
     private fun engineTask(recordId: String = RECORD_ID, taskId: String = "01a1") = QueuedTask(
         recordId = recordId,
-        sourceUrl = "https://example.com/watch?v=$recordId",
+        // 引擎侧的防踩踏键是后端任务号：同页「视频 + 纯音频」是两条不同任务。
+        dedupeKey = taskId,
         executor = DownloadExecutor.ENGINE,
         request = StartRequest.ViaEngine(taskId, FormatSelector(SelectionStrategy.EXACT, "137"), null, null),
         formatSummary = "720p · mp4",
@@ -429,14 +480,18 @@ class DownloadCoordinatorTest {
         needsSniffReplay = false,
     )
 
-    private fun localTask() = QueuedTask(
-        recordId = RECORD_ID,
-        sourceUrl = "https://example.com/watch?v=local-$RECORD_ID",
+    private fun localTask(
+        recordId: String = RECORD_ID,
+        mediaUrl: String = "https://cdn.example.com/v/clip.mp4",
+    ) = QueuedTask(
+        recordId = recordId,
+        // 本机直链：真正会被写成 .part 的那条 URL，不是页面地址。
+        dedupeKey = mediaUrl,
         executor = DownloadExecutor.LOCAL_DIRECT,
         request = StartRequest.ViaLocal(
             link = SniffResult(
                 taskId = "01a1",
-                mediaUrl = "https://cdn.example.com/v/clip.mp4",
+                mediaUrl = mediaUrl,
                 type = MediaStreamType.MP4,
                 container = "mp4",
                 estimatedQuality = EstimatedQuality(height = 720, bitrateKbps = 2500, label = "720p"),

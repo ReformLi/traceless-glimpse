@@ -64,9 +64,12 @@ from models import (
 )
 from security import (
     SecurityError,
+    prepare_output_dir,
     sanitize_headers,
     validate_outbound_url,
     validate_output_dir,
+    validate_output_filename,
+    validate_output_target,
 )
 from log_redaction import install_log_redaction
 from persistence import get_store
@@ -75,6 +78,7 @@ from services import environment as environment_service
 from services import failures as failures_service
 from services import formats as formats_service
 from services import merger as merger_service
+from services.cookies import sweep_stale_cookie_files
 from services.task_worker import TaskWorker
 
 logger = logging.getLogger("bgv.engine")
@@ -423,6 +427,11 @@ def _merge_stage(record: TaskRecord, video: Path, audio: Path) -> Path | None:
     留着不删——失败归失败，不许顺手销毁用户已有的文件。
     """
     task = record.task
+    if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
+        # 取消落在两轨之间：别再起 ffmpeg，中间轨就地回收。
+        downloader_service.drop_track_files([video, audio])
+        logger.info("merge_skipped_cancelled task_id=%s", task.id)
+        return None
     target = downloader_service.merged_target_for(video)
     target_existed = target.exists()
     _transition(task, TaskStatus.MERGING)
@@ -435,7 +444,15 @@ def _merge_stage(record: TaskRecord, video: Path, audio: Path) -> Path | None:
         percent=100.0,
     )
     try:
-        merged = merger_service.merge_streams(video, audio, target)
+        merged = merger_service.merge_streams(
+            video, audio, target, should_abort=record.cancel_requested.is_set
+        )
+    except merger_service.MergeCancelled:
+        logger.info("merge_aborted task_id=%s", task.id)
+        downloader_service.drop_track_files([video, audio])
+        if not target_existed:
+            target.unlink(missing_ok=True)
+        return None
     except merger_service.MergeError as exc:
         logger.warning("merge_failed task_id=%s reason=%s", task.id, exc)
         downloader_service.drop_track_files([video, audio])
@@ -445,10 +462,108 @@ def _merge_stage(record: TaskRecord, video: Path, audio: Path) -> Path | None:
         return None
     downloader_service.drop_track_files([video, audio])
     if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
-        # 合并期间点取消：产物已经合好了，保留文件但状态归 cancelled，不改判 done
+        # 合并期间点取消：产物已经合好了，保留文件但状态归 cancelled，不改判 done。
+        # 必须把路径写进台账，否则这个文件谁都看不见、也删不掉（死文件）。
         logger.info("merge_cancelled task_id=%s bytes=%d", task.id, merged.stat().st_size)
+        _record_cancelled_output(task, merged)
         return None
     return merged
+
+
+def _record_cancelled_output(task: Task, path: Path) -> None:
+    # 取消时产物已落盘：写回 outputPath 并持久化，别让它变成查不到的死文件。
+    # 终态已经是 CANCELLED，不能再走 _transition（终态→终态会被状态机拒绝）。
+    task.outputPath = str(path)
+    task.updatedAt = _now()
+    get_store().upsert(task)
+    logger.info("cancelled_output_recorded task_id=%s bytes=%d", task.id, path.stat().st_size)
+
+
+def _audio_only_direct_stage(
+    record: TaskRecord,
+    *,
+    output_name: str | None,
+    format_expression: str,
+    should_abort,
+    on_progress,
+) -> Path | None:
+    # 直链源没有「独立音轨」可让 yt-dlp 挑：只下发完整 MP4 等于把用户勾的
+    # 纯音频当没看见。先落带 taskId 的中间文件，再用 ffmpeg -vn -c:a copy
+    # 剥出 .m4a（不转码）；中间文件在 finally 里一律回收，绝不留完整 MP4。
+    task = record.task
+    out_dir = prepare_output_dir(task.outputDir)
+    logger.info("audio_only_direct task_id=%s selector=%s", task.id, format_expression)
+    source: Path | None = None
+    try:
+        source = downloader_service.download_direct(
+            record.sniff.mediaUrl,
+            out_dir,
+            task_id=task.id,
+            cookie_policy=task.cookiePolicy.value,
+            should_abort=should_abort,
+            on_progress=on_progress,
+            filename=downloader_service.audio_source_filename(task.id),
+            default_suffix=(
+                ".m4a" if record.sniff.type is MediaStreamType.AUDIO else ".mp4"
+            ),
+        )
+        return _extract_audio_track(record, source, out_dir, output_name, should_abort)
+    finally:
+        downloader_service.drop_audio_source_leftovers(out_dir, task.id, source)
+
+
+def _extract_audio_track(
+    record: TaskRecord,
+    source: Path,
+    out_dir: Path,
+    output_name: str | None,
+    should_abort,
+) -> Path | None:
+    # 目标名用产物主名（或 URL 末段）+ 系统补的 .m4a，用户不用也不许填后缀。
+    task = record.task
+    url_stem = Path(urlsplit(record.sniff.mediaUrl).path).stem if record.sniff else ""
+    stem = (
+        output_name
+        or downloader_service.normalize_output_name(url_stem, task_id=task.id)
+        or "audio"
+    )
+    target = out_dir / validate_output_filename(f"{stem}.m4a")
+    validate_output_target(out_dir, target)
+    if target.exists():
+        # 不许覆盖用户已有的同名文件：换一个带 taskId 的名字。
+        target = out_dir / validate_output_filename(f"{stem}.{task.id[:8]}.m4a")
+        validate_output_target(out_dir, target)
+    target_existed = target.exists()
+    if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
+        logger.info("audio_extract_skipped_cancelled task_id=%s", task.id)
+        return None
+    _transition(task, TaskStatus.MERGING)
+    task.progress = Progress(
+        phase="merging",
+        bytesDownloaded=task.progress.bytesDownloaded if task.progress else 0,
+        bytesTotal=task.progress.bytesTotal if task.progress else 0,
+        speedBps=0,
+        etaSeconds=0,
+        percent=100.0,
+    )
+    try:
+        extracted = merger_service.extract_audio(source, target, should_abort=should_abort)
+    except merger_service.MergeCancelled:
+        logger.info("audio_extract_aborted task_id=%s", task.id)
+        if not target_existed:
+            target.unlink(missing_ok=True)
+        return None
+    except merger_service.MergeError as exc:
+        logger.warning("audio_extract_failed task_id=%s reason=%s", task.id, exc)
+        if not target_existed:
+            target.unlink(missing_ok=True)
+        _fail_task(task, ErrorCode.TRANSCODE_FAILED, {"reason": "audio_extract_failed"})
+        return None
+    if record.cancel_requested.is_set() or task.status is TaskStatus.CANCELLED:
+        logger.info("audio_extract_cancelled task_id=%s", task.id)
+        _record_cancelled_output(task, extracted)
+        return None
+    return extracted
 
 
 def _download_real(record: TaskRecord) -> None:
@@ -511,20 +626,36 @@ def _download_real(record: TaskRecord) -> None:
                 output_name=output_name,
             )
         elif record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
-            # 单文件直链走 download_direct；HLS/DASH 交给 yt-dlp
-            path = downloader_service.download_direct(
-                record.sniff.mediaUrl,
-                task.outputDir,
-                task_id=task.id,
-                cookie_policy=task.cookiePolicy.value,
-                should_abort=should_abort,
-                on_progress=on_progress,
-                output_name=output_name,
-                # 直链终点没有后缀时按嗅探到的介质类型兜底；音频源绝不落成 .mp4。
-                default_suffix=(
-                    ".m4a" if record.sniff.type is MediaStreamType.AUDIO else ".mp4"
-                ),
-            )
+            if formats_service.is_audio_only(task.formatSelector):
+                # 纯音频必须消费选择器：直链没有独立音轨可挑，只能下载后剥轨。
+                path = _audio_only_direct_stage(
+                    record,
+                    output_name=output_name,
+                    format_expression=format_expression,
+                    should_abort=should_abort,
+                    on_progress=on_progress,
+                )
+                if path is None:
+                    return
+            else:
+                # 单文件直链只有一条流，画质选择器在此没有可选空间；留一行可 grep 的
+                # 审计，而不是像 M24 之前那样把 format_expression 悄悄丢掉。
+                logger.info(
+                    "direct_single_stream task_id=%s selector=%s", task.id, format_expression
+                )
+                path = downloader_service.download_direct(
+                    record.sniff.mediaUrl,
+                    task.outputDir,
+                    task_id=task.id,
+                    cookie_policy=task.cookiePolicy.value,
+                    should_abort=should_abort,
+                    on_progress=on_progress,
+                    output_name=output_name,
+                    # 直链终点没有后缀时按嗅探到的介质类型兜底；音频源绝不落成 .mp4。
+                    default_suffix=(
+                        ".m4a" if record.sniff.type is MediaStreamType.AUDIO else ".mp4"
+                    ),
+                )
         else:
             path = downloader_service.download_media(
                 record.sniff.mediaUrl,
@@ -1049,6 +1180,9 @@ app = FastAPI(title="Traceless Glimpse Engine", version=ENGINE_VERSION)
 async def _startup() -> None:
     install_console_logging()
     install_log_redaction()
+    # Taskkill / 断电不会执行 finally：上次进程留在 %TEMP% 的 Cookie 明文副本，
+    # 必须在引擎起来之前扫干净（封板审计里最高的一条隐私风险）。
+    sweep_stale_cookie_files()
     _restore_state()
     await WORKER.start()
     if ENGINE_MODE == "real":

@@ -10,6 +10,8 @@ from models import (
     CookiePolicy,
     ErrorCode,
     FormatSelector,
+    PostAction,
+    PostActionType,
     SelectionStrategy,
     Task,
     TaskMode,
@@ -29,6 +31,8 @@ COLUMNS = [
     "updatedAt",
     "error",
     "output_path",
+    "naming_template",
+    "post_actions",
 ]
 
 
@@ -62,12 +66,12 @@ def test_migration_sets_user_version_and_schema(tmp_path):
     with sqlite3.connect(db_path) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)")]
-    assert version == 2
+    assert version == 3
     assert columns == COLUMNS
     assert "progress" not in columns
 
 
-def test_v1_database_migrates_to_v2_with_null_output_path(tmp_path):
+def test_v1_database_migrates_to_v3_with_null_output_path(tmp_path):
     db_path = tmp_path / "tasks.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -95,12 +99,70 @@ def test_v1_database_migrates_to_v2_with_null_output_path(tmp_path):
 
     store = persistence.TaskStore(db_path)
     try:
-        assert store.version == 2
+        assert store.version == 3
         (loaded,) = store.load()
         assert loaded.id == "legacy"
         assert loaded.outputPath is None
+        assert loaded.namingTemplate is None
+        assert loaded.postActions == []
     finally:
         store.close()
+
+
+def test_v2_database_migrates_to_v3_with_null_m24_fields(tmp_path):
+    db_path = tmp_path / "tasks.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE tasks ("
+            "id TEXT PRIMARY KEY, status TEXT NOT NULL, sourceUrl TEXT NOT NULL, "
+            "mode TEXT NOT NULL, cookiePolicy TEXT NOT NULL, outputDir TEXT NOT NULL, "
+            "format_selector TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, "
+            "error TEXT, output_path TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy-v2", "done", "https://example.com/watch?v=2", "download", "lazy",
+                "/home/user/Videos/BGV", None, "2026-11-01T00:00:00Z",
+                "2026-11-01T00:00:00Z", None, "/home/user/Videos/BGV/old.mp4",
+            ),
+        )
+        conn.execute("PRAGMA user_version=2")
+
+    store = persistence.TaskStore(db_path)
+    try:
+        assert store.version == 3
+        (loaded,) = store.load()
+        assert loaded.outputPath == "/home/user/Videos/BGV/old.mp4"
+        assert loaded.namingTemplate is None
+        assert loaded.postActions == []
+    finally:
+        store.close()
+
+
+def test_m24_name_and_post_actions_survive_restart(tmp_path):
+    """引擎重启不能把用户填的产物主名与后处理勾选弄丢（封板 P1）。"""
+    db_path = tmp_path / "tasks.db"
+    first = persistence.TaskStore(db_path)
+    try:
+        first.upsert(
+            _task(
+                id="m24",
+                status=TaskStatus.QUEUED,
+                namingTemplate="我的播客",
+                postActions=[PostAction(type=PostActionType.MERGE)],
+            )
+        )
+    finally:
+        first.close()
+
+    second = persistence.TaskStore(db_path)
+    try:
+        (loaded,) = second.recover_restart()
+        assert loaded.namingTemplate == "我的播客"
+        assert [action.type for action in loaded.postActions] == [PostActionType.MERGE]
+    finally:
+        second.close()
 
 
 def test_output_path_roundtrip(tmp_path):

@@ -936,6 +936,36 @@ class HomeViewModelBehaviorTest {
         assertEquals(1_024L, active.bytesTotal)
     }
 
+    /** 入队被重复拦截：必须报红，绝不能显示「已加入下载队列」。 */
+    @Test
+    fun duplicateEnqueueShowsRedErrorInsteadOfQueuedHint() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
+        val vm = fakes.connectedViewModel()
+        val link = sniffResult()
+
+        fakes.reachLocalSniffSuccess(vm, link)
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
+        )
+        vm.startDownload()
+        fakes.provider.downloadBackend.emitStart(DownloadEvent.Started(task(TaskStatus.DOWNLOADING)))
+        assertEquals(HomeViewModel.QUEUED_HINT, vm.state.value.queuedHint)
+        assertNull(vm.state.value.downloadError)
+
+        // 同一直链再开一条 → 命中防踩踏拦截
+        fakes.reachLocalSniffSuccess(vm, link)
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),
+        )
+        vm.startDownload()
+        advanceUntilIdle()
+
+        assertEquals(HomeViewModel.DOWNLOAD_DUPLICATE_ERROR, vm.state.value.downloadError)
+        assertNull("被拦时绝不能报已加入队列", vm.state.value.queuedHint)
+    }
+
     @Test
     fun finishedRowClearsHomeBanner() = runTest(dispatcher) {
         val fakes = Fakes(this)

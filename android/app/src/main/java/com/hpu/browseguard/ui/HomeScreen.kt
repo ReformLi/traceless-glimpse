@@ -123,6 +123,7 @@ fun HomeRoute(
                     onRefresh = viewModel::refreshConnection,
                     onSelectMode = viewModel::selectMode,
                     onDismissSniffNotice = viewModel::dismissSniffNotice,
+                    onDismissDownloadError = viewModel::dismissDownloadError,
                     onEditSourceUrl = viewModel::editSourceUrl,
                     onOpenBrowser = { viewModel.openBrowser(showPage = true) },
                     onSniff = viewModel::sniff,
@@ -146,6 +147,7 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onSelectMode: (RunMode) -> Unit,
     onDismissSniffNotice: () -> Unit,
+    onDismissDownloadError: () -> Unit,
     onEditSourceUrl: (String) -> Unit,
     onOpenBrowser: () -> Unit,
     onSniff: () -> Unit,
@@ -192,6 +194,11 @@ fun HomeScreen(
             state.sniffNotice?.let { notice ->
                 Spacer(Modifier.height(16.dp))
                 NoticeBanner(notice, onDismissSniffNotice)
+            }
+
+            state.downloadError?.let { error ->
+                Spacer(Modifier.height(16.dp))
+                NoticeBanner(error, onDismissDownloadError, isError = true)
             }
 
             Spacer(Modifier.height(20.dp))
@@ -1125,12 +1132,22 @@ private fun ActiveDownloadBanner(
 
 /** 降级/失败提示：必须看得见，也要能关掉，不能变成永久占位。 */
 @Composable
-private fun NoticeBanner(text: String, onDismiss: () -> Unit) {
+private fun NoticeBanner(text: String, onDismiss: () -> Unit, isError: Boolean = false) {
+    val container = if (isError) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.tertiaryContainer
+    }
+    val content = if (isError) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onTertiaryContainer
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+            containerColor = container,
+            contentColor = content,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
@@ -1300,6 +1317,7 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
             onRefresh = {},
             onSelectMode = {},
             onDismissSniffNotice = {},
+            onDismissDownloadError = {},
             onEditSourceUrl = {},
             onOpenBrowser = {},
             onSniff = {},

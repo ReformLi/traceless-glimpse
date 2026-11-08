@@ -21,7 +21,6 @@ TracelessGlimpse/
 ├── scripts/             # 🛠️ 自动化脚本 (Schema对账、冒烟测试等)
 ├── release-artifacts/   # 📦 发版归档 (R8 mapping 文件等)
 ├── gradle/              # 🐘 Gradle 版本与依赖统一管理
-├── quarantine/          # 🚧 隔离区 (历史遗留代码或待重构废弃代码)
 └── build/               # 🗑️ 编译产物 (自动生成，已在 .gitignore 忽略)
 ```
 
@@ -97,7 +96,6 @@ TracelessGlimpse/
 
 ### ⚠️ 5. 特殊目录说明
 
-* **`quarantine/`** — 隔离区。存放暂未通过审计的代码或待重构的废弃逻辑。
 * **`build/`** — 编译产物。Gradle 和 Python 的编译缓存及打包生成的临时文件，**切勿提交至 Git**。
 
 ***

@@ -6,7 +6,7 @@
 | 版本   | 0.2（M5：`Task.outputPath`）              |
 | 适用范围 | 本地引擎 ↔ Android 客户端 ↔ CLI ↔ MCP Server |
 | 传输   | HTTP/1.1 + JSON（UTF-8）                |
-| 默认监听 | `127.0.0.1:8730`                      |
+| 默认监听 | 目标态 `127.0.0.1:8730`；**本期实际** `0.0.0.0:8730`（桌面默认，无入站鉴权） |
 | 协议头  | 响应携带 `X-Protocol-Version: 0.2`        |
 | 版本策略 | 路径带 `/v1`；不兼容变更升 `/v2`                |
 
@@ -49,13 +49,22 @@
 
 ### 2.3 鉴权
 
-- 本地回环（`127.0.0.1` / `::1`）：默认免令牌。
-- 非回环监听：必须 TLS + `Authorization: Bearer <token>`；未配置 TLS 时引擎拒绝启动对外监听。
-- 鉴权失败：`401` + `AUTH_REQUIRED`。
+> **本期未实现（封板裁决 M15.3：不补 Token）**：v0.2 引擎**没有任何入站鉴权**，
+> 桌面端默认监听 `0.0.0.0:8730`，可信局域网内任意设备可免令牌调用全部端点。
+> 下面的 TLS / `Authorization: Bearer <token>` / `AUTH_REQUIRED` 都是**目标态描述，不是当前能力**。
+> 本期只允许在可信的家庭局域网使用，切勿暴露公网；信任边界见根 `README.md`。
+
+- **目标态**：本地回环（`127.0.0.1` / `::1`）默认免令牌。
+- **目标态**：非回环监听必须 TLS + `Authorization: Bearer <token>`；未配置 TLS 时引擎拒绝启动对外监听。
+  **本期未实现**：实际是明文 HTTP、无令牌、不校验 `Authorization` 头。
+- **目标态**：鉴权失败返回 `401` + `AUTH_REQUIRED`；本期不会产生该响应（错误码表保留占位）。
 
 ### 2.4 幂等
 
-- `POST /v1/tasks` 支持可选 `Idempotency-Key` 头；相同 key 在 24h 内返回同一任务。
+> **本期未实现**：`POST /v1/tasks` 的 `Idempotency-Key` 头与 24h 去重表均未落地，
+> 网络重试会产生新的 `taskId`。下面第一行是目标态；第二行已由 `last_selector_key` 实现。
+
+- **目标态（本期未实现）**：`POST /v1/tasks` 支持可选 `Idempotency-Key` 头；相同 key 在 24h 内返回同一任务。
 - `POST /v1/tasks/{id}/download` 对同一 `formatId` 重复调用幂等；不同 `formatId` 返回 `409 TASK_STATE_CONFLICT`。
 
 ### 2.5 分页
@@ -297,7 +306,7 @@
 | `OUTPUT_DIR_REJECTED`     | security | 否         | 输出目录不在允许范围内       | `/`、`$HOME`、当前目录、`PATH` 内目录     |
 | `COOKIE_READ_DENIED`      | security | 否         | 凭据读取被拒绝           | 用户拒绝或策略禁止                       |
 | `EXTENSION_NOT_ALLOWED`   | security | 否         | 文件类型不在白名单         | 扩展名校验失败                         |
-| `AUTH_REQUIRED`           | security | 否         | 需要有效的访问令牌         | 非回环监听未带 Bearer                  |
+| `AUTH_REQUIRED`           | security | 否         | 需要有效的访问令牌（**本期未实现，保留占位**） | 目标态：非回环监听未带 Bearer                  |
 | `UNSUPPORTED_SITE`        | content  | 否         | 暂不支持该站点           | 无可用解析器                          |
 | `DRM_PROTECTED`           | content  | 否         | 该内容受 DRM 保护，不支持下载 | 检测到 Widevine/FairPlay/PlayReady |
 | `NO_MEDIA_FOUND`          | content  | 是         | 未发现可下载的媒体流        | 嗅探为空；可能需滚动/等待                   |
@@ -539,10 +548,12 @@ curl -s -X POST http://127.0.0.1:8730/v1/tasks \
 - [ ] `Task` 请求体中不存在 `cookieFile` / `browser` 字段；传入未知字段 → `400` 或忽略并记录警告（二选一，需固定）。
 - [ ] `formatSelector` 传原始 `-f` 字符串 → `400 INVALID_FORMAT_SELECTOR`。
 - [ ] `headersHint` 与 `error.detail` 中检索不到 Cookie 值、token。
-- [ ] 同一 `Idempotency-Key` 重复创建返回同一 `taskId`。
+- [ ] ~~同一 `Idempotency-Key` 重复创建返回同一 `taskId`。~~ **本期未实现**，封板验收跳过本项（见 §2.4）。
 - [ ] 终态任务再次 `POST /download` → `409 TASK_STATE_CONFLICT`。
 - [ ] CLI 退出码与 `category` 映射正确。
-- [ ] `done` 任务的 `outputPath` 指向真实产物；stub / 失败 / 取消任务为 `null`。
+- [ ] `done` 任务的 `outputPath` 指向真实产物；stub / 失败 / **未产出文件的**取消任务为 `null`。
+      合并或抽轨完成后才取消、产物已落盘的，封板修复后 `outputPath` 指向该产物（必须留在台账里，
+      否则成为查不到也删不掉的死文件）。
 - [ ] MCP 五个工具（含 `cancel`）入参 schema 与 HTTP 一致。
 
 ---

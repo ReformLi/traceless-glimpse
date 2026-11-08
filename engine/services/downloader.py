@@ -728,6 +728,38 @@ def download_media(
 # 分离轨中间文件的命名标签：合并完成后由 :func:`drop_track_files` 回收。
 TRACK_TAG_VIDEO = "bgv-video"
 TRACK_TAG_AUDIO = "bgv-audio"
+# 直链纯音频：先落整条直链（含画面），ffmpeg 剥轨成功后必须连 .part 一起回收。
+AUDIO_SOURCE_TAG = "bgv-audio-source"
+
+
+def audio_source_filename(task_id: str) -> str:
+    """带 taskId 的中间文件名：唯一、可识别、绝不与用户已有产物撞名。"""
+    return validate_output_filename(f"bgv-{task_id}.{AUDIO_SOURCE_TAG}.mp4")
+
+
+def drop_audio_source_leftovers(
+    out_dir: Path, task_id: str, source: Path | None = None
+) -> None:
+    """回收直链纯音频那一份完整 MP4 及其 ``.part``（成功/失败/取消都要调）。
+
+    只认 ``bgv-<taskId>.bgv-audio-source*`` 这一族名字：输出目录里属于
+    别的任务或用户自己的文件一律不碰。按 glob 扫而不是只记返回路径，
+    是因为 Content-Type 可能把中间文件后缀从 .mp4 校正成 .m4a。
+    """
+    marker = f"bgv-{task_id}.{AUDIO_SOURCE_TAG}"
+    candidates = set(out_dir.glob(f"{marker}*"))
+    if source is not None:
+        candidates.add(source)
+        candidates.add(source.with_suffix(source.suffix + ".part"))
+    for path in candidates:
+        try:
+            if path.is_file():
+                path.unlink()
+                logger.info("audio_source_dropped name=%s", path.name)
+        except OSError as exc:
+            logger.warning(
+                "audio_source_cleanup_failed name=%s type=%s", path.name, type(exc).__name__
+            )
 
 
 def download_tracks(

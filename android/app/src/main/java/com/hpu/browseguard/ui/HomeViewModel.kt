@@ -197,6 +197,8 @@ data class HomeUiState(
     val consentWait: ConsentWait? = null,
     /** 交给下载队列后的一次性轻提示；界面读完就该由 [HOME_HINT_CONSUMED] 那次更新清掉。 */
     val queuedHint: String? = null,
+    /** 入队被拒这类必须让用户立刻看见的错误：红色横幅，不能用轻提示混过去。 */
+    val downloadError: String? = null,
     /**
      * 手机侧唯一允许的写盘根（应用专属外部存储的 Download 目录）。
      *
@@ -434,6 +436,11 @@ class HomeViewModel(
     /** Snackbar 读过一次就该消失，别让下一次回到主页再播一遍。 */
     fun consumeQueuedHint() {
         _state.update { it.copy(queuedHint = null) }
+    }
+
+    /** 红色错误横幅由用户手动收起；下一次成功入队也会自动清掉。 */
+    fun dismissDownloadError() {
+        _state.update { it.copy(downloadError = null) }
     }
 
     fun refreshConnection() {
@@ -1210,7 +1217,10 @@ class HomeViewModel(
         val accepted = downloads.enqueue(
             QueuedTask(
                 recordId = recordId,
-                sourceUrl = snapshot.sourceUrl.trim(),
+                dedupeKey = when (request) {
+                    is StartRequest.ViaLocal -> request.link.mediaUrl
+                    is StartRequest.ViaEngine -> request.taskId
+                },
                 executor = snapshot.downloadExecutor,
                 request = request,
                 // 纯音频没有选画质：摘要直接写「纯音频」，formatId 用哨兵值，
@@ -1245,7 +1255,9 @@ class HomeViewModel(
                 sniff = SniffPhase.Idle,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
-                queuedHint = QUEUED_HINT,
+                // 被重复拦截时那条任务根本没启动，绝不能显示「已加入下载队列」。
+                queuedHint = if (accepted) QUEUED_HINT else null,
+                downloadError = if (accepted) null else DOWNLOAD_DUPLICATE_ERROR,
                 // 隐藏深嗅已经把直链交出去：WebView 立刻回收，下载由队列那条流自己跑。
                 browserSessionActive = if (it.isWebViewVisible) it.browserSessionActive else false,
                 browserPageVisible = it.browserPageVisible && it.isWebViewVisible,
@@ -1279,6 +1291,9 @@ class HomeViewModel(
 
         /** 交给下载队列那一下的轻提示文案；测试与界面都认这一句。 */
         const val QUEUED_HINT = "已加入下载队列，请在下载管理查看"
+
+        /** 重复拦截的红色提示：入队没成功，不能报「已加入队列」。 */
+        const val DOWNLOAD_DUPLICATE_ERROR = "任务已在队列中"
 
         /** 心跳周期（毫秒）：引擎模式专属的存活检测节拍。 */
         const val HEARTBEAT_INTERVAL_MS = 5_000L

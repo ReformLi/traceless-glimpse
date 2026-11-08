@@ -750,10 +750,10 @@ class DownloadConsole:
         self._finished = True
         # 失败必须落到任务行上：触发下载就 409/422、轮询中途断线这些路径不会带
         # 进度帧，行会永远停在「排队中/下载中」（封板审计·阶段粘滞）。
-        for row in reversed(self.task_rows):
+        # 所有 BUSY 行都要收口：只改最后一个会让旧行永远粘在「下载中/排队中」。
+        for row in self.task_rows:
             if row.phase in self.BUSY_PHASES:
                 row.update(phase="failed")
-                break
         text = translate_error(code, message)
         suffix = f"（{code}）" if code else ""
         self._show_message(f"✖ {text}{suffix}", RED)
