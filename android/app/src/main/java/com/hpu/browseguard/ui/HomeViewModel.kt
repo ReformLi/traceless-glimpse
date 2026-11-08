@@ -28,8 +28,11 @@ import com.hpu.browseguard.data.cookie.cookieHostOf
 import com.hpu.browseguard.data.download.ConsentWait
 import com.hpu.browseguard.data.download.DownloadCoordinator
 import com.hpu.browseguard.data.download.QueuedTask
+import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.HistoryRepository
+import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.history.formatSummary
+import com.hpu.browseguard.data.history.sourceHost
 import com.hpu.browseguard.data.keepalive.KeepAliveStarter
 import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.shared.model.CookiePolicy
@@ -117,6 +120,21 @@ sealed interface DownloadPhase {
     data class Failed(val message: String, val code: String?, val retryable: Boolean) : DownloadPhase
 }
 
+/**
+ * 主页顶部那条「下载中」提示的数据。
+ *
+ * 进度直接来自历史表（协调器每秒写一次），所以它和下载管理页永远是同一份数字；
+ * [onEngine] 只用来把「电脑在下载」和「手机在下载」分开说——两条腿的等待感受完全不同。
+ */
+data class ActiveDownloadInfo(
+    val recordId: String,
+    val title: String,
+    val downloadedBytes: Long,
+    val bytesTotal: Long,
+    val speedBps: Long,
+    val onEngine: Boolean,
+)
+
 data class HomeUiState(
     val engineUrl: String = "",
     val engineUrlDraft: String = "",
@@ -173,6 +191,11 @@ data class HomeUiState(
      * `null` 表示外部存储不可用——本地模式会据此直接拒绝，不会改用别的目录。
      */
     val localSandboxRoot: String? = null,
+    /**
+     * 正在下载的那一行：任务入队后主页只留这一条提示，进度与下载管理页同源。
+     * 没有进行中的任务时为 null——历史页的旧记录不会跑到这里来。
+     */
+    val activeDownload: ActiveDownloadInfo? = null,
 ) {
     /** 引擎侧输出目录：只给 `mode=download` 的引擎任务用，本地直链不得拿它当写盘路径。 */
     val outputDir: String?
@@ -334,12 +357,41 @@ class HomeViewModel(
         viewModelScope.launch {
             downloads.consentWaits.collect { waits -> applyConsentWaits(waits.firstOrNull()) }
         }
+        // 主页的「下载中」条：直接读历史表，与下载管理页共用同一份进度。
+        viewModelScope.launch {
+            history.records.collect { rows -> applyActiveDownload(rows) }
+        }
     }
 
     private fun applyConsentWaits(wait: ConsentWait?) {
         _state.update {
             if (it.consentWait == wait) it else it.copy(consentWait = wait)
         }
+    }
+
+    /**
+     * 历史表 → 主页那条「下载中」提示。
+     *
+     * 只认 [RecordStatus.DOWNLOADING]：嗅探中与等画质都不算下载，混进来会让首页
+     * 在用户只是点了一下「嗅探」时就显示一条进度条。
+     * 值相同就不写状态，免得每秒一次的心跳把整页重组一遍。
+     */
+    private fun applyActiveDownload(rows: List<DownloadRecord>) {
+        val row = rows
+            .filter { it.status == RecordStatus.DOWNLOADING }
+            .maxByOrNull { it.updatedAt }
+        val info = row?.let {
+            ActiveDownloadInfo(
+                recordId = it.id,
+                title = it.title ?: sourceHost(it.url).ifBlank { it.url },
+                downloadedBytes = it.downloadedBytes,
+                bytesTotal = it.bytesTotal,
+                speedBps = it.speedBps,
+                // 引擎产物的落盘路径只有 done 才有；下载中还是 null，说明文件不在手机上。
+                onEngine = it.outputPath == null,
+            )
+        }
+        _state.update { if (it.activeDownload == info) it else it.copy(activeDownload = info) }
     }
 
     /** Snackbar 读过一次就该消失，别让下一次回到主页再播一遍。 */

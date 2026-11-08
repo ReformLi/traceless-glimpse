@@ -846,6 +846,36 @@ class HomeViewModelBehaviorTest {
         assertEquals(DeepSniffPhase.Running, vm.state.value.deepSniff)
     }
 
+    @Test
+    fun downloadingRowShowsAsHomeBanner() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+        fakes.history.beginSniff("r1", "https://example.com/watch")
+        fakes.history.markDownloading("r1", "t1", "1080p", outputPath = null)
+        fakes.history.markProgress("r1", downloadedBytes = 512, bytesTotal = 1_024, speedBps = 64)
+        advanceUntilIdle()
+
+        val active = vm.state.value.activeDownload
+        assertNotNull("下载中的行应该出现在主页提示里", active)
+        assertEquals("r1", active!!.recordId)
+        assertTrue("引擎任务下载中还没有本地产物路径", active.onEngine)
+        assertEquals(1_024L, active.bytesTotal)
+    }
+
+    @Test
+    fun finishedRowClearsHomeBanner() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+        fakes.history.beginSniff("r1", "https://example.com/watch")
+        fakes.history.markDownloading("r1", "t1", null, outputPath = null)
+        advanceUntilIdle()
+        assertNotNull(vm.state.value.activeDownload)
+
+        fakes.history.markDone("r1", outputPath = "/sdcard/Movies/x.mp4", format = "1080p")
+        advanceUntilIdle()
+        assertNull("完成后主页不该再挂一条「正在下载」", vm.state.value.activeDownload)
+    }
+
     private class Fakes(
         private val scope: TestScope,
         val settings: FakeEngineSettings = FakeEngineSettings(),

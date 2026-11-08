@@ -92,6 +92,7 @@ import com.hpu.browseguard.ui.components.StateViewKind
 import com.hpu.browseguard.ui.theme.BgvDimens
 import com.hpu.browseguard.ui.theme.BgvTheme
 import com.hpu.browseguard.ui.theme.bgvStatusColors
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
@@ -780,6 +781,14 @@ private fun HistoryCard(
                                 .weight(1f)
                                 .height(6.dp)
                                 .clip(RoundedCornerShape(3.dp)),
+                        )
+                    }
+                    // 百分比单独一格：HLS 的总量是估算值，用户真正在意的是「走到哪了」。
+                    fraction?.let { value ->
+                        Text(
+                            text = "${(value * 100).roundToInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     TextButton(onClick = onCancel) {

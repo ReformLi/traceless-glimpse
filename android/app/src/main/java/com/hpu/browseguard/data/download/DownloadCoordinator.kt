@@ -199,10 +199,17 @@ class DownloadCoordinator(
                         if (ts - lastProgressWrite < progressIntervalMs) return@collect
                         lastProgressWrite = ts
                         val progress = event.task.progress
+                        val downloaded = progress?.bytesDownloaded ?: 0L
                         history.markProgress(
                             task.recordId,
-                            downloadedBytes = progress?.bytesDownloaded ?: 0L,
-                            bytesTotal = progress?.bytesTotal ?: 0L,
+                            downloadedBytes = downloaded,
+                            // HLS 分片流常常没有总字节：引擎只给得出百分比，这里用百分比反推总量，
+                            // 否则下载页整段停在「不确定」态，用户看到的就是 0% 直接跳到已完成。
+                            bytesTotal = progressTotalBytes(
+                                downloadedBytes = downloaded,
+                                declaredTotal = progress?.bytesTotal ?: 0L,
+                                enginePercent = progress?.percent ?: 0.0,
+                            ),
                             speedBps = progress?.speedBps ?: 0L,
                             // 分片下完之后转封装那段没有新事件，这一句是那一行唯一「还在干活」的证据。
                             note = if (progress?.phase == REMUX_PHASE) RecordNotes.REMUXING else null,

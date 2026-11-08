@@ -147,7 +147,10 @@
     <string name="home_subtitle_engine">电脑引擎</string>
     <string name="home_subtitle_sniff_local">本机浏览器</string>
     <string name="home_subtitle_download_local">本地直链</string>
-
+    <!-- 下载中那一条：说清楚是谁在下载，两条腿的等待感受完全不同。 -->
+    <string name="home_active_download_engine">电脑正在下载</string>
+    <string name="home_active_download_local">手机正在下载</string>
+    <string name="home_active_download_open">查看下载</string>
     <string name="status_pill_idle">未连接</string>
     <string name="status_pill_checking">连接中…</string>
     <string name="status_pill_connected">已连接电脑</string>
@@ -265,7 +268,8 @@
     <string name="browser_consent_waiting">等待 Cookie 授权</string>
     <string name="browser_not_downloadable">这条不能在本机下载</string>
 
-    <string name="format_action">选择画质并下载</string>
+    <!-- 这一步只是让引擎把画质表解析出来，还没有开始下载：文案不能承诺「并下载」。 -->
+    <string name="format_action">获取画质列表</string>
     <string name="format_preparing">引擎解析画质中：</string>
     <string name="format_title">选择画质</string>
     <string name="format_option_count">共 %1$d 项</string>

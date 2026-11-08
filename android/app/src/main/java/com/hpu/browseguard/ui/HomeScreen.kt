@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -44,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,6 +90,7 @@ import com.hpu.browseguard.ui.theme.BgvTheme
 import com.hpu.browseguard.ui.theme.bgvStatusColors
 import java.net.URI
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun HomeRoute(
@@ -128,6 +131,7 @@ fun HomeRoute(
                     onToggleMerge = viewModel::toggleMerge,
                     onStartDownload = viewModel::startDownload,
                     onQueuedHintShown = viewModel::consumeQueuedHint,
+                    onOpenDownloads = { container.showDownloadsTab.value = true },
                 )
             }
         }
@@ -149,13 +153,28 @@ fun HomeScreen(
     onToggleMerge: (Boolean) -> Unit,
     onStartDownload: () -> Unit,
     onQueuedHintShown: () -> Unit,
+    /** 「查看下载」：底部切到下载管理页。 */
+    onOpenDownloads: () -> Unit = {},
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    val scrollState = rememberScrollState()
+
+    // 画质表与失败卡都追加在页面末尾。屏幕装不下时，用户看到的只有「按钮变灰了」，
+    // 会以为点了没反应——状态一进入这两段就把页面滚过去，让新内容自己走出来。
+    LaunchedEffect(state.download) {
+        val target = state.download
+        if (target is FormatPickable || target is DownloadPhase.Failed) {
+            // 等两帧：第一帧新卡片才参与布局，第二帧 scrollState.maxValue 才是滚动后的真值。
+            withFrameNanos { }
+            withFrameNanos { }
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(
                     horizontal = BgvDimens.screenPaddingHorizontal,
                     vertical = BgvDimens.screenPaddingVertical,
@@ -199,11 +218,23 @@ fun HomeScreen(
                 DownloadTriggerFailedCard(state, download, onPickFormats, onSniff)
             }
         }
+        // 下载中的常驻提示做成**悬浮叠层**，不进滚动布局：它在下载期间一直存在，
+        // 插进列表会让整页随着进度心跳每秒被顶一次。压住的那一小块内容由「查看下载」补上出口。
+        state.activeDownload?.let { active ->
+            ActiveDownloadBanner(
+                active = active,
+                onOpen = onOpenDownloads,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = BgvDimens.screenPaddingHorizontal, vertical = 12.dp),
+            )
+        }
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp),
+                // 横幅在位时把 Snackbar 顶上去，两者别叠在一起。
+                .padding(bottom = if (state.activeDownload != null) 148.dp else 12.dp),
         ) { data -> Snackbar(snackbarData = data) }
     }
 
@@ -963,6 +994,76 @@ private fun DownloadTriggerFailedCard(
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+/**
+ * 下载中的常驻提示：任务入队后主页就复位了，没有这一条，用户点完「开始下载」
+ * 只会看到输入框回来，判断不出任务到底跑没跑起来。
+ *
+ * 进度直接读历史表（协调器每秒写一次），所以它和下载管理页永远是同一份数字；
+ * 总量未知时退回不确定进度条，与下载页同一口径。
+ */
+@Composable
+private fun ActiveDownloadBanner(
+    active: ActiveDownloadInfo,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val fraction = if (active.bytesTotal > 0L) {
+        (active.downloadedBytes.toFloat() / active.bytesTotal.toFloat()).coerceIn(0f, 1f)
+    } else {
+        null
+    }
+    BgvCard(modifier = modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(
+                        if (active.onEngine) {
+                            R.string.home_active_download_engine
+                        } else {
+                            R.string.home_active_download_local
+                        },
+                    ),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = active.title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            TextButton(onClick = onOpen) {
+                Text(stringResource(R.string.home_active_download_open))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        if (fraction == null) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        } else {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(3.dp)),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = buildString {
+                fraction?.let { append("${(it * 100).roundToInt()}% · ") }
+                append(progressLabel(active.downloadedBytes, active.bytesTotal, active.speedBps))
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 /** 降级/失败提示：必须看得见，也要能关掉，不能变成永久占位。 */
