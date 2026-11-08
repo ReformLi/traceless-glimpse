@@ -490,6 +490,11 @@ def _download_real(record: TaskRecord) -> None:
     should_abort = record.cancel_requested.is_set
     on_progress = _make_progress_recorder(task)
     merge_plan = _merge_plan(record, format_expression)
+    # 产物主名（M24）：客户端填了就用它，留空沿用站点标题。后缀一律由下载器补——
+    # 客户端不许自己猜容器，否则「我的电影.mp4」会被拼成「我的电影.mp4.mp4」。
+    output_name = downloader_service.normalize_output_name(
+        task.namingTemplate, task_id=task.id
+    )
     tracks: tuple[Path, Path] | None = None
     try:
         if merge_plan is not None:
@@ -503,6 +508,7 @@ def _download_real(record: TaskRecord) -> None:
                 cookie_policy=task.cookiePolicy.value,
                 should_abort=should_abort,
                 on_progress=on_progress,
+                output_name=output_name,
             )
         elif record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
             # 单文件直链走 download_direct；HLS/DASH 交给 yt-dlp
@@ -513,6 +519,11 @@ def _download_real(record: TaskRecord) -> None:
                 cookie_policy=task.cookiePolicy.value,
                 should_abort=should_abort,
                 on_progress=on_progress,
+                output_name=output_name,
+                # 直链终点没有后缀时按嗅探到的介质类型兜底；音频源绝不落成 .mp4。
+                default_suffix=(
+                    ".m4a" if record.sniff.type is MediaStreamType.AUDIO else ".mp4"
+                ),
             )
         else:
             path = downloader_service.download_media(
@@ -523,6 +534,7 @@ def _download_real(record: TaskRecord) -> None:
                 cookie_policy=task.cookiePolicy.value,
                 should_abort=should_abort,
                 on_progress=on_progress,
+                output_name=output_name,
             )
     except downloader_service.DownloadCancelled as exc:
         # 断流不改状态：cancel 端点已置 cancelled，这里只留可 grep 的字节证据

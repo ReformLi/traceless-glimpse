@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -127,7 +128,8 @@ fun HomeRoute(
                     onSniff = viewModel::sniff,
                     onPickFormats = viewModel::pickFormats,
                     onSelectFormat = viewModel::selectFormat,
-                    onEditNamingTemplate = viewModel::editNamingTemplate,
+                    onEditOutputName = viewModel::editOutputName,
+                    onToggleAudioOnly = viewModel::toggleAudioOnly,
                     onToggleMerge = viewModel::toggleMerge,
                     onStartDownload = viewModel::startDownload,
                     onQueuedHintShown = viewModel::consumeQueuedHint,
@@ -149,7 +151,8 @@ fun HomeScreen(
     onSniff: () -> Unit,
     onPickFormats: () -> Unit,
     onSelectFormat: (String) -> Unit,
-    onEditNamingTemplate: (String) -> Unit,
+    onEditOutputName: (String) -> Unit,
+    onToggleAudioOnly: (Boolean) -> Unit,
     onToggleMerge: (Boolean) -> Unit,
     onStartDownload: () -> Unit,
     onQueuedHintShown: () -> Unit,
@@ -205,7 +208,14 @@ fun HomeScreen(
             val download = state.download
             if (download is FormatPickable) {
                 Spacer(Modifier.height(20.dp))
-                FormatCard(state, onSelectFormat, onEditNamingTemplate, onToggleMerge, onStartDownload)
+                FormatCard(
+                    state = state,
+                    onSelectFormat = onSelectFormat,
+                    onEditOutputName = onEditOutputName,
+                    onToggleAudioOnly = onToggleAudioOnly,
+                    onToggleMerge = onToggleMerge,
+                    onStartDownload = onStartDownload,
+                )
             }
             // 按下「开始下载」之后这里就空了：进度、成败、文件位置都搬到「下载」那一页去说。
             if (download is DownloadPhase.Failed) {
@@ -782,7 +792,8 @@ private fun SniffResultCard(result: SniffResult) {
 private fun FormatCard(
     state: HomeUiState,
     onSelectFormat: (String) -> Unit,
-    onEditNamingTemplate: (String) -> Unit,
+    onEditOutputName: (String) -> Unit,
+    onToggleAudioOnly: (Boolean) -> Unit,
     onToggleMerge: (Boolean) -> Unit,
     onStartDownload: () -> Unit,
 ) {
@@ -814,23 +825,66 @@ private fun FormatCard(
                     formats = selecting.formats,
                     selected = format.formatId == state.selectedFormatId,
                     recommended = format.formatId == recommendedId,
+                    // 勾了纯音频，画质行就不是这次任务的一部分了：置灰比「选了却不生效」诚实。
+                    enabled = !state.audioOnly,
                     onSelect = { onSelectFormat(format.formatId) },
                 )
             }
         }
 
         Spacer(Modifier.height(16.dp))
+        // 纯音频下载（M24）：位置固定在画质列表底部、「视频标题命名」上方。
+        val audioOnlyEnabled = state.audioOnlyAvailable
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = audioOnlyEnabled) { onToggleAudioOnly(!state.audioOnly) }
+                .padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = state.audioOnly,
+                onCheckedChange = onToggleAudioOnly,
+                enabled = audioOnlyEnabled,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.format_audio_only_label),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (audioOnlyEnabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                Text(
+                    text = stringResource(
+                        if (audioOnlyEnabled) {
+                            R.string.format_audio_only_hint
+                        } else {
+                            R.string.format_audio_only_local_hint
+                        },
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        // 视频标题命名（M24）：留空就用站点标题，后缀由系统补，所以这里只收「名字」。
         BgvInputField(
-            value = state.namingTemplate,
-            onValueChange = onEditNamingTemplate,
-            isError = state.namingTemplateError != null,
+            value = state.outputName,
+            onValueChange = onEditOutputName,
+            isError = state.outputNameError != null,
             label = stringResource(R.string.format_naming_field),
-            placeholder = "{title}-{height}p.{ext}",
-            supportingText = state.namingTemplateError ?: stringResource(R.string.format_naming_hint),
+            placeholder = stringResource(R.string.format_naming_placeholder),
+            supportingText = state.outputNameError ?: stringResource(R.string.format_naming_hint),
             modifier = Modifier.fillMaxWidth(),
         )
 
-        val mergeEnabled = state.mergeAvailable
+        // 纯音频已经把画面去掉了，没有视频轨可合：这一格跟着失效，勾着也不会发出去。
+        val mergeEnabled = state.mergeAvailable && !state.audioOnly
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -855,7 +909,13 @@ private fun FormatCard(
         }
         if (!mergeEnabled) {
             Text(
-                text = stringResource(R.string.format_merge_local_hint),
+                text = stringResource(
+                    if (state.mergeAvailable) {
+                        R.string.format_merge_audio_only_hint
+                    } else {
+                        R.string.format_merge_local_hint
+                    },
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -876,6 +936,7 @@ private fun FormatOptionCard(
     formats: List<FormatInfo>,
     selected: Boolean,
     recommended: Boolean,
+    enabled: Boolean = true,
     onSelect: () -> Unit,
 ) {
     val shape = MaterialTheme.shapes.extraSmall
@@ -892,8 +953,9 @@ private fun FormatOptionCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(if (enabled) 1f else DISABLED_ALPHA)
             .clip(shape)
-            .clickable(onClick = onSelect),
+            .clickable(enabled = enabled, onClick = onSelect),
         shape = shape,
         colors = CardDefaults.cardColors(containerColor = container),
         border = border,
@@ -923,7 +985,7 @@ private fun FormatOptionCard(
                 MetaChip(format.container)
             }
             Spacer(Modifier.width(8.dp))
-            RadioButton(selected = selected, onClick = onSelect)
+            RadioButton(selected = selected, onClick = onSelect, enabled = enabled)
         }
     }
 }
@@ -1144,6 +1206,9 @@ private val previewConnected = Connection.Connected(
     selfcheck = previewSelfcheck,
 )
 
+/** 勾了纯音频后画质行整体压暗的比例：置灰要看得出来，但仍能读清选的是哪一条。 */
+private const val DISABLED_ALPHA = 0.45f
+
 private const val PREVIEW_URL = "https://www.example.com/watch?v=abc"
 
 private val previewResults = listOf(
@@ -1240,7 +1305,8 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
             onSniff = {},
             onPickFormats = {},
             onSelectFormat = {},
-            onEditNamingTemplate = {},
+            onEditOutputName = {},
+            onToggleAudioOnly = {},
             onToggleMerge = {},
             onStartDownload = {},
             onQueuedHintShown = {},

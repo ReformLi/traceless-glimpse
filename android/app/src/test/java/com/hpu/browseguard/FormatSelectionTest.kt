@@ -153,42 +153,46 @@ class FormatSelectionTest {
     }
 
     @Test
-    fun blankNamingTemplateIsAcceptedAsUnset() {
-        assertNull(FormatSelection.namingTemplateError(""))
+    fun blankOutputNameIsAcceptedAsUnset() {
+        assertNull("留空 = 用视频原标题", FormatSelection.outputNameError(""))
     }
 
     @Test
-    fun whitelistedNamingTemplateIsAccepted() {
-        assertNull(
-            FormatSelection.namingTemplateError("{platform}-{date}-{title}-{height}p-{formatId}.{ext}"),
-        )
+    fun plainOutputNameIsAccepted() {
+        assertNull(FormatSelection.outputNameError("我的电影 第1集"))
+        // 「第 1.5 集」的点是名字的一部分，不是后缀
+        assertNull(FormatSelection.outputNameError("第 1.5 集"))
+        // 花括号是合法文件名字符：M24 起它不再是模板，不该被当成变量报错
+        assertNull(FormatSelection.outputNameError("{title}"))
     }
 
     @Test
-    fun unknownVariableIsRejected() {
-        val error = FormatSelection.namingTemplateError("{title}-{quality}")
-
-        assertNotNull(error)
-        assertTrue(error.orEmpty(), error!!.contains("quality"))
-    }
-
-    @Test
-    fun pathTraversalAndSeparatorsAreRejected() {
-        listOf("../{title}", "a/{title}", "C:\\Videos\\{title}").forEach { template ->
-            assertNotNull("应拒绝 $template", FormatSelection.namingTemplateError(template))
+    fun separatorsAndIllegalCharsAreRejected() {
+        listOf(
+            "../电影", "a/电影", "C:\\Videos\\电影",
+            "a:b", "a?b", "a*b", "a\"b", "a|b", "a<b", "a>b",
+        ).forEach { name ->
+            assertNotNull("应拒绝 $name", FormatSelection.outputNameError(name))
         }
     }
 
     @Test
-    fun unbalancedBraceIsRejected() {
-        assertNotNull(FormatSelection.namingTemplateError("{title-{height}p"))
+    fun controlCharsAreRejected() {
+        assertNotNull(FormatSelection.outputNameError("电影\n第1集"))
     }
 
     @Test
-    fun overlongTemplateIsRejected() {
-        val tooLong = "a".repeat(FormatSelection.NAMING_MAX_LENGTH + 1)
+    fun trailingDotOrSpaceIsRejected() {
+        // Windows 会静默丢掉尾点 / 尾空格，不拦就会出现「路径对不上文件」
+        assertNotNull(FormatSelection.outputNameError("电影."))
+        assertNotNull(FormatSelection.outputNameError("电影 "))
+    }
 
-        assertNotNull(FormatSelection.namingTemplateError(tooLong))
-        assertNull(FormatSelection.namingTemplateError("a".repeat(FormatSelection.NAMING_MAX_LENGTH)))
+    @Test
+    fun overlongOutputNameIsRejected() {
+        val tooLong = "a".repeat(FormatSelection.OUTPUT_NAME_MAX_LENGTH + 1)
+
+        assertNotNull(FormatSelection.outputNameError(tooLong))
+        assertNull(FormatSelection.outputNameError("a".repeat(FormatSelection.OUTPUT_NAME_MAX_LENGTH)))
     }
 }

@@ -84,7 +84,10 @@ def ytdlp_format_expression(selector: FormatSelector | None) -> str:
     if selector.strategy == SelectionStrategy.EXACT:
         raise FormatUnavailableError("exact_format_id_unsupported")
     if selector.strategy == SelectionStrategy.AUDIO_ONLY:
-        return "bestaudio"
+        # 只提取声音（M24 的「纯音频下载」）。优先 m4a：容器兼容性最好，
+        # 手机/车机/剪辑软件都直接认；源里没有 m4a 音轨时回落到质量最高的原始音轨
+        # （常见 webm/opus），后缀由 yt-dlp 按真实容器补，绝不转码。
+        return "bestaudio[ext=m4a]/bestaudio"
     if selector.strategy == SelectionStrategy.MAX_HEIGHT:
         height = selector.maxHeight or 0
         if height <= 0:

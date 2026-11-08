@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from security import (
+    ALLOWED_OUTPUT_EXTENSIONS,
     SecurityError,
     prepare_output_dir,
     validate_outbound_url,
@@ -308,6 +309,65 @@ def _stray_part_names(output_dir: Path, *, expected_part: str) -> list[str]:
     )
 
 
+# 产物主名的长度上限：客户端也拦 200（FormatSelection.OUTPUT_NAME_MAX_LENGTH），
+# 这里只做同口径兜底，防一条超长名字把 Windows 的整条路径顶爆。
+OUTPUT_NAME_MAX_LENGTH = 200
+
+# Windows 上不允许出现在文件名里的字符。正常路径上客户端已经拦下，这里换成
+# ``_`` 只是为了「一个冒号不该把整条任务打成 failed」——同时留审计行，不静默。
+_ILLEGAL_NAME_CHARS = frozenset('<>:"/\\|?*')
+
+
+def normalize_output_name(raw: str | None, *, task_id: str = "unknown") -> str | None:
+    """把客户端发来的「产物主名」规整成可直接当文件名用的字符串。
+
+    协议里的 ``namingTemplate`` 从 M24 起语义是**产物主名**，不是模板：
+
+    - 空 / 全空白 → ``None``（沿用站点标题，与协议里的 null 同义）；
+    - 尾点 / 尾空格剥掉（Windows 会静默丢弃，不剥会让 ``outputPath`` 与真实文件对不上）；
+    - 已知媒体后缀剥掉（``我的电影.mp4`` → ``我的电影``）——后缀由系统按实际容器补，
+      不剥会得到 ``我的电影.mp4.mp4``；只剥白名单里的后缀，``第 1.5 集`` 不能被腰斩；
+    - 其余非法字符替换成 ``_`` 并记审计行。
+
+    返回的主名不含后缀，调用方负责拼 ``%(ext)s`` 或推断出的容器后缀。
+    """
+    if raw is None:
+        return None
+    name = raw.strip().strip(" .")
+    if not name:
+        return None
+
+    suffix = Path(name).suffix.lower()
+    if suffix in ALLOWED_OUTPUT_EXTENSIONS:
+        name = name[: -len(suffix)].rstrip(" .")
+        logger.info("output_name_ext_stripped task_id=%s suffix=%s", task_id, suffix)
+        if not name:
+            return None
+
+    sanitized = "".join("_" if ch in _ILLEGAL_NAME_CHARS or ord(ch) < 0x20 else ch for ch in name)
+    if sanitized != name:
+        logger.info("output_name_sanitized task_id=%s", task_id)
+        name = sanitized.strip()
+        if not name:
+            return None
+
+    if len(name) > OUTPUT_NAME_MAX_LENGTH:
+        logger.info("output_name_truncated task_id=%s length=%d", task_id, len(name))
+        name = name[:OUTPUT_NAME_MAX_LENGTH].rstrip(" .")
+    return name or None
+
+
+def _outtmpl_stem(output_name: str | None) -> str:
+    """产物主名 → yt-dlp ``outtmpl`` 的标题段。
+
+    没给就回到 ``%(title)s``（与加这个参数之前完全一致）；给了就当**字面量**，
+    并把 ``%`` 转义成 ``%%``——否则 yt-dlp 会把 ``100%纯音乐`` 当模板变量展开。
+    """
+    if not output_name:
+        return "%(title)s"
+    return output_name.replace("%", "%%")
+
+
 def _mime_suffix(content_type: str | None) -> str | None:
     if not content_type:
         return None
@@ -349,6 +409,8 @@ def download_direct(
     output_dir: str | Path,
     *,
     filename: str | None = None,
+    output_name: str | None = None,
+    default_suffix: str = ".mp4",
     task_id: str = "unknown",
     cookie_policy: str = "none",
     validator: Callable[[str], str] = validate_outbound_url,
@@ -373,6 +435,10 @@ def download_direct(
       记 ``resume_unsupported task_id=... reason=no_range`` 审计行。
     - 产物扩展名按终点响应的 Content-Type 校正：纯音频不会落成 ``.mp4``。
 
+    ``output_name`` 是用户指定的产物主名（不含后缀）：给了就拿它当 stem，后缀取自
+    终点 URL，URL 没有媒体后缀时用 ``default_suffix``（纯音频调用方传 ``.m4a``），
+    最后仍由 ``_resolve_output_name`` 按 Content-Type 校正。
+
     ``should_abort`` 每写一块之前查一次（协作式断流）；命中即抛
     :class:`DownloadCancelled`，``.part`` 保留、不改名。
     ``on_progress(已写字节, 总字节或 None)`` 用于把真实进度透给任务对象。
@@ -384,9 +450,15 @@ def download_direct(
     final_url = probe.url
     validator(final_url)
     out_dir = prepare_output_dir(output_dir)
+    url_name = Path(urlsplit(final_url).path).name
+    if output_name:
+        suffix = Path(url_name).suffix.lower()
+        if suffix not in ALLOWED_OUTPUT_EXTENSIONS:
+            suffix = default_suffix
+        url_name = f"{output_name}{suffix}"
     name = validate_output_filename(
         _resolve_output_name(
-            filename or Path(urlsplit(final_url).path).name,
+            filename or url_name,
             probe.content_type,
             task_id=task_id,
         )
@@ -497,11 +569,16 @@ def download_media(
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[int, int | None], None] | None = None,
     filename_tag: str | None = None,
+    output_name: str | None = None,
 ) -> Path:
     """下载到 ``output_dir``，返回产物路径（已通过完整性校验）。
 
     ``format_expression`` 由结构化 formatSelector 映射而来（best /
     bestaudio / best[height<=N]），不接受调用方直接传 shell 字符串。
+
+    ``output_name`` 是用户指定的产物主名（不含后缀）：给了就把 ``outtmpl`` 的
+    ``%(title)s`` 换成它，扩展名仍由 yt-dlp 按真实容器补（``%(ext)s``）；
+    没给就沿用站点标题。合并场景由 ``filename_tag`` 再加轨标签区分两条轨。
 
     ``lazy`` 仅在下载被 401/403 拒绝时使用临时 Cookie 副本重试一次；
     原 Cookie 文件只读，yt-dlp 的写回只落在副本上。
@@ -559,8 +636,9 @@ def download_media(
             on_progress(downloaded, int(total) if total else None)
 
     def _options(cookiefile: Path | None) -> dict[str, Any]:
+        stem = _outtmpl_stem(output_name)
         template = (
-            f"%(title)s.{filename_tag}.%(ext)s" if filename_tag else "%(title)s.%(ext)s"
+            f"{stem}.{filename_tag}.%(ext)s" if filename_tag else f"{stem}.%(ext)s"
         )
         options: dict[str, Any] = {
             "quiet": True,
@@ -664,6 +742,7 @@ def download_tracks(
     ydl_factory: Callable[[dict[str, Any]], Any] | None = None,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[int, int | None], None] | None = None,
+    output_name: str | None = None,
 ) -> tuple[Path, Path]:
     """分两次下载「仅视频轨 + 仅音频轨」，返回 ``(video, audio)``，**不合并**。
 
@@ -674,7 +753,11 @@ def download_tracks(
     合并这一步才真的归 :mod:`services.merger` 执行。
 
     先下音频轨（通常小得多），视频轨失败时两条一起回收——中间轨名由音频轨唯一确定
-    （同一 ``%(title)s`` 换标签），所以删得准，不会碰别人的文件。
+    （同一主名换标签），所以删得准，不会碰别人的文件。
+
+    ``output_name``（用户指定的产物主名，不含后缀）会同时喂给两条轨：两条轨共用
+    同一个主名，靠 ``filename_tag`` 区分，合并后 :func:`merged_target_for` 摘掉标签
+    就得到 ``<主名>.<ext>``。
 
     ``on_progress`` 上报的是两轨**合计**字节：视频段在已落盘的音频字节上加偏移；
     视频段总字节探不到时报 ``None``（不拿音频那一段冒充全局进度）。
@@ -696,6 +779,7 @@ def download_tracks(
         should_abort=should_abort,
         on_progress=on_progress,
         filename_tag=TRACK_TAG_AUDIO,
+        output_name=output_name,
     )
     state["offset"] = audio.stat().st_size
     try:
@@ -710,6 +794,7 @@ def download_tracks(
             should_abort=should_abort,
             on_progress=_on_video_bytes if on_progress is not None else None,
             filename_tag=TRACK_TAG_VIDEO,
+            output_name=output_name,
         )
     except Exception:
         partial_video = audio.with_name(

@@ -25,6 +25,7 @@ import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSource
 import com.hpu.browseguard.shared.model.MediaStreamType
 import com.hpu.browseguard.shared.model.Resolution
+import com.hpu.browseguard.shared.model.SelectionStrategy
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.Task
 import com.hpu.browseguard.shared.model.TaskMode
@@ -168,6 +169,64 @@ class HomeViewModelBehaviorTest {
             DownloadPhase.Idle,
             vm.state.value.download,
         )
+    }
+
+    @Test
+    fun audioOnlySendsBestAudioCarriesTheTitleAndDropsMerge() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+        fakes.reachSniffSuccess(vm, listOf(sniffResult()))
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("01a1", listOf(formatInfo("137"))),
+        )
+
+        vm.editOutputName("我的电影")
+        vm.toggleAudioOnly(true)
+
+        assertTrue("纯音频与合并互斥：没有视频轨", !vm.state.value.mergeSelected)
+        assertTrue("勾了纯音频就不用选画质行", vm.state.value.canStartDownload)
+
+        vm.startDownload()
+
+        val started =
+            fakes.provider.downloadBackend.startRequests.single() as StartRequest.ViaEngine
+        assertEquals(
+            "纯音频必须走 audio_only，而不是用户点的那条画质",
+            SelectionStrategy.AUDIO_ONLY,
+            started.formatSelector.strategy,
+        )
+        assertNull("纯音频没有视频轨，不该把 merge 发出去", started.postActions)
+        assertEquals("视频标题命名要原样发给引擎（后缀由引擎补）", "我的电影", started.namingTemplate)
+    }
+
+    @Test
+    fun blankOutputNameSendsNoOverrideSoTheSiteTitleWins() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+        fakes.reachSniffSuccess(vm, listOf(sniffResult()))
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("01a1", listOf(formatInfo("137"))),
+        )
+
+        vm.startDownload()
+
+        val started =
+            fakes.provider.downloadBackend.startRequests.single() as StartRequest.ViaEngine
+        assertNull("留空 = 用视频原标题", started.namingTemplate)
+    }
+
+    @Test
+    fun audioOnlyIsLockedInLocalMode() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
+        val vm = fakes.connectedViewModel()
+
+        assertFalse("本机没有抽音轨执行者", vm.state.value.audioOnlyAvailable)
+
+        vm.toggleAudioOnly(true)
+
+        assertFalse("状态里不许出现勾着却不生效的纯音频", vm.state.value.audioOnly)
     }
 
     @Test
@@ -1010,7 +1069,7 @@ class HomeViewModelBehaviorTest {
             cookiePolicy = CookiePolicy.LAZY,
             outputDir = "E:\\Videos\\BGV",
             status = status,
-            namingTemplate = "{title}-{height}p",
+            namingTemplate = "我的电影",
             createdAt = "2026-11-02T10:00:00Z",
             updatedAt = "2026-11-02T10:00:01Z",
             outputPath = outputPath,

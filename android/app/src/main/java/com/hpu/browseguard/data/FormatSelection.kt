@@ -69,32 +69,28 @@ object FormatSelection {
     }
 
     /**
-     * 命名模板客户端预校验（PROTOCOL §3.6）。返回 `null` 表示合法。
+     * 「视频标题命名」客户端预校验。返回 `null` 表示合法。
      *
-     * 引擎侧也会校验并渲染，但模板最终成为文件名，路径分隔符与超长在提交前就能判定。
+     * M24 起这个字段不再是模板（没有 `{title}` 那套变量），而是**产物主名**：
+     * 留空就用站点标题，填了就用填的，后缀一律由系统按真实容器补。
+     * 所以只校验「能不能安全落成一个文件名」，不再校验花括号。
+     *
+     * 引擎侧也会 `normalize_output_name` 兜一遍（非法字符换 `_` 并记审计行）；
+     * 这里严格是为了**提交前**就让用户看见问题，而不是等下完一个名字被改过的文件。
      */
-    fun namingTemplateError(template: String): String? {
-        if (template.isEmpty()) return null
-        if (template.length > NAMING_MAX_LENGTH) return "命名模板不能超过 $NAMING_MAX_LENGTH 字符"
-        if (template.contains('/') || template.contains('\\') || template.contains("..")) {
-            return "命名模板不能包含路径分隔符"
+    fun outputNameError(name: String): String? {
+        if (name.isEmpty()) return null
+        if (name.length > OUTPUT_NAME_MAX_LENGTH) return "命名不能超过 $OUTPUT_NAME_MAX_LENGTH 字符"
+        if (name.any { it in ILLEGAL_NAME_CHARS }) {
+            return "命名不能包含这些字符：< > : \" / \\ | ? *"
         }
-        if (template.count { it == '{' } != template.count { it == '}' }) return "命名模板的花括号不配对"
-        val unknown = TEMPLATE_VARIABLES.findAll(template)
-            .map { it.groupValues[1] }
-            .filterNot { it in NAMING_VARIABLES }
-            .distinct()
-            .toList()
-        return if (unknown.isEmpty()) null else "未知变量：${unknown.joinToString("、")}"
+        if (name.any { it.code < 0x20 }) return "命名不能包含控制字符"
+        if (name != name.trimEnd(' ', '.')) return "命名不能以空格或点结尾"
+        return null
     }
 
-    const val NAMING_MAX_LENGTH = 200
+    const val OUTPUT_NAME_MAX_LENGTH = 200
 
-    private val NAMING_VARIABLES = setOf(
-        "platform", "date", "time", "title", "uploader",
-        "height", "width", "formatId", "taskId", "ext",
-    )
-
-    /** Android 用 ICU 正则，未转义的 `}` 会直接编译失败（JVM 单测的 java.util.regex 不会）。 */
-    private val TEMPLATE_VARIABLES = Regex("\\{([^{}]*)\\}")
+    /** Windows 文件名非法字符；后缀由系统补，所以这里也不许用户自己带路径分隔符。 */
+    private val ILLEGAL_NAME_CHARS = setOf('<', '>', ':', '"', '/', '\\', '|', '?', '*')
 }

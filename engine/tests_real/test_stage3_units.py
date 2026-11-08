@@ -177,7 +177,7 @@ def test_estimate_quality_falls_back_to_unknown():
     [
         (None, "best"),
         (FormatSelector(strategy=SelectionStrategy.BEST), "best"),
-        (FormatSelector(strategy=SelectionStrategy.AUDIO_ONLY), "bestaudio"),
+        (FormatSelector(strategy=SelectionStrategy.AUDIO_ONLY), "bestaudio[ext=m4a]/bestaudio"),
         (
             FormatSelector(strategy=SelectionStrategy.MAX_HEIGHT, maxHeight=720),
             "best[height<=720]",
@@ -268,7 +268,7 @@ def test_resolve_max_height_no_match_raises_requested_and_available():
     ("selector", "expected"),
     [
         (None, "best"),
-        (FormatSelector(strategy=SelectionStrategy.AUDIO_ONLY), "bestaudio"),
+        (FormatSelector(strategy=SelectionStrategy.AUDIO_ONLY), "bestaudio[ext=m4a]/bestaudio"),
     ],
 )
 def test_resolve_leaves_non_max_height_strategies_untouched(selector, expected):

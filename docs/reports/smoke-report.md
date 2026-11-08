@@ -4133,3 +4133,83 @@ gui-smoke 88/88 ×3 连跑确认（首次复跑曾 87/88 一次，日志被覆�
 - 升级后**默认是本机**：老用户要连电脑得在「嗅探和下载模式」里手动切一次（旧偏好按
   「嗅探方式」迁移，所以之前显式选过电脑的不会被改掉）；
 - 「手机能嗅探、电脑下不了页面」这类站点，现在只能整条在本机跑（见 50.3）。
+
+## 51. M24：产物主名接线与纯音频下载（2026-11-08）
+
+### 51.1 现象：两个控件都说不清自己是什么
+
+用户在画质卡上问了两个问题：「命名模板是什么？」「下载后合并音视频轨又是什么？」。
+查代码后，一个是真功能、一个是**死参数**：
+
+- **命名模板**：UI 有输入框、有变量白名单校验、协议 §3.6 写了 10 个变量，
+  客户端也确实把 `namingTemplate` 发给了引擎。但引擎侧 `download_media` 的 `outtmpl`
+  是硬编码的 `%(title)s.%(ext)s`，`download_direct` 用 URL 末段名，`models.py` 只做
+  「存下、持久化、回显」。**从 M1 到 M23 这个字段填了不生效**，唯一的实际效果是
+  填错时把「开始下载」按钮卡灰——标准的静默降级，且一行审计都没有。
+- **合并音视频轨**：真实生效（M4 修过 §19.3 的 P0），行为不用动；只有文案把内部术语
+  `(merge)` 暴露给了用户。
+
+### 51.2 裁决
+
+1. 字段语义从「模板」收紧成**「视频标题命名（可空）」**：留空用站点标题，填了就是产物主名，
+   **后缀一律由系统补**。协议**键名仍叫 `namingTemplate`**——客户端 `BgvJson` 严格解析，
+   响应里改名或增删一个键都会让整条任务解析失败、心跳变红（与 §50 同一条铁律）。
+2. 引擎真正消费它：yt-dlp 路径把 `outtmpl` 的标题段换成主名字面量（`%` 转义成 `%%`），
+   扩展名仍走 `%(ext)s`；直链路径取终点 URL 后缀，取不到按介质类型兜底（音频 `.m4a`），
+   再按 `Content-Type` 校正；合并场景两条轨共用主名、靠 `.bgv-video` / `.bgv-audio` 标签区分，
+   合并后摘标签。
+3. 新增「纯音频下载」：位置固定在**画质列表底部、「视频标题命名」上方**；勾上后发
+   `FormatSelector(strategy=audio_only)`，引擎解析成 `bestaudio[ext=m4a]/bestaudio`
+   （优先 m4a，源里没有就回落质量最高的原始音轨，不转码）。
+
+### 51.3 三者的互斥关系（状态层锁死，不靠界面灰一下）
+
+| 场景 | 画质行 | 纯音频 | 合并 |
+|---|---|---|---|
+| 默认 | 可选 | 可勾 | 可勾 |
+| 勾了纯音频 | 置灰（不参与本次任务） | — | 置灰 + 「没有视频轨可合并」 |
+| 本机模式 | 可选 | 置灰 + 写明没有执行者 | 置灰 |
+
+- `toggleAudioOnly(true)` 在状态层把 `mergeSelected` 一起清掉；`startDownload` 在
+  `audioOnly` 时**不发** `postActions`——即使有人绕过界面调 `toggleMerge` 也合不出去；
+- 本机模式挡两次：`audioOnlyAvailable == false` 时 `toggleAudioOnly` 直接 return 并记
+  `audio_only_ignored` 审计行；切模式 / 降级 / 回落都会把 `audioOnly` 复位并留痕。
+
+### 51.4 已知边界（不掩饰）
+
+1. **纯音频只有电脑引擎能做**。手机端没有 FFmpeg，「从任意源剥音轨」没有执行者，
+   本机模式下这一行置灰（与合并同一口径）。手机本机的实现路径是 `MediaExtractor`
+   选音轨 + `MediaMuxer` 重封装，可复用 `TsRemuxer` 的纯拷贝能力，属于下一轮。
+2. **源里只有音画同条时不算真抽取**。`bestaudio` 的语义是「最好的仅音频流」；若该源没有
+   独立的 audio-only 变体，yt-dlp 会落到那条混合流上，产物仍带画面。真正的「下载后剥轨」
+   （ffmpeg `-vn -c:a copy`）需要新增一道后处理状态，不在本轮。
+3. **命名只对引擎模式生效**。本机直链的产物名仍取自浏览器页标题 / URL 末段
+   （`ViaLocal.productName`），本机模式没有「用户改名」这条输入。
+
+### 51.5 改动面
+
+- 引擎 [`services/downloader.py`](file:///E:/code/android/TracelessGlimpse/engine/services/downloader.py)：
+  新增 `normalize_output_name`（剥误带的媒体后缀 / 非法字符换 `_` / 超长截断，各记审计行）、
+  `_outtmpl_stem`（主名转字面量 + `%` 转义）；`download_media` / `download_tracks` 加
+  `output_name`，`download_direct` 加 `output_name` + `default_suffix`；
+- 引擎 [`main.py`](file:///E:/code/android/TracelessGlimpse/engine/main.py)：`_download_real`
+  统一 normalize 后喂给三条下载路径，直链按介质类型给兜底后缀；
+  [`services/formats.py`](file:///E:/code/android/TracelessGlimpse/engine/services/formats.py)：
+  `AUDIO_ONLY` → `bestaudio[ext=m4a]/bestaudio`；
+- Android `data/FormatSelection.kt`：`namingTemplateError` → `outputNameError`，
+  删掉变量白名单，改成产物名规则（≤200、禁 `< > : " / \ | ? *` 与控制字符、禁尾点尾空格）；
+- Android `ui/HomeViewModel.kt`：`namingTemplate` → `outputName`，新增 `audioOnly` /
+  `audioOnlyAvailable` / `toggleAudioOnly`，`startDownload` 走 `AUDIO_ONLY`，
+  `canStartDownload` 不再强制选画质行（纯音频不选）；
+- Android `ui/HomeScreen.kt`：纯音频开关插在画质列表与命名输入框之间，勾选后画质行整体
+  压暗并禁用；合并行在纯音频下失效并给专门文案；
+- 文案：`命名模板` → `视频标题命名`，删掉 `(merge)`，新增 4 条纯音频/合并提示。
+
+### 51.6 验证
+
+- 引擎 **319 passed**（新增 `test_output_name.py` 24 条：主名字面量、`%` 转义、
+  后缀剥离/推断/校正、分轨共用主名、合并摘标签、非法字符兜底）；
+  `tests_real` 在 `-m real` 下 36 passed（`audio_only` 断言同步更新）；
+- Android JVM **497 passed**（新增三条：纯音频发 `audio_only` 且不带 merge、留空不发主名、
+  本机模式锁定纯音频）；
+- `assembleDebug` 通过，APK 41 MB。

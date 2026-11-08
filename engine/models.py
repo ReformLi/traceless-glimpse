@@ -274,6 +274,7 @@ class Task(StrictModel):
     createdAt: str
     updatedAt: str
     formatSelector: Optional[FormatSelector] = None
+    # 产物主名（M24）：不是模板，不含后缀；留空 = 沿用站点标题。键名沿用旧名见 PROTOCOL §3.6。
     namingTemplate: Optional[str] = None
     postActions: list[PostAction] = Field(default_factory=list)
     proxyId: Optional[str] = None
@@ -318,6 +319,7 @@ class TaskCreateRequest(StrictModel):
     cookiePolicy: CookiePolicy
     outputDir: str
     formatSelector: Optional[FormatSelector] = None
+    # 产物主名（M24）：不是模板，不含后缀；留空 = 沿用站点标题。键名沿用旧名见 PROTOCOL §3.6。
     namingTemplate: Optional[str] = None
     postActions: list[PostAction] = Field(default_factory=list)
     proxyId: Optional[str] = None
@@ -327,5 +329,6 @@ class DownloadRequest(StrictModel):
     """POST /v1/tasks/{id}/download 请求体（§6.4）。n/A 字段可省略。"""
 
     formatSelector: FormatSelector
+    # 产物主名（M24）：不是模板，不含后缀；留空 = 沿用站点标题。键名沿用旧名见 PROTOCOL §3.6。
     namingTemplate: Optional[str] = None
     postActions: Optional[list[PostAction]] = None

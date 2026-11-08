@@ -38,9 +38,11 @@ import com.hpu.browseguard.data.keepalive.KeepAliveStarter
 import com.hpu.browseguard.data.output.OutputPublish
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.FormatInfo
+import com.hpu.browseguard.shared.model.FormatSelector
 import com.hpu.browseguard.shared.model.HealthResponse
 import com.hpu.browseguard.shared.model.PostAction
 import com.hpu.browseguard.shared.model.PostActionType
+import com.hpu.browseguard.shared.model.SelectionStrategy
 import com.hpu.browseguard.shared.model.SelfcheckResponse
 import com.hpu.browseguard.shared.model.SniffResult
 import com.hpu.browseguard.shared.model.Task
@@ -145,8 +147,15 @@ data class HomeUiState(
     val sniff: SniffPhase = SniffPhase.Idle,
     val download: DownloadPhase = DownloadPhase.Idle,
     val selectedFormatId: String? = null,
-    val namingTemplate: String = "",
+    /** 用户填的产物主名（M24）：留空 = 用站点标题；后缀一律由系统补。 */
+    val outputName: String = "",
     val mergeSelected: Boolean = true,
+    /**
+     * 纯音频下载（M24）：只提取声音、丢掉画面，后缀由引擎按真实音轨决定。
+     *
+     * 与 [mergeSelected] 互斥——没有视频轨就没有可合并的东西。
+     */
+    val audioOnly: Boolean = false,
     /**
      * 嗅探与下载的统一模式（M23）：两步必须同侧，不再有独立的「下载执行者」。
      *
@@ -228,6 +237,13 @@ data class HomeUiState(
     /** 合并需要 FFmpeg，本地直链这一支没有——不是「暂不支持」，是压根没有执行者。 */
     val mergeAvailable: Boolean
         get() = downloadExecutor == DownloadExecutor.ENGINE
+
+    /**
+     * 纯音频要「抽音轨」，本机直链只搬字节、没有 FFmpeg/MediaExtractor 这一层，
+     * 与合并同一口径：只有电脑引擎能落地。
+     */
+    val audioOnlyAvailable: Boolean
+        get() = downloadExecutor == DownloadExecutor.ENGINE
     /**
      * 引擎嗅探要自检白名单；手机 WebView 嗅探不写引擎目录，离线也能发起。
      *
@@ -254,11 +270,13 @@ data class HomeUiState(
     val selectedFormat: FormatInfo?
         get() = (download as? FormatPickable)?.formats?.firstOrNull { it.formatId == selectedFormatId }
 
-    val namingTemplateError: String?
-        get() = FormatSelection.namingTemplateError(namingTemplate.trim())
+    val outputNameError: String?
+        get() = FormatSelection.outputNameError(outputName.trim())
 
     val canStartDownload: Boolean
-        get() = download is FormatPickable && selectedFormat != null && namingTemplateError == null
+        get() = download is FormatPickable &&
+            (audioOnly || selectedFormat != null) &&
+            outputNameError == null
 
     /** 引擎下载的门槛：连上且自检白名单非空。画质表回落判定也认它。 */
     val engineReady: Boolean
@@ -515,6 +533,9 @@ class HomeViewModel(
         if (mode == RunMode.LOCAL && snapshot.mergeSelected) {
             audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
         }
+        if (mode == RunMode.LOCAL && snapshot.audioOnly) {
+            audit.log("audio_only_ignored", mapOf("reason" to "executor_switch"))
+        }
         autoStartSelection = false
         browserDownloadActive = false
         closeBrowserSession()
@@ -529,6 +550,7 @@ class HomeViewModel(
                 sniffNotice = null,
                 // 切到本机时把合并取消掉：复选框会置灰，勾着却不会发生比不勾更误导。
                 mergeSelected = if (mode == RunMode.LOCAL) false else it.mergeSelected,
+                audioOnly = if (mode == RunMode.LOCAL) false else it.audioOnly,
             )
         }
     }
@@ -630,6 +652,7 @@ class HomeViewModel(
             it.copy(
                 mode = RunMode.LOCAL,
                 mergeSelected = if (switching) false else it.mergeSelected,
+                audioOnly = if (switching) false else it.audioOnly,
                 isWebViewVisible = true,
                 sourceUrl = pageUrl,
                 sniff = SniffPhase.Success(listOf(result)),
@@ -837,6 +860,7 @@ class HomeViewModel(
      */
     private fun degradeToLocal(reason: String) {
         val hadMerge = _state.value.mergeSelected
+        val hadAudioOnly = _state.value.audioOnly
         settings.mode = RunMode.LOCAL
         // 已经自动换到手机这条腿：电脑不再是要盯的对象，心跳停拍。
         stopHeartbeat()
@@ -849,6 +873,7 @@ class HomeViewModel(
                 browserSessionActive = false,
                 deepSniff = DeepSniffPhase.Off,
                 mergeSelected = false,
+                audioOnly = false,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
                 sniffNotice = "电脑不可达，已切换为手机本机嗅探与下载",
@@ -864,6 +889,7 @@ class HomeViewModel(
             ),
         )
         if (hadMerge) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
+        if (hadAudioOnly) audit.log("audio_only_ignored", mapOf("reason" to "executor_switch"))
     }
 
     private suspend fun collectLocalSniff(request: SniffRequest): BackendFailure.Local? {
@@ -942,16 +968,19 @@ class HomeViewModel(
         // 所以 sniffRanOnEngine 仍为 true，needsSniffReplay 会正确地判成「不用重放」。
         if (snapshot.mode == RunMode.ENGINE && !snapshot.engineReady) {
             val hadMerge = snapshot.mergeSelected
+            val hadAudioOnly = snapshot.audioOnly
             settings.mode = RunMode.LOCAL
             stopHeartbeat()
             _state.update {
                 it.copy(
                     mode = RunMode.LOCAL,
                     mergeSelected = false,
+                    audioOnly = false,
                     sniffNotice = ENGINE_UNAVAILABLE_LOCAL_HINT,
                 )
             }
             if (hadMerge) audit.log("merge_ignored", mapOf("reason" to "engine_unavailable"))
+            if (hadAudioOnly) audit.log("audio_only_ignored", mapOf("reason" to "engine_unavailable"))
             audit.log("download_fallback", mapOf("reason" to "engine_unavailable"))
             snapshot = _state.value
         }
@@ -1074,8 +1103,33 @@ class HomeViewModel(
         _state.update { it.copy(selectedFormatId = formatId) }
     }
 
-    fun editNamingTemplate(value: String) {
-        _state.update { it.copy(namingTemplate = value) }
+    /**
+     * 「视频标题命名」：留空就用站点标题，填了就用填的，后缀由系统补（M24）。
+     *
+     * 名字不再是模板，所以这里只存字面量，不做任何变量展开。
+     */
+    fun editOutputName(value: String) {
+        _state.update { it.copy(outputName = value) }
+    }
+
+    /**
+     * 纯音频下载（M24）：只要声音、丢掉画面。
+     *
+     * 执行者口径与合并一致——本机直链这一支没有 FFmpeg、也没有抽轨实现，
+     * 只有电脑引擎的 ``bestaudio`` 能落地；置灰之外再挡一次编程调用。
+     * 勾上时顺手把合并取消：没有视频轨，合并没有意义。
+     */
+    fun toggleAudioOnly(enabled: Boolean) {
+        if (!_state.value.audioOnlyAvailable) {
+            if (enabled) audit.log("audio_only_ignored", mapOf("reason" to "local_direct_locked"))
+            return
+        }
+        _state.update {
+            it.copy(
+                audioOnly = enabled,
+                mergeSelected = if (enabled) false else it.mergeSelected,
+            )
+        }
     }
 
     fun toggleMerge(enabled: Boolean) {
@@ -1090,8 +1144,10 @@ class HomeViewModel(
     fun startDownload() {
         val snapshot = _state.value
         val picking = snapshot.download as? FormatPickable ?: return
-        val format = snapshot.selectedFormat ?: return
-        if (snapshot.namingTemplateError != null) return
+        val format = snapshot.selectedFormat
+        // 纯音频不看画质行选了什么；其余情况必须有一条选中的格式。
+        if (!snapshot.audioOnly && format == null) return
+        if (snapshot.outputNameError != null) return
         // 用户自己按下的「开始下载」：授权续跑的意图到此作废，别让它挂到下一条任务上。
         resumeFormatId = null
         // 画质表只能由一次嗅探带出来，那时一定已经落过一行；没有这一行就没有进度可写。
@@ -1101,14 +1157,24 @@ class HomeViewModel(
         val request = when (snapshot.downloadExecutor) {
             DownloadExecutor.ENGINE -> StartRequest.ViaEngine(
                 taskId = picking.taskId,
-                formatSelector = FormatSelection.selectorFor(format),
-                namingTemplate = snapshot.namingTemplate.trim().takeIf { it.isNotEmpty() },
-                postActions = if (snapshot.mergeSelected) listOf(PostAction(PostActionType.MERGE)) else null,
+                // 纯音频走 bestaudio 策略：后缀由引擎按真实音轨决定（优先 m4a，不转码）。
+                formatSelector = if (snapshot.audioOnly) {
+                    FormatSelector(strategy = SelectionStrategy.AUDIO_ONLY)
+                } else {
+                    FormatSelection.selectorFor(format!!)
+                },
+                namingTemplate = snapshot.outputName.trim().takeIf { it.isNotEmpty() },
+                // 纯音频没有视频轨，合并没有意义——勾着也不会发出去。
+                postActions = if (snapshot.mergeSelected && !snapshot.audioOnly) {
+                    listOf(PostAction(PostActionType.MERGE))
+                } else {
+                    null
+                },
             )
 
             DownloadExecutor.LOCAL_DIRECT -> {
                 val link = (snapshot.sniff as? SniffPhase.Success)?.results
-                    ?.firstOrNull { localTaskId(it.mediaUrl) == format.formatId }
+                    ?.firstOrNull { localTaskId(it.mediaUrl) == format!!.formatId }
                 val sandboxRoot = snapshot.localSandboxRoot
                 if (link == null) {
                     // 找不到对应直链 = 状态与画质表已脱节（中途重新嗅探过）。说清楚，不让按钮变哑。
@@ -1146,8 +1212,14 @@ class HomeViewModel(
                 recordId = recordId,
                 executor = snapshot.downloadExecutor,
                 request = request,
-                formatSummary = format.let(::formatSummary),
-                formatId = format.formatId,
+                // 纯音频没有选画质：摘要直接写「纯音频」，formatId 用哨兵值，
+                // 免得后续「重新选择画质」按 formatId 匹配到一条并不存在的画质行。
+                formatSummary = if (snapshot.audioOnly) {
+                    PURE_AUDIO_SUMMARY
+                } else {
+                    format!!.let(::formatSummary)
+                },
+                formatId = if (snapshot.audioOnly) PURE_AUDIO_FORMAT_ID else format!!.formatId,
                 // 离屏 WebView 嗅探 + 本机直链：那一页没被允许存 Cookie，授权后得重放一次嗅探。
                 // 嗅探是电脑做的（引擎嗅探后回落到本机下载）就不重放——手机从没开过那一页，
                 // 重放也拿不到引擎那份结果，反而会把一条本来能下的任务堵死。
@@ -1221,6 +1293,10 @@ class HomeViewModel(
 
         /** 画质表回落提示：模式是电脑引擎但引擎没就绪，这一步整条改走手机本机。 */
         const val ENGINE_UNAVAILABLE_LOCAL_HINT = "电脑引擎不可用，已切到本机模式（嗅探和下载都在手机）"
+
+        /** 纯音频任务在下载页 / 历史记录里的摘要与 formatId 哨兵（没有真实画质行可指）。 */
+        const val PURE_AUDIO_SUMMARY = "纯音频"
+        const val PURE_AUDIO_FORMAT_ID = "audio_only"
 
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
         fun factory(

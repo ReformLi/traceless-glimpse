@@ -269,10 +269,15 @@
     <string name="format_recommended">推荐</string>
     <string name="format_drm_blocked">全部媒体流受 DRM 保护，无法发起下载</string>
     <!-- 画质行文案只有一处来源：ui/FormatRowCopy.kt（与 FormatSelection 映射同源），此处不再留副本 -->
-    <string name="format_naming_field">命名模板</string>
-    <string name="format_naming_hint">可选变量：{title} {platform} {date} {time} {uploader} {height} {width} {formatId} {taskId} {ext}</string>
-    <string name="format_merge_label">下载后合并音视频轨（merge）</string>
+    <string name="format_naming_field">视频标题命名</string>
+    <string name="format_naming_placeholder">留空则用视频原标题</string>
+    <string name="format_naming_hint">留空就用视频原标题；只填名字，后缀由系统自动加</string>
+    <string name="format_audio_only_label">纯音频下载</string>
+    <string name="format_audio_only_hint">只提取声音、不要画面；后缀由系统按音轨自动决定（通常 .m4a）</string>
+    <string name="format_audio_only_local_hint">本机模式不做音频提取，请连接电脑引擎</string>
+    <string name="format_merge_label">下载后合并音视频轨</string>
     <string name="format_merge_local_hint">本地模式不支持合并，请连接引擎</string>
+    <string name="format_merge_audio_only_hint">已选纯音频，没有视频轨可合并</string>
     <string name="format_start">开始下载</string>
 
     <string name="download_running_title">下载进度</string>
@@ -288,7 +293,7 @@
     <string name="download_retry">重新选择画质</string>
     <string name="download_retry_sniff">重新嗅探</string>
     <string name="download_output_path">文件位置</string>
-    <string name="download_naming">命名模板</string>
+    <string name="download_naming">视频标题命名</string>
     <string name="download_file_name">文件名</string>
     <string name="download_size">已下载</string>
     <string name="download_stat_total">总大小</string>
