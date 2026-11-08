@@ -105,7 +105,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
-import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.browser.AdBlockRules
 import com.hpu.browseguard.data.browser.BrowserCandidate
 import com.hpu.browseguard.data.browser.BrowserSniffController
@@ -166,7 +166,7 @@ fun BrowserRoute(
         onClose = viewModel::exitBrowser,
         onQueuedHintShown = viewModel::consumeQueuedHint,
         onPageVisibleChange = viewModel::setBrowserPageVisible,
-        onSwitchToEngine = { viewModel.selectSniffExecutor(SniffExecutor.ENGINE) },
+        onSwitchToEngine = { viewModel.selectMode(RunMode.ENGINE) },
     )
 }
 

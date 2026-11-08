@@ -4,6 +4,7 @@ import com.hpu.browseguard.data.backend.DownloadEvent
 import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.LocalFailures
 import com.hpu.browseguard.data.backend.SniffEvent
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.backend.localTaskId
@@ -136,10 +137,10 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun localDownloadFailureLandsOnTheHistoryRowWithoutAProtocolCode() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         val link = sniffResult()
-        fakes.reachSniffSuccess(vm, listOf(link))
+        fakes.reachLocalSniffSuccess(vm, link)
 
         vm.pickFormats()
         fakes.provider.downloadBackend.emitPrepare(
@@ -175,7 +176,7 @@ class HomeViewModelBehaviorTest {
         val vm = fakes.connectedViewModel()
         assertTrue("引擎模式默认勾选合并", vm.state.value.mergeSelected)
 
-        vm.selectDownloadExecutor(DownloadExecutor.LOCAL_DIRECT)
+        vm.selectMode(RunMode.LOCAL)
 
         assertFalse("切到本地后状态里不许再留着勾着的合并", vm.state.value.mergeSelected)
         val audit = fakes.audit.of("merge_ignored").single()
@@ -184,7 +185,7 @@ class HomeViewModelBehaviorTest {
 
     @Test
     fun theBlockedMergeToggleLeavesAnAuditRowAndNeverToggles() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
 
         vm.toggleMerge(true)
@@ -224,7 +225,7 @@ class HomeViewModelBehaviorTest {
         assertEquals(DownloadExecutor.LOCAL_DIRECT, fakes.settings.downloadExecutor)
         val row = fakes.audit.of("audit_sniff_fallback").single()
         assertEquals("pc_unreachable", row.fields["reason"])
-        assertEquals("local_webview", row.fields["to"])
+        assertEquals("local", row.fields["to"])
         assertEquals("local_direct", row.fields["download"])
 
         val results = listOf(sniffResult())
@@ -234,7 +235,7 @@ class HomeViewModelBehaviorTest {
 
     /** 引擎嗅探超时只说明这一轮慢：降级嗅探，但下载仍可留给引擎。 */
     @Test
-    fun engineTimeoutFallsBackButKeepsEngineForDownload() = runTest(dispatcher) {
+    fun engineTimeoutFallsBackToLocalForBothHalves() = runTest(dispatcher) {
         val fakes = Fakes(this)
         val vm = fakes.connectedViewModel()
 
@@ -244,8 +245,12 @@ class HomeViewModelBehaviorTest {
         fakes.provider.sniffBackend.close()
 
         assertEquals(SniffExecutor.LOCAL_WEBVIEW, vm.state.value.sniffExecutor)
-        assertEquals("超时不等于引擎不可用，下载先不换", DownloadExecutor.ENGINE, vm.state.value.downloadExecutor)
-        assertTrue(vm.state.value.sniffNotice!!.contains("超时"))
+        assertEquals(
+            "M23：超时也整条切本机——半侧组合正是「以为本机在干活、任务却发到电脑」的源头",
+            DownloadExecutor.LOCAL_DIRECT,
+            vm.state.value.downloadExecutor,
+        )
+        assertTrue(vm.state.value.sniffNotice!!.contains("本机"))
         assertEquals("engine_timeout", fakes.audit.of("audit_sniff_fallback").single().fields["reason"])
     }
 
@@ -271,8 +276,7 @@ class HomeViewModelBehaviorTest {
     @Test
     fun localSniffWorksWithoutAnyEngineConnection() = runTest(dispatcher) {
         val settings = FakeEngineSettings(
-            sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-            downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+            mode = RunMode.LOCAL,
         )
         val provider = FakeBackendProvider()
         val history = FakeHistoryRepository()
@@ -301,19 +305,23 @@ class HomeViewModelBehaviorTest {
     }
 
     /**
-     * 手机嗅探出了结果、下载却设着「电脑引擎」且电脑不在：画质表这一步回落到本机直链，
-     * 按钮不能卡死在灰色里。换腿要留提示与审计，设置同步落盘（下次启动不再先撞南墙）。
+     * 引擎嗅探成功、但任务已经送不进去了（自检白名单变空）：画质这一步整条回落到本机，
+     * 按钮不能卡死在灰色里。换腿要留提示与审计，设置同步落盘。
+     *
+     * M23 起模式是整体的：回落也意味着「这次活儿改在手机上做」，不能留下
+     * 「手机这边出结果、任务却还在往电脑发」的半侧残留。
      */
     @Test
     fun engineDownloadWithUnreadyEngineFallsBackToLocalAtPickFormats() = runTest(dispatcher) {
-        val settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW)
+        val settings = FakeEngineSettings()   // 默认就是电脑引擎模式
         val provider = FakeBackendProvider()
         val history = FakeHistoryRepository()
         val audit = FakeAuditLogger()
+        val info = FakeEngineInfo()
         val vm = HomeViewModel(
             settings,
             provider,
-            FakeEngineInfo(healthResult = null),
+            info,
             audit,
             history,
             FakeCookieConsentStore(),
@@ -323,15 +331,21 @@ class HomeViewModelBehaviorTest {
 
         vm.editSourceUrl("https://example.com/watch")
         vm.sniff()
-        provider.localSniffBackend.emit(SniffEvent.Results(listOf(sniffResult())))
+        provider.sniffBackend.emit(SniffEvent.Results(listOf(sniffResult())))
         assertTrue(vm.state.value.sniff is SniffPhase.Success)
-        assertTrue("引擎没就绪也不许卡死下载按钮", vm.state.value.canPickFormats)
+        assertTrue("引擎在线时画质按钮可点", vm.state.value.canPickFormats)
+
+        // 嗅探之后白名单空了：引擎还活着，但没有任何可写目录，任务送不进去。
+        info.selfcheckResult = info.selfcheckResult!!.copy(outputDirAllowlist = emptyList())
+        vm.refreshConnection()
+        advanceUntilIdle()
+        assertFalse("白名单空了就不算就绪", vm.state.value.engineReady)
 
         vm.pickFormats()
 
         assertEquals("画质表改由本机直链合成", DownloadExecutor.LOCAL_DIRECT, provider.lastDownloadExecutor)
         assertEquals("回落要落盘", DownloadExecutor.LOCAL_DIRECT, settings.downloadExecutor)
-        assertEquals(DownloadExecutor.LOCAL_DIRECT, vm.state.value.downloadExecutor)
+        assertEquals(RunMode.LOCAL, vm.state.value.mode)
         assertEquals(
             "换腿必须让用户看见：${vm.state.value.sniffNotice}",
             HomeViewModel.ENGINE_UNAVAILABLE_LOCAL_HINT,
@@ -453,7 +467,7 @@ class HomeViewModelBehaviorTest {
     /** 没选 SAF：本地产物留在应用目录，历史指向 staging，不产生假警告。 */
     @Test
     fun localSuccessWithoutSafKeepsStagingPath() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         val task = fakes.reachLocalSuccess(vm)
 
@@ -468,7 +482,7 @@ class HomeViewModelBehaviorTest {
     /** 选了 SAF 且复制成功：记录改成 content://，产物大小一并回填。 */
     @Test
     fun localSuccessPublishedToSafRecordsTheContentUriAndSize() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         fakes.provider.publishResult = OutputPublish.Published("content://tree/doc/clip.mp4", "clip.mp4", 4_096L)
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSuccess(vm)
@@ -482,7 +496,7 @@ class HomeViewModelBehaviorTest {
     /** 复制失败不篡改下载结果：记录仍指向 staging，原因留在审计行里。 */
     @Test
     fun localSuccessKeepsStagingAndAuditsWhenSafCopyFails() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         fakes.provider.publishResult = OutputPublish.Failed("所选文件夹的授权已失效，请在设置中重新选择")
         val vm = fakes.connectedViewModel()
         val task = fakes.reachLocalSuccess(vm)
@@ -501,7 +515,7 @@ class HomeViewModelBehaviorTest {
      */
     @Test
     fun a403FromAnUngrantedHostWaitsForConsentInsteadOfFailing() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         val link = sniffResult()
         fakes.reachLocalSelecting(vm, link)
@@ -517,7 +531,10 @@ class HomeViewModelBehaviorTest {
             localTaskId(link.mediaUrl),
             awaiting.formatId,
         )
-        assertFalse("引擎嗅探那页本来就带着 Cookie，不需要重放", awaiting.needsSniffReplay)
+        assertTrue(
+            "M23：本机模式连嗅探也在手机上——离屏那页没被允许存 Cookie，同意后得重放",
+            awaiting.needsSniffReplay,
+        )
         assertEquals("差一次同意不是失败：历史不能落成 FAILED", RecordStatus.READY, fakes.history.rows.single().status)
         assertFalse(fakes.history.calls.contains("markFailed"))
         assertFalse("没点头不许偷偷记授权", fakes.consent.isGranted("cdn.example.com"))
@@ -527,7 +544,7 @@ class HomeViewModelBehaviorTest {
     /** 401 与 403 是同一条出路：都说明这一站要先有登录状态。 */
     @Test
     fun a401IsTheSameMissingLoginAsA403() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
 
@@ -541,7 +558,7 @@ class HomeViewModelBehaviorTest {
     /** 点「拒绝」：这一行如实写失败，措辞说清是「没给授权」，且不带 §5 码。 */
     @Test
     fun denyingWritesTheRefusalIntoTheRecordWithoutBorrowingACode() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
@@ -563,7 +580,7 @@ class HomeViewModelBehaviorTest {
      */
     @Test
     fun aDeclinedRetryNeverRewritesACompletedRecord() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         val task = fakes.reachLocalSuccess(vm)
         val doneId = fakes.history.rows.single().id
@@ -587,8 +604,7 @@ class HomeViewModelBehaviorTest {
         val fakes = Fakes(
             this,
             settings = FakeEngineSettings(
-                downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
-                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                mode = RunMode.LOCAL,
             ),
         )
         val vm = fakes.connectedViewModel()
@@ -637,7 +653,7 @@ class HomeViewModelBehaviorTest {
     /** 已经授权过的站点再回 403 是真的读不到：不能再拿弹窗糊第二次。 */
     @Test
     fun anAlreadyGrantedHostGetsThePlainFailureNotAnotherDialog() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         fakes.consent.grant("cdn.example.com")
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
@@ -670,13 +686,13 @@ class HomeViewModelBehaviorTest {
     /** 等待授权时那一条任务是按旧执行者排进队列的：换执行者必须被挡下。 */
     @Test
     fun switchingTheExecutorIsRefusedWhileWaitingForConsent() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(downloadExecutor = DownloadExecutor.LOCAL_DIRECT))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         fakes.reachLocalSelecting(vm, sniffResult())
         fakes.provider.downloadBackend.emitStart(DownloadEvent.Failed(LocalFailures.linkUnloadable(403)))
         assertNotNull(vm.state.value.consentWait)
 
-        vm.selectDownloadExecutor(DownloadExecutor.ENGINE)
+        vm.selectMode(RunMode.ENGINE)
 
         assertEquals(DownloadExecutor.LOCAL_DIRECT, vm.state.value.downloadExecutor)
     }
@@ -686,13 +702,13 @@ class HomeViewModelBehaviorTest {
     fun coldStartOnlyOpensTheWebViewWhenThePreferenceSaysSo() = runTest(dispatcher) {
         val hidden = Fakes(
             this,
-            settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = false),
+            settings = FakeEngineSettings(mode = RunMode.LOCAL, showPageByDefault = false),
         ).connectedViewModel()
         assertFalse("偏好关闭时停在输入地址的主页面", hidden.state.value.isWebViewVisible)
 
         val shown = Fakes(
             this,
-            settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW, showPageByDefault = true),
+            settings = FakeEngineSettings(mode = RunMode.LOCAL, showPageByDefault = true),
         ).connectedViewModel()
         assertTrue("偏好开启时冷启动直接进浏览器", shown.state.value.isWebViewVisible)
         assertTrue("页面也要直接露出", shown.state.value.browserPageVisible)
@@ -704,7 +720,7 @@ class HomeViewModelBehaviorTest {
         val fakes = Fakes(
             this,
             settings = FakeEngineSettings(
-                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                mode = RunMode.LOCAL,
                 showPageByDefault = true,
             ),
         )
@@ -719,9 +735,9 @@ class HomeViewModelBehaviorTest {
         assertTrue("「显示网页」进入时页面直接露出", vm.state.value.browserPageVisible)
 
         vm.exitBrowser()
-        vm.selectSniffExecutor(SniffExecutor.ENGINE)
+        vm.selectMode(RunMode.ENGINE)
         assertFalse(vm.state.value.isWebViewVisible)
-        vm.selectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW)
+        vm.selectMode(RunMode.LOCAL)
 
         assertFalse("切回本机不能被冷启动偏好直接拉进网页", vm.state.value.isWebViewVisible)
         assertEquals(SniffExecutor.LOCAL_WEBVIEW, vm.state.value.sniffExecutor)
@@ -740,7 +756,7 @@ class HomeViewModelBehaviorTest {
     /** 简单嗅探空手而归 → 自动起隐藏 WebView 继续深嗅，主页仍可见。 */
     @Test
     fun aSimpleSniffWithoutResultsEscalatesToAHiddenWebView() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         vm.editSourceUrl("https://example.com/watch")
         vm.sniff()
@@ -759,7 +775,7 @@ class HomeViewModelBehaviorTest {
     /** 隐藏深嗅抓到直链：结果回填主页，会话标记为已就绪。 */
     @Test
     fun hiddenDeepSniffCandidatesBecomeHomeResults() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         val link = sniffResult()
         enterHiddenDeepSniff(fakes, vm)
@@ -773,7 +789,7 @@ class HomeViewModelBehaviorTest {
     /** 隐藏深嗅也没有命中：停在主页，等用户把页面露出来点播放。 */
     @Test
     fun hiddenDeepSniffWithoutCandidatesAsksForTheVisiblePage() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         enterHiddenDeepSniff(fakes, vm)
 
@@ -790,8 +806,7 @@ class HomeViewModelBehaviorTest {
         val fakes = Fakes(
             this,
             settings = FakeEngineSettings(
-                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-                downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+                mode = RunMode.LOCAL,
             ),
         )
         val vm = fakes.connectedViewModel()
@@ -813,11 +828,11 @@ class HomeViewModelBehaviorTest {
     /** 隐藏深嗅进行中允许切到电脑引擎，切完会话立刻结束（WebView 由界面销毁）。 */
     @Test
     fun switchingToTheEngineClosesTheHiddenSession() = runTest(dispatcher) {
-        val fakes = Fakes(this, settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW))
+        val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))
         val vm = fakes.connectedViewModel()
         enterHiddenDeepSniff(fakes, vm)
 
-        vm.selectSniffExecutor(SniffExecutor.ENGINE)
+        vm.selectMode(RunMode.ENGINE)
 
         assertEquals(SniffExecutor.ENGINE, vm.state.value.sniffExecutor)
         assertFalse(vm.state.value.browserSessionActive)
@@ -939,7 +954,8 @@ class HomeViewModelBehaviorTest {
 
         /** 嗅探（电脑引擎那条腿）→ 画质表 → 开下，一次铺完。 */
         suspend fun reachLocalSelecting(vm: HomeViewModel, link: SniffResult) {
-            reachSniffSuccess(vm, listOf(link))
+            // M23：本机模式连嗅探也走本机腿——不再有「引擎嗅探 + 本机下载」的半侧组合。
+            reachLocalSniffSuccess(vm, link)
             reachLocalSelectingAfter(vm, link)
         }
 
@@ -950,7 +966,7 @@ class HomeViewModelBehaviorTest {
          */
         suspend fun reachLocalSuccess(vm: HomeViewModel): Task {
             val link = sniffResult()
-            reachSniffSuccess(vm, listOf(link))
+            reachLocalSniffSuccess(vm, link)
             vm.pickFormats()
             provider.downloadBackend.emitPrepare(
                 DownloadEvent.Selecting("local", listOf(formatInfo(localTaskId(link.mediaUrl)))),

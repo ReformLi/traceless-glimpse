@@ -94,16 +94,16 @@ class BrowserWiringTest {
         val home = File("$SRC_ROOT/ui/HomeScreen.kt").readText()
         val settings = File("$SRC_ROOT/ui/SettingsScreen.kt").readText()
 
-        assertTrue("恢复默认要落在本机嗅探", config.contains("?: SniffExecutor.LOCAL_WEBVIEW"))
+        assertTrue("恢复默认要落在本机模式", config.contains("?: RunMode.LOCAL"))
         assertTrue("隐身偏好要有自己的持久化键", config.contains("KEY_SHOW_PAGE_BY_DEFAULT"))
         assertTrue(
             "首页本机要排在电脑前面",
-            home.indexOf("onSelect(SniffExecutor.LOCAL_WEBVIEW)") < home.indexOf("onSelect(SniffExecutor.ENGINE)"),
+            home.indexOf("onSelect(RunMode.LOCAL)") < home.indexOf("onSelect(RunMode.ENGINE)"),
         )
         assertTrue(
             "设置页本机要排在电脑前面",
-            settings.indexOf("onSelectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW)") <
-                settings.indexOf("onSelectSniffExecutor(SniffExecutor.ENGINE)"),
+            settings.indexOf("onSelectMode(RunMode.LOCAL)") <
+                settings.indexOf("onSelectMode(RunMode.ENGINE)"),
         )
         assertTrue("设置页要有「默认直接显示网页」开关", settings.contains("settings_show_page_label"))
     }

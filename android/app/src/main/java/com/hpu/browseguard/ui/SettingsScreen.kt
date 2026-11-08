@@ -51,8 +51,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.EngineUrl
-import com.hpu.browseguard.data.backend.DownloadExecutor
-import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.RecordStatus
 import com.hpu.browseguard.data.keepalive.NotificationPermission
@@ -126,10 +125,9 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         onEditEngineUrl = homeViewModel::editEngineUrl,
         onSaveEngineUrl = homeViewModel::saveEngineUrl,
         onRefreshConnection = homeViewModel::refreshConnection,
-        onSelectSniffExecutor = homeViewModel::selectSniffExecutor,
+        onSelectMode = homeViewModel::selectMode,
         onShowPageByDefaultChange = homeViewModel::setShowPageByDefault,
         onMuteWhileSniffingChange = homeViewModel::setMuteWhileSniffing,
-        onSelectDownloadExecutor = homeViewModel::selectDownloadExecutor,
         onKeepAliveChange = homeViewModel::setKeepAliveWhileDownloading,
         onOpenNotificationSettings = {
             uiContext.startActivity(NotificationPermission.systemSettingsIntent(uiContext))
@@ -185,10 +183,9 @@ fun SettingsScreen(
     onEditEngineUrl: (String) -> Unit,
     onSaveEngineUrl: () -> Unit,
     onRefreshConnection: () -> Unit,
-    onSelectSniffExecutor: (SniffExecutor) -> Unit,
+    onSelectMode: (RunMode) -> Unit,
     onShowPageByDefaultChange: (Boolean) -> Unit,
     onMuteWhileSniffingChange: (Boolean) -> Unit,
-    onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
     onKeepAliveChange: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
     onPickOutputDirectory: () -> Unit,
@@ -219,8 +216,7 @@ fun SettingsScreen(
         SniffDownloadSection(
             state = state,
             notificationsVisible = notificationsVisible,
-            onSelectSniffExecutor = onSelectSniffExecutor,
-            onSelectDownloadExecutor = onSelectDownloadExecutor,
+            onSelectMode = onSelectMode,
             onKeepAliveChange = onKeepAliveChange,
             onOpenNotificationSettings = onOpenNotificationSettings,
         )
@@ -428,15 +424,14 @@ private fun EngineSection(
 private fun SniffDownloadSection(
     state: HomeUiState,
     notificationsVisible: Boolean,
-    onSelectSniffExecutor: (SniffExecutor) -> Unit,
-    onSelectDownloadExecutor: (DownloadExecutor) -> Unit,
+    onSelectMode: (RunMode) -> Unit,
     onKeepAliveChange: (Boolean) -> Unit,
     onOpenNotificationSettings: () -> Unit,
 ) {
     // 隐藏深嗅是浏览器自己的会话：它跑着也允许切到电脑引擎（切完立刻销毁 WebView）。
     val sniffRunning = state.sniff is SniffPhase.Running && state.deepSniff == DeepSniffPhase.Off
-    val sniffLocked = sniffRunning || state.downloadInFlight
-    val downloadLocked = state.downloadInFlight
+    // M23：模式一换就是两条腿一起换，所以这里只有一个锁；不再有「嗅探锁了但下载还能切」。
+    val modeLocked = sniffRunning || state.downloadInFlight
 
     SettingsCard(stringResource(R.string.settings_sniff_download_section)) {
         Text(
@@ -446,10 +441,10 @@ private fun SniffDownloadSection(
         Spacer(Modifier.height(8.dp))
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             SegmentedButton(
-                selected = state.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW,
-                onClick = { onSelectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW) },
+                selected = state.mode == RunMode.LOCAL,
+                onClick = { onSelectMode(RunMode.LOCAL) },
                 shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                enabled = !sniffLocked,
+                enabled = !modeLocked,
                 label = {
                     Text(
                         text = stringResource(R.string.sniff_mode_local),
@@ -458,53 +453,20 @@ private fun SniffDownloadSection(
                 },
             )
             SegmentedButton(
-                selected = state.sniffExecutor == SniffExecutor.ENGINE,
-                onClick = { onSelectSniffExecutor(SniffExecutor.ENGINE) },
+                selected = state.mode == RunMode.ENGINE,
+                onClick = { onSelectMode(RunMode.ENGINE) },
                 shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                enabled = !sniffLocked,
+                enabled = !modeLocked,
                 label = { Text(stringResource(R.string.sniff_mode_engine)) },
             )
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            text = stringResource(R.string.sniff_mode_hint),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        Spacer(Modifier.height(16.dp))
-        Text(
-            text = stringResource(R.string.download_executor_label),
-            style = MaterialTheme.typography.titleSmall,
-        )
-        Spacer(Modifier.height(8.dp))
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = state.downloadExecutor == DownloadExecutor.ENGINE,
-                onClick = { onSelectDownloadExecutor(DownloadExecutor.ENGINE) },
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                enabled = !downloadLocked,
-                label = { Text(stringResource(R.string.download_executor_engine)) },
-            )
-            SegmentedButton(
-                selected = state.downloadExecutor == DownloadExecutor.LOCAL_DIRECT,
-                onClick = { onSelectDownloadExecutor(DownloadExecutor.LOCAL_DIRECT) },
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                enabled = !downloadLocked,
-                label = { Text(stringResource(R.string.download_executor_local)) },
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
             text = stringResource(
-                if (downloadLocked) {
-                    R.string.settings_execution_busy
-                } else {
-                    R.string.download_executor_hint
-                },
+                if (modeLocked) R.string.settings_execution_busy else R.string.sniff_mode_hint,
             ),
             style = MaterialTheme.typography.bodySmall,
-            color = if (downloadLocked) {
+            color = if (modeLocked) {
                 MaterialTheme.colorScheme.error
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -891,8 +853,7 @@ private fun SettingsScreenPreview() {
                         cacheSizeBytes = 64L * 1024 * 1024,
                     ),
                 ),
-                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-                downloadExecutor = DownloadExecutor.ENGINE,
+                mode = RunMode.LOCAL,
             ),
             history = HistoryUiState(
                 groups = listOf(
@@ -921,10 +882,9 @@ private fun SettingsScreenPreview() {
             onEditEngineUrl = {},
             onSaveEngineUrl = {},
             onRefreshConnection = {},
-            onSelectSniffExecutor = {},
+            onSelectMode = {},
             onShowPageByDefaultChange = {},
             onMuteWhileSniffingChange = {},
-            onSelectDownloadExecutor = {},
             onKeepAliveChange = {},
             onOpenNotificationSettings = {},
             onPickOutputDirectory = {},

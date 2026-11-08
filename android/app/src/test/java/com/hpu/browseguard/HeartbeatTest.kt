@@ -1,6 +1,7 @@
 package com.hpu.browseguard
 
 import androidx.lifecycle.viewModelScope
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.download.DownloadCoordinator
 import com.hpu.browseguard.fakes.FakeAuditLogger
@@ -137,7 +138,7 @@ class HeartbeatTest {
         try {
             val before = engine.healthCalls // init 的首连已打过一次
 
-            vm.selectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW)
+            vm.selectMode(RunMode.LOCAL)
             tick(5)
 
             assertEquals("本机模式没有要盯的电脑，心跳必须停", before, engine.healthCalls)
@@ -150,13 +151,13 @@ class HeartbeatTest {
     @Test
     fun selectingEngineModeStartsBeating() = runTest(dispatcher) {
         val engine = engineInfo()
-        val settings = FakeEngineSettings(sniffExecutor = SniffExecutor.LOCAL_WEBVIEW)
+        val settings = FakeEngineSettings(mode = RunMode.LOCAL)
         val vm = viewModelWith(engine, settings)
         try {
             tick(3)
             val before = engine.healthCalls // 本机模式零心跳（首连那一次不算心跳）
 
-            vm.selectSniffExecutor(SniffExecutor.ENGINE)
+            vm.selectMode(RunMode.ENGINE)
             tick(2)
 
             assertEquals("切到电脑后两拍各打一次 health", before + 2, engine.healthCalls)

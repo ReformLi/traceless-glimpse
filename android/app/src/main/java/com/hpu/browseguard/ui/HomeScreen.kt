@@ -61,7 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
-import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.download.ConsentWait
 import com.hpu.browseguard.shared.model.Codec
@@ -120,7 +120,7 @@ fun HomeRoute(
                 HomeScreen(
                     state = state,
                     onRefresh = viewModel::refreshConnection,
-                    onSelectSniffExecutor = viewModel::selectSniffExecutor,
+                    onSelectMode = viewModel::selectMode,
                     onDismissSniffNotice = viewModel::dismissSniffNotice,
                     onEditSourceUrl = viewModel::editSourceUrl,
                     onOpenBrowser = { viewModel.openBrowser(showPage = true) },
@@ -142,7 +142,7 @@ fun HomeRoute(
 fun HomeScreen(
     state: HomeUiState,
     onRefresh: () -> Unit,
-    onSelectSniffExecutor: (SniffExecutor) -> Unit,
+    onSelectMode: (RunMode) -> Unit,
     onDismissSniffNotice: () -> Unit,
     onEditSourceUrl: (String) -> Unit,
     onOpenBrowser: () -> Unit,
@@ -180,14 +180,9 @@ fun HomeScreen(
                     vertical = BgvDimens.screenPaddingVertical,
                 ),
         ) {
-            val (sniffPart, downloadPart) = homeSubtitleRes(state.sniffExecutor, state.downloadExecutor)
             BgvTopBar(
                 title = stringResource(R.string.home_title),
-                subtitle = stringResource(
-                    R.string.home_subtitle,
-                    stringResource(sniffPart),
-                    stringResource(downloadPart),
-                ),
+                subtitle = stringResource(homeSubtitleRes(state.mode)),
                 large = true,
             )
 
@@ -200,7 +195,7 @@ fun HomeScreen(
             SniffWorkCard(
                 state = state,
                 onRefreshConnection = onRefresh,
-                onSelectSniffExecutor = onSelectSniffExecutor,
+                onSelectMode = onSelectMode,
                 onEditSourceUrl = onEditSourceUrl,
                 onOpenBrowser = onOpenBrowser,
                 onSniff = onSniff,
@@ -298,15 +293,15 @@ private fun ConnectionStatusPill(connection: Connection, onRefresh: () -> Unit) 
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SniffExecutorSegmented(
-    selected: SniffExecutor,
+private fun ModeSegmented(
+    selected: RunMode,
     enabled: Boolean,
-    onSelect: (SniffExecutor) -> Unit,
+    onSelect: (RunMode) -> Unit,
 ) {
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
         SegmentedButton(
-            selected = selected == SniffExecutor.LOCAL_WEBVIEW,
-            onClick = { onSelect(SniffExecutor.LOCAL_WEBVIEW) },
+            selected = selected == RunMode.LOCAL,
+            onClick = { onSelect(RunMode.LOCAL) },
             shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
             enabled = enabled,
             label = {
@@ -317,8 +312,8 @@ private fun SniffExecutorSegmented(
             },
         )
         SegmentedButton(
-            selected = selected == SniffExecutor.ENGINE,
-            onClick = { onSelect(SniffExecutor.ENGINE) },
+            selected = selected == RunMode.ENGINE,
+            onClick = { onSelect(RunMode.ENGINE) },
             shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
             enabled = enabled,
             label = { Text(stringResource(R.string.sniff_mode_engine)) },
@@ -330,7 +325,7 @@ private fun SniffExecutorSegmented(
 private fun SniffWorkCard(
     state: HomeUiState,
     onRefreshConnection: () -> Unit,
-    onSelectSniffExecutor: (SniffExecutor) -> Unit,
+    onSelectMode: (RunMode) -> Unit,
     onEditSourceUrl: (String) -> Unit,
     onOpenBrowser: () -> Unit,
     onSniff: () -> Unit,
@@ -360,10 +355,10 @@ private fun SniffWorkCard(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(6.dp))
-        SniffExecutorSegmented(
-            selected = state.sniffExecutor,
+        ModeSegmented(
+            selected = state.mode,
             enabled = editable,
-            onSelect = onSelectSniffExecutor,
+            onSelect = onSelectMode,
         )
         Spacer(Modifier.height(8.dp))
         Text(
@@ -374,7 +369,7 @@ private fun SniffWorkCard(
 
         if (state.sniffExecutor == SniffExecutor.ENGINE && connection is Connection.Failed) {
             Spacer(Modifier.height(10.dp))
-            OfflineHint(onSwitchToLocal = { onSelectSniffExecutor(SniffExecutor.LOCAL_WEBVIEW) })
+            OfflineHint(onSwitchToLocal = { onSelectMode(RunMode.LOCAL) })
         }
 
         Spacer(Modifier.height(16.dp))
@@ -1177,8 +1172,7 @@ private fun previewState(
     sniff: SniffPhase = SniffPhase.Idle,
     sourceUrl: String = "",
     connection: Connection = previewConnected,
-    sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
-    downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
+    mode: RunMode = RunMode.ENGINE,
     selectedFormatId: String? = null,
     localSandboxRoot: String? = null,
     consentWait: ConsentWait? = null,
@@ -1190,8 +1184,7 @@ private fun previewState(
     sniff = sniff,
     download = download,
     selectedFormatId = selectedFormatId,
-    downloadExecutor = downloadExecutor,
-    sniffExecutor = sniffExecutor,
+    mode = mode,
     localSandboxRoot = localSandboxRoot,
     consentWait = consentWait,
 )
@@ -1240,7 +1233,7 @@ private fun PreviewHome(state: HomeUiState, darkTheme: Boolean = false) {
         HomeScreen(
             state = state,
             onRefresh = {},
-            onSelectSniffExecutor = {},
+            onSelectMode = {},
             onDismissSniffNotice = {},
             onEditSourceUrl = {},
             onOpenBrowser = {},
@@ -1284,8 +1277,7 @@ private fun HomeLocalNoDegradePreview() {
     PreviewHome(
         previewState(
             connection = Connection.Failed("Connection refused: 127.0.0.1:8730"),
-            sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-            downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+            mode = RunMode.LOCAL,
             localSandboxRoot = PREVIEW_SANDBOX,
         ),
     )
@@ -1372,8 +1364,7 @@ private fun HomeAwaitingCookieConsentPreview() {
         previewState(
             sourceUrl = PREVIEW_URL,
             sniff = SniffPhase.Success(previewResults),
-            sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
-            downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+            mode = RunMode.LOCAL,
             localSandboxRoot = PREVIEW_SANDBOX,
             selectedFormatId = "137+140",
             consentWait = ConsentWait("0192f3a4", "cdn.example.com", 403, "137+140", false),

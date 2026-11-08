@@ -1,7 +1,6 @@
 package com.hpu.browseguard.ui
 
-import com.hpu.browseguard.data.backend.DownloadExecutor
-import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.R
 import com.hpu.browseguard.shared.model.ErrorCode
 import com.hpu.browseguard.shared.model.TaskStatus
@@ -38,32 +37,20 @@ fun TaskStatus.wireName(): String = name.lowercase()
 fun TaskStatus.displayWithWire(): String = "${displayLabel()}（${wireName()}）"
 
 /**
- * 首页副标题的两段取值。
+ * 首页副标题：一个模式一句话（M23）。
  *
- * 嗅探与下载的执行者是各自独立配置的，任何一侧写死都会让界面在另一侧被切走后
- * 仍然宣称「本地执行」——用户据此判断的是「这次活儿到底是谁在跑」，写错就是误判。
+ * 改造前这里是「嗅探：%1$s · 下载：%2$s」两段取值，因为两个执行者是各自独立配置的；
+ * 那个自由度正是「手机上显示本机嗅探、任务却发给电脑」的源头。现在只剩一条链路，
+ * 副标题也必须只说一件事：这次活儿到底在哪台机器上跑。
  */
-fun homeSubtitleRes(
-    sniff: SniffExecutor,
-    download: DownloadExecutor,
-): Pair<Int, Int> = Pair(
-    when (sniff) {
-        SniffExecutor.ENGINE -> R.string.home_subtitle_engine
-        SniffExecutor.LOCAL_WEBVIEW -> R.string.home_subtitle_sniff_local
-    },
-    when (download) {
-        DownloadExecutor.ENGINE -> R.string.home_subtitle_engine
-        DownloadExecutor.LOCAL_DIRECT -> R.string.home_subtitle_download_local
-    },
-)
+fun homeSubtitleRes(mode: RunMode): Int = when (mode) {
+    RunMode.LOCAL -> R.string.home_mode_local
+    RunMode.ENGINE -> R.string.home_mode_engine
+}
 
 /**
- * 「不需要电脑」成立吗——两条链路都得留在本机。
+ * 「不需要电脑」成立吗（M23）。
  *
- * 「连接与引擎设置」卡片曾经只看嗅探一侧，下载切到电脑引擎后仍宣称不需要电脑；
- * 用户据此判断的是断网还能不能干活，写错就是误判。
+ * 合并之后这不再是两个开关的组合题：本机模式全程不碰电脑，引擎模式两步都要电脑在线。
  */
-fun runsEntirelyLocally(
-    sniff: SniffExecutor,
-    download: DownloadExecutor,
-): Boolean = sniff == SniffExecutor.LOCAL_WEBVIEW && download == DownloadExecutor.LOCAL_DIRECT
+fun runsEntirelyLocally(mode: RunMode): Boolean = mode == RunMode.LOCAL

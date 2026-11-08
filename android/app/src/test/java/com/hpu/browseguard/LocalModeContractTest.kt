@@ -19,9 +19,9 @@ class LocalModeContractTest {
 
     /** 细节 1：有活跃任务时开关不生效，且不再走「取消任务 + 打回 Idle」的旧路。 */
     @Test
-    fun executorSwitchIsRefusedWhileATaskIsInFlight() {
-        val body = functionBody(viewModel, "selectDownloadExecutor")
-        assertTrue("扫描没落到位：$body", body.contains("settings.downloadExecutor = executor"))
+    fun modeSwitchIsRefusedWhileATaskIsInFlight() {
+        val body = functionBody(viewModel, "selectMode")
+        assertTrue("扫描没落到位：$body", body.contains("settings.mode = mode"))
         assertTrue("缺了活跃任务门", body.contains("if (snapshot.downloadInFlight) return"))
         assertFalse("切换不得再取消正在跑的任务", body.contains("downloadJob?.cancel()"))
     }
@@ -29,8 +29,8 @@ class LocalModeContractTest {
     /** 缺口裁决 ①：本地模式既不显示可勾的合并，也不接受编程调用把状态勾回去。 */
     @Test
     fun choosingLocalModeClearsAndLocksMerge() {
-        val switch = functionBody(viewModel, "selectDownloadExecutor")
-        assertTrue("切到本地必须把 mergeSelected 落回 false", switch.contains("executor == DownloadExecutor.LOCAL_DIRECT) false"))
+        val switch = functionBody(viewModel, "selectMode")
+        assertTrue("切到本机必须把 mergeSelected 落回 false", switch.contains("mode == RunMode.LOCAL) false"))
         assertTrue("toggleMerge 少了第二道门", functionBody(viewModel, "toggleMerge").contains("mergeAvailable"))
         val card = functionBody(screen, "FormatCard")
         assertTrue("扫描没落到位：$card", card.contains("format_merge_local_hint"))

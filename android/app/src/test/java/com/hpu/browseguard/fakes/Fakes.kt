@@ -13,6 +13,7 @@ import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.PrepareRequest
 import com.hpu.browseguard.data.backend.SniffBackend
 import com.hpu.browseguard.data.backend.SniffEvent
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
@@ -157,8 +158,9 @@ class FakeBackendProvider(
 
 class FakeEngineSettings(
     override var baseUrl: String = "http://127.0.0.1:8730",
-    override var downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
-    override var sniffExecutor: SniffExecutor = SniffExecutor.ENGINE,
+    // 测试默认仍是「电脑引擎」：多数用例在验引擎链路，需要本机时显式传 LOCAL。
+    // 嗅探/下载两侧都由这个模式派生（M23 合并），假件里也不再保留两个可写开关。
+    override var mode: RunMode = RunMode.ENGINE,
     override var showPageByDefault: Boolean = false,
     override var muteWhileSniffing: Boolean = true,
     override var keepAliveWhileDownloading: Boolean = true,

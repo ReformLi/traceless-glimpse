@@ -2,6 +2,7 @@ package com.hpu.browseguard.data
 
 import android.content.Context
 import com.hpu.browseguard.data.backend.DownloadExecutor
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffExecutor
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
@@ -64,10 +65,21 @@ interface EngineSettings {
     /** 返回 false 表示地址不合法，调用方保持原值并提示。 */
     fun save(raw: String): Boolean
 
-    var downloadExecutor: DownloadExecutor
+    /**
+     * 嗅探与下载的统一模式（M23）。
+     *
+     * 这里只有这一个真值：嗅探侧与下载侧的「执行者」都是它的派生读法，
+     * 不存在「手机嗅探 + 电脑下载」这种半侧组合。
+     */
+    var mode: RunMode
 
-    /** 嗅探交给电脑引擎还是手机 WebView；默认本机，界面可显式切换。 */
-    var sniffExecutor: SniffExecutor
+    /** 嗅探侧执行者，由 [mode] 派生；只读，写入请改 [mode]。 */
+    val sniffExecutor: SniffExecutor
+        get() = mode.sniffExecutor
+
+    /** 下载侧执行者，由 [mode] 派生；只读，写入请改 [mode]。 */
+    val downloadExecutor: DownloadExecutor
+        get() = mode.downloadExecutor
 
     /** 进入浏览器时是否直接露出网页；默认关闭，只留地址栏与「显示网页」。 */
     var showPageByDefault: Boolean
@@ -101,23 +113,26 @@ class EngineConfig(context: Context) : EngineSettings {
     }
 
     /**
-     * 下载交给谁：引擎任务还是本机直链。全局开关，默认引擎。
+     * 嗅探与下载的模式，默认本机（开箱即用，不需要电脑）。
      *
-     * 与 [sniffExecutor] 分开：嗅探可以在手机 WebView 跑、下载仍交给电脑引擎
-     * （电脑可达时）；自动降级到「电脑不可达」时两者会一起切到本机。
+     * 旧版本把这一项拆成 `sniff_executor` + `download_executor` 两个键，
+     * 因此首次读取新键时要按旧键迁移一次——迁移规则见 [RunMode.fromLegacy]。
+     * 迁移结果当场写回，下次启动不再走兼容分支。
      */
-    override var downloadExecutor: DownloadExecutor
-        get() = DownloadExecutor.values().firstOrNull { it.name == prefs.getString(KEY_DOWNLOAD_EXECUTOR, null) }
-            ?: DownloadExecutor.ENGINE
-        set(value) {
-            prefs.edit().putString(KEY_DOWNLOAD_EXECUTOR, value.name).apply()
+    override var mode: RunMode
+        get() {
+            prefs.getString(KEY_RUN_MODE, null)?.let { stored ->
+                return RunMode.values().firstOrNull { it.name == stored } ?: RunMode.LOCAL
+            }
+            val migrated = RunMode.fromLegacy(
+                sniff = prefs.getString(KEY_LEGACY_SNIFF_EXECUTOR, null),
+                download = prefs.getString(KEY_LEGACY_DOWNLOAD_EXECUTOR, null),
+            )
+            prefs.edit().putString(KEY_RUN_MODE, migrated.name).apply()
+            return migrated
         }
-
-    override var sniffExecutor: SniffExecutor
-        get() = SniffExecutor.values().firstOrNull { it.name == prefs.getString(KEY_SNIFF_EXECUTOR, null) }
-            ?: SniffExecutor.LOCAL_WEBVIEW
         set(value) {
-            prefs.edit().putString(KEY_SNIFF_EXECUTOR, value.name).apply()
+            prefs.edit().putString(KEY_RUN_MODE, value.name).apply()
         }
 
     override var showPageByDefault: Boolean
@@ -140,8 +155,11 @@ class EngineConfig(context: Context) : EngineSettings {
 
     private companion object {
         const val KEY_BASE_URL = "base_url"
-        const val KEY_DOWNLOAD_EXECUTOR = "download_executor"
-        const val KEY_SNIFF_EXECUTOR = "sniff_executor"
+        const val KEY_RUN_MODE = "run_mode"
+
+        /** M23 之后不再写入，只在首次读取时用于迁移。 */
+        const val KEY_LEGACY_DOWNLOAD_EXECUTOR = "download_executor"
+        const val KEY_LEGACY_SNIFF_EXECUTOR = "sniff_executor"
         const val KEY_SHOW_PAGE_BY_DEFAULT = "show_page_by_default"
         const val KEY_MUTE_WHILE_SNIFFING = "mute_while_sniffing"
         const val KEY_KEEP_ALIVE = "keep_alive_while_downloading"

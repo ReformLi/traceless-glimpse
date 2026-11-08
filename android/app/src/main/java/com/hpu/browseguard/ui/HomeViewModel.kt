@@ -16,6 +16,7 @@ import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.LocalFailures
 import com.hpu.browseguard.data.backend.LocalReason
 import com.hpu.browseguard.data.backend.PrepareRequest
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffEvent
 import com.hpu.browseguard.data.backend.SniffExecutor
 import com.hpu.browseguard.data.backend.SniffRequest
@@ -146,12 +147,15 @@ data class HomeUiState(
     val selectedFormatId: String? = null,
     val namingTemplate: String = "",
     val mergeSelected: Boolean = true,
-    /** 下载交给引擎还是本机直链——全局开关，只切下载这一段。 */
-    val downloadExecutor: DownloadExecutor = DownloadExecutor.ENGINE,
+    /**
+     * 嗅探与下载的统一模式（M23）：两步必须同侧，不再有独立的「下载执行者」。
+     *
+     * 这一条是状态里的唯一真值；[sniffExecutor] / [downloadExecutor] 都由它派生，
+     * 所以界面不可能再出现「嗅探说本机、下载跑去电脑」的自相矛盾。
+     */
+    val mode: RunMode = RunMode.LOCAL,
     /** 下载还在跑时挂前台服务保活；默认开，切后台/灭屏也不许被系统冻住。 */
     val keepAliveWhileDownloading: Boolean = true,
-    /** 嗅探交给电脑引擎还是手机 WebView；默认本机，界面可显式切换。 */
-    val sniffExecutor: SniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
     /** 浏览器里默认直接露出网页；只在 App 冷启动时决定初值。 */
     val showPageByDefault: Boolean = false,
     /**
@@ -197,6 +201,14 @@ data class HomeUiState(
      */
     val activeDownload: ActiveDownloadInfo? = null,
 ) {
+    /** 嗅探侧执行者，由 [mode] 派生；只读——要换就换整个模式。 */
+    val sniffExecutor: SniffExecutor
+        get() = mode.sniffExecutor
+
+    /** 下载侧执行者，由 [mode] 派生；只读——要换就换整个模式。 */
+    val downloadExecutor: DownloadExecutor
+        get() = mode.downloadExecutor
+
     /** 引擎侧输出目录：只给 `mode=download` 的引擎任务用，本地直链不得拿它当写盘路径。 */
     val outputDir: String?
         get() = (connection as? Connection.Connected)?.selfcheck?.outputDirAllowlist?.firstOrNull()
@@ -319,6 +331,14 @@ class HomeViewModel(
     /** 浏览器页标题，只给本地产物起名；引擎任务不接受这个字段。 */
     private var browserProductName: String? = null
 
+    /**
+     * 本次嗅探是不是电脑做的。
+     *
+     * 只在「引擎嗅探成功、但下载那一步回落到本机直链」时才被读到：那时直链已经在手，
+     * 手机这边从没打开过那一页，为 Cookie 重放嗅探毫无意义（重放也拿不到引擎的结果）。
+     */
+    private var sniffRanOnEngine = false
+
     /** 离开浏览器这条腿：自动开下、授权续跑与产物名都不该跟着跑到下一次离屏嗅探上。 */
     private fun clearBrowserSession() {
         autoStartSelection = false
@@ -330,20 +350,19 @@ class HomeViewModel(
         HomeUiState(
             engineUrl = settings.baseUrl,
             engineUrlDraft = settings.baseUrl,
-            downloadExecutor = settings.downloadExecutor,
+            mode = settings.mode,
             keepAliveWhileDownloading = settings.keepAliveWhileDownloading,
-            sniffExecutor = settings.sniffExecutor,
             showPageByDefault = settings.showPageByDefault,
             // 冷启动才消费「默认直接显示网页」；本机模式之外没有浏览器可显示。
-            isWebViewVisible = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+            isWebViewVisible = settings.mode == RunMode.LOCAL &&
                 settings.showPageByDefault,
-            browserPageVisible = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+            browserPageVisible = settings.mode == RunMode.LOCAL &&
                 settings.showPageByDefault,
-            browserSessionActive = settings.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+            browserSessionActive = settings.mode == RunMode.LOCAL &&
                 settings.showPageByDefault,
             muteWhileSniffing = settings.muteWhileSniffing,
-            // 本地模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
-            mergeSelected = settings.downloadExecutor != DownloadExecutor.LOCAL_DIRECT,
+            // 本机模式没有执行合并的后端；默认勾选在这里也必须落回 false，不能留着「勾着但无效」。
+            mergeSelected = settings.mode == RunMode.ENGINE,
             localSandboxRoot = backends.localSandboxRoot,
         ),
     )
@@ -352,7 +371,7 @@ class HomeViewModel(
     init {
         refreshConnection()
         // 冷启动就是引擎模式：心跳立即上岗，让「电脑关机了」在 10 秒内反映到状态胶囊上。
-        if (settings.sniffExecutor == SniffExecutor.ENGINE) startHeartbeat()
+        if (settings.mode == RunMode.ENGINE) startHeartbeat()
         // 队列里排队等授权的任务由这里接住：主页已经复位，只有这个页面还能问用户「同意吗」。
         viewModelScope.launch {
             downloads.consentWaits.collect { waits -> applyConsentWaits(waits.firstOrNull()) }
@@ -473,60 +492,43 @@ class HomeViewModel(
     }
 
     /**
-     * 切换下载执行者。
+     * 切换「嗅探和下载模式」（M23：两个执行者已合并成一条）。
      *
      * 有任务在跑时**不切**：旧实现会 `downloadJob?.cancel()` + 把阶段打回 `Idle`，
      * 等于用户点一下开关就把正在下载的任务连状态一起丢掉。现在界面把两颗按钮禁用并给出原因，
      * 这里再做第二道门（界面之外还有代码路径会调它）。
-     * 没有在跑的任务时，切换会把 `Selecting` 的画质表一并作废——表的内容本来就属于某个执行者。
+     * 没有在跑的任务时，切换会把 `Selecting` 的画质表一并作废——表的内容本来就属于某条腿。
      */
-    fun selectDownloadExecutor(executor: DownloadExecutor) {
+    fun selectMode(mode: RunMode) {
         val snapshot = _state.value
-        if (snapshot.downloadExecutor == executor) return
+        if (snapshot.mode == mode) return
         if (snapshot.downloadInFlight) return
-        // 等一次 Cookie 授权时也不切：那一条任务已经按旧执行者排进队列，
+        // 等一次 Cookie 授权时也不切：那一条任务已经按旧模式排进队列，
         // 点头之后要按原样续跑，中途换腿会让「同意并继续」答非所问。
         if (snapshot.consentWait != null) return
-        settings.downloadExecutor = executor
-        // 切到本地会把用户勾着的合并静默取消，审计行要留下「为什么没合并」。
-        if (executor == DownloadExecutor.LOCAL_DIRECT && snapshot.mergeSelected) {
+        // 嗅探正在跑（隐藏深嗅除外）也不切：两条腿的结果不能拼成一张表。
+        val deepRunning = snapshot.deepSniff == DeepSniffPhase.Running
+        if (snapshot.sniff is SniffPhase.Running && !deepRunning) return
+
+        settings.mode = mode
+        // 切到本机会把用户勾着的合并静默取消，审计行要留下「为什么没合并」。
+        if (mode == RunMode.LOCAL && snapshot.mergeSelected) {
             audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
         }
         autoStartSelection = false
         browserDownloadActive = false
-        _state.update {
-            it.copy(
-                downloadExecutor = executor,
-                download = DownloadPhase.Idle,
-                selectedFormatId = null,
-                // 切到本地时把合并取消掉：复选框会置灰，勾着却不会发生比不勾更误导。
-                mergeSelected = if (executor == DownloadExecutor.LOCAL_DIRECT) false else it.mergeSelected,
-            )
-        }
-    }
-
-    /**
-     * 显式切换嗅探执行者。任务进行中不切：两条腿的结果不能拼成一张表；
-     * 切换会作废上一条嗅探结果与画质表。
-     */
-    fun selectSniffExecutor(executor: SniffExecutor) {
-        val snapshot = _state.value
-        if (snapshot.sniffExecutor == executor) return
-        // 隐藏深嗅是浏览器这一侧自己的会话：允许中途切到电脑引擎，切完立刻销毁 WebView。
-        val deepRunning = snapshot.deepSniff == DeepSniffPhase.Running
-        if (snapshot.downloadInFlight) return
-        if (snapshot.sniff is SniffPhase.Running && !deepRunning) return
-        settings.sniffExecutor = executor
         closeBrowserSession()
         // 心跳跟着模式走：选电脑盯电脑，回本机立刻停拍，别让定时器空转。
-        if (executor == SniffExecutor.ENGINE) startHeartbeat() else stopHeartbeat()
+        if (mode == RunMode.ENGINE) startHeartbeat() else stopHeartbeat()
         _state.update {
             it.copy(
-                sniffExecutor = executor,
+                mode = mode,
                 sniff = SniffPhase.Idle,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
                 sniffNotice = null,
+                // 切到本机时把合并取消掉：复选框会置灰，勾着却不会发生比不勾更误导。
+                mergeSelected = if (mode == RunMode.LOCAL) false else it.mergeSelected,
             )
         }
     }
@@ -605,9 +607,10 @@ class HomeViewModel(
     fun downloadFromBrowser(result: SniffResult, pageUrl: String, pageTitle: String?) {
         val snapshot = _state.value
         if (snapshot.downloadInFlight) return
-        val switching = snapshot.downloadExecutor != DownloadExecutor.LOCAL_DIRECT
+        // 浏览器这一腿全程本机：模式不是本机就整条切过来，绝不让下载单独留在电脑上。
+        val switching = snapshot.mode != RunMode.LOCAL
         if (switching) {
-            settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+            settings.mode = RunMode.LOCAL
             if (snapshot.mergeSelected) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
         }
         // 浏览器这一腿全程本机：心跳没有意义，停拍。
@@ -617,6 +620,7 @@ class HomeViewModel(
         resumeFormatId = null
         autoStartSelection = true
         browserDownloadActive = true
+        sniffRanOnEngine = false
         browserProductName = pageTitle?.trim()?.takeIf { it.isNotEmpty() }
 
         val recordId = UUID.randomUUID().toString()
@@ -624,9 +628,8 @@ class HomeViewModel(
         historyTaskId = null
         _state.update {
             it.copy(
-                downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+                mode = RunMode.LOCAL,
                 mergeSelected = if (switching) false else it.mergeSelected,
-                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
                 isWebViewVisible = true,
                 sourceUrl = pageUrl,
                 sniff = SniffPhase.Success(listOf(result)),
@@ -716,17 +719,22 @@ class HomeViewModel(
 
         sniffJob = viewModelScope.launch {
             history.beginSniff(recordId, sourceUrl)
-            if (snapshot.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW) {
+            if (snapshot.mode == RunMode.LOCAL) {
+                sniffRanOnEngine = false
                 finishLocalSniff(collectLocalSniff(request), sourceUrl)
                 return@launch
             }
             if (connected == null || outputDir == null) {
-                // 引擎都没连上，没必要先等 90s 超时：直接降级，并留下可见提示与审计行。
-                degradeToLocal("pc_unreachable", switchDownload = true)
+                // 引擎都没连上，没必要先等 90s 超时：直接整条切本机，并留下可见提示与审计行。
+                degradeToLocal("pc_unreachable")
+                sniffRanOnEngine = false
                 finishLocalSniff(collectLocalSniff(request), sourceUrl)
                 return@launch
             }
 
+            // 本次嗅探由引擎完成：万一后面下载回落到本机，凭它判断「直链已经在手、
+            // 不需要为 Cookie 重放页面」（浏览器那边从没开过这一页）。
+            sniffRanOnEngine = true
             var unreachable: BackendFailure.Local? = null
             backends.sniff(SniffExecutor.ENGINE).sniff(request).collect { event ->
                 if (event is SniffEvent.Failed && event.failure.isEngineUnreachable()) {
@@ -736,11 +744,8 @@ class HomeViewModel(
                 }
             }
             val failure = unreachable ?: return@launch
-            degradeToLocal(
-                reason = if (failure.reason == LocalReason.TIMEOUT) "engine_timeout" else "pc_unreachable",
-                // 超时说明引擎还活着，下载可以继续交给它；拒绝连接则本地下载也一并接管。
-                switchDownload = failure.reason == LocalReason.ENGINE_UNREACHABLE,
-            )
+            degradeToLocal(if (failure.reason == LocalReason.TIMEOUT) "engine_timeout" else "pc_unreachable")
+            sniffRanOnEngine = false
             finishLocalSniff(collectLocalSniff(request), sourceUrl)
         }
     }
@@ -824,32 +829,29 @@ class HomeViewModel(
             (reason == LocalReason.ENGINE_UNREACHABLE || reason == LocalReason.TIMEOUT)
 
     /**
-     * 自动降级：切到手机 WebView，且**必须**让用户看见（[HomeUiState.sniffNotice]）
+     * 自动降级：整条模式切到本机，且**必须**让用户看见（[HomeUiState.sniffNotice]）
      * 并留下 `audit_sniff_fallback`——静默换执行者会让屏上结果与用户以为的那条链路对不上。
+     *
+     * M23 起没有「只切一半」这回事：嗅探换腿就意味着下载也换腿，否则又会出现
+     * 「手机在嗅探、任务却发给电脑」的错位。
      */
-    private fun degradeToLocal(reason: String, switchDownload: Boolean) {
+    private fun degradeToLocal(reason: String) {
         val hadMerge = _state.value.mergeSelected
-        settings.sniffExecutor = SniffExecutor.LOCAL_WEBVIEW
-        if (switchDownload) settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+        settings.mode = RunMode.LOCAL
         // 已经自动换到手机这条腿：电脑不再是要盯的对象，心跳停拍。
         stopHeartbeat()
         _state.update {
             it.copy(
-                sniffExecutor = SniffExecutor.LOCAL_WEBVIEW,
+                mode = RunMode.LOCAL,
                 // 自动降级留在旧首页：离屏嗅探正在跑，换成空浏览器只会让结果无处可看。
                 isWebViewVisible = false,
                 browserPageVisible = false,
                 browserSessionActive = false,
                 deepSniff = DeepSniffPhase.Off,
-                downloadExecutor = if (switchDownload) DownloadExecutor.LOCAL_DIRECT else it.downloadExecutor,
-                mergeSelected = if (switchDownload) false else it.mergeSelected,
+                mergeSelected = false,
                 download = DownloadPhase.Idle,
                 selectedFormatId = null,
-                sniffNotice = if (switchDownload) {
-                    "电脑不可达，已降级为手机本地嗅探与下载"
-                } else {
-                    "电脑嗅探超时，已降级为手机本地嗅探"
-                },
+                sniffNotice = "电脑不可达，已切换为手机本机嗅探与下载",
             )
         }
         audit.log(
@@ -857,11 +859,11 @@ class HomeViewModel(
             mapOf(
                 "reason" to reason,
                 "from" to "engine",
-                "to" to "local_webview",
-                "download" to if (switchDownload) "local_direct" else "engine",
+                "to" to "local",
+                "download" to "local_direct",
             ),
         )
-        if (switchDownload && hadMerge) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
+        if (hadMerge) audit.log("merge_ignored", mapOf("reason" to "executor_switch"))
     }
 
     private suspend fun collectLocalSniff(request: SniffRequest): BackendFailure.Local? {
@@ -933,15 +935,18 @@ class HomeViewModel(
         val sourceUrl = snapshot.sourceUrl.trim()
         if (sourceUrl.isEmpty() || !snapshot.canPickFormats) return
 
-        // 设置选了「电脑下载」但引擎没就绪：回落到本机直链，别让按钮卡死在灰色里。
-        // 手机本机对直链与 HLS 都是完整支持；换腿必须让用户看见（与 degradeToLocal
-        // 同一条铁律），审计也留下「链路为什么和设置里写的不一样」。
-        if (snapshot.downloadExecutor == DownloadExecutor.ENGINE && !snapshot.engineReady) {
+        // 模式是电脑引擎、但引擎这会儿没就绪（嗅探刚成功它掉了、或白名单空了）：
+        // 整条回落到本机，别让按钮卡死在灰色里。手机本机对直链与 HLS 都是完整支持；
+        // 换腿必须让用户看见（与 degradeToLocal 同一条铁律），审计也留下
+        // 「链路为什么和设置里写的不一样」。此时直链已在手、那一页手机没开过，
+        // 所以 sniffRanOnEngine 仍为 true，needsSniffReplay 会正确地判成「不用重放」。
+        if (snapshot.mode == RunMode.ENGINE && !snapshot.engineReady) {
             val hadMerge = snapshot.mergeSelected
-            settings.downloadExecutor = DownloadExecutor.LOCAL_DIRECT
+            settings.mode = RunMode.LOCAL
+            stopHeartbeat()
             _state.update {
                 it.copy(
-                    downloadExecutor = DownloadExecutor.LOCAL_DIRECT,
+                    mode = RunMode.LOCAL,
                     mergeSelected = false,
                     sniffNotice = ENGINE_UNAVAILABLE_LOCAL_HINT,
                 )
@@ -1144,8 +1149,10 @@ class HomeViewModel(
                 formatSummary = format.let(::formatSummary),
                 formatId = format.formatId,
                 // 离屏 WebView 嗅探 + 本机直链：那一页没被允许存 Cookie，授权后得重放一次嗅探。
-                needsSniffReplay = snapshot.downloadExecutor == DownloadExecutor.LOCAL_DIRECT &&
-                    snapshot.sniffExecutor == SniffExecutor.LOCAL_WEBVIEW &&
+                // 嗅探是电脑做的（引擎嗅探后回落到本机下载）就不重放——手机从没开过那一页，
+                // 重放也拿不到引擎那份结果，反而会把一条本来能下的任务堵死。
+                needsSniffReplay = snapshot.mode == RunMode.LOCAL &&
+                    !sniffRanOnEngine &&
                     !browserDownloadActive,
             ),
         )
@@ -1210,10 +1217,10 @@ class HomeViewModel(
         const val ENGINE_OFFLINE_REASON = "电脑引擎已离线"
 
         /** 离线时点「嗅探」的前端拦截文案：红色失败卡当场给出，不等请求超时。 */
-        const val ENGINE_OFFLINE_HINT = "电脑引擎已离线，请检查电脑或在上方切换为手机嗅探"
+        const val ENGINE_OFFLINE_HINT = "电脑引擎已离线，请检查电脑，或在上方切到「本机」模式"
 
-        /** 画质表回落提示：设置选了「电脑下载」但引擎没就绪，这一步已改走手机本机。 */
-        const val ENGINE_UNAVAILABLE_LOCAL_HINT = "电脑引擎不可用，已改用手机本机下载"
+        /** 画质表回落提示：模式是电脑引擎但引擎没就绪，这一步整条改走手机本机。 */
+        const val ENGINE_UNAVAILABLE_LOCAL_HINT = "电脑引擎不可用，已切到本机模式（嗅探和下载都在手机）"
 
         /** Compose 侧唯一的构造入口：依赖从组装根来，不在界面里 new 后端。 */
         fun factory(

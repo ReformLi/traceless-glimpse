@@ -1,7 +1,6 @@
 package com.hpu.browseguard
 
-import com.hpu.browseguard.data.backend.DownloadExecutor
-import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.shared.model.TaskStatus
 import com.hpu.browseguard.ui.displayLabel
 import com.hpu.browseguard.ui.displayWithWire
@@ -64,51 +63,31 @@ class ProtocolCopyTest {
     }
 
     /**
-     * 首页副标题四格取值（M6-4 收尾②）。
+     * 首页副标题：一个模式一句话（M23）。
      *
-     * 回归点：改造前这里写死「本地执行 · 浏览器隔离嗅探」，而默认执行者其实是电脑引擎，
-     * 用户照副标题判断「谁在跑这次活儿」就会判反。两段各自跟随各自的配置。
+     * 回归点（M23 之前）：这里返回「嗅探：X · 下载：Y」两段，四格组合里有两格是
+     * 「手机嗅探 + 电脑下载」——那一格正是 bug 的来源：用户在手机上操作，
+     * 任务却发给电脑。合并后副标题只说一件事：这次活儿整条在哪台机器上跑。
      */
     @Test
-    fun homeSubtitleFollowsBothExecutors() {
-        val engine = R.string.home_subtitle_engine
+    fun homeSubtitleFollowsTheSingleMode() {
         val expected = mapOf(
-            (SniffExecutor.ENGINE to DownloadExecutor.ENGINE) to (engine to engine),
-            (SniffExecutor.ENGINE to DownloadExecutor.LOCAL_DIRECT) to
-                (engine to R.string.home_subtitle_download_local),
-            (SniffExecutor.LOCAL_WEBVIEW to DownloadExecutor.ENGINE) to
-                (R.string.home_subtitle_sniff_local to engine),
-            (SniffExecutor.LOCAL_WEBVIEW to DownloadExecutor.LOCAL_DIRECT) to
-                (R.string.home_subtitle_sniff_local to R.string.home_subtitle_download_local),
+            RunMode.LOCAL to R.string.home_mode_local,
+            RunMode.ENGINE to R.string.home_mode_engine,
         )
-        assertEquals(4, expected.size)
-        expected.forEach { (executors, slots) ->
-            assertEquals(
-                "嗅探=${executors.first} 下载=${executors.second}",
-                slots,
-                homeSubtitleRes(executors.first, executors.second),
-            )
-        }
+        assertEquals(RunMode.values().toSet(), expected.keys)
+        expected.forEach { (mode, res) -> assertEquals("模式=$mode", res, homeSubtitleRes(mode)) }
     }
 
     /**
-     * 「本机嗅探 · 不需要电脑」只在两条链路都不碰引擎时成立（M6-5 现场取证发现）。
+     * 「不需要电脑」直接等于「本机模式」（M23）。
      *
-     * 回归点：MuMu 上把下载切到电脑引擎、嗅探留在本机，连接卡片仍写着「不需要电脑」，
-     * 而这一次下载确实要电脑在线——用户据此判断的是断网还能不能干活。
+     * 回归点（M6-5 / M23）：改造前这要问两个开关的组合，于是「手机嗅探 + 电脑下载」
+     * 既不是「不需要电脑」也不该说成需要——用户据此判断断网还能不能干活。
      */
     @Test
-    fun onlyFullyLocalCombinationClaimsNoComputer() {
-        assertTrue(runsEntirelyLocally(SniffExecutor.LOCAL_WEBVIEW, DownloadExecutor.LOCAL_DIRECT))
-        listOf(
-            SniffExecutor.ENGINE to DownloadExecutor.ENGINE,
-            SniffExecutor.ENGINE to DownloadExecutor.LOCAL_DIRECT,
-            SniffExecutor.LOCAL_WEBVIEW to DownloadExecutor.ENGINE,
-        ).forEach { (sniff, download) ->
-            assertFalse(
-                "嗅探=$sniff 下载=$download 仍然要碰电脑引擎",
-                runsEntirelyLocally(sniff, download),
-            )
-        }
+    fun onlyLocalModeClaimsNoComputer() {
+        assertTrue(runsEntirelyLocally(RunMode.LOCAL))
+        assertFalse("引擎模式两步都要电脑在线", runsEntirelyLocally(RunMode.ENGINE))
     }
 }

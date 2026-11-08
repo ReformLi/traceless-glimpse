@@ -142,11 +142,9 @@
     <string name="settings_history_clear_hint">只清理应用专属目录里的产物；公开文件夹与电脑引擎侧的文件不受影响</string>
 
     <string name="home_title">无痕掠影</string>
-    <!-- 副标题跟着当前执行者走：写死「本地执行」会在选了电脑引擎时误导用户。 -->
-    <string name="home_subtitle">嗅探：%1$s · 下载：%2$s</string>
-    <string name="home_subtitle_engine">电脑引擎</string>
-    <string name="home_subtitle_sniff_local">本机浏览器</string>
-    <string name="home_subtitle_download_local">本地直链</string>
+    <!-- 副标题只说一件事：这次活的嗅探和下载都在哪台机器上跑（M23 起两者同侧）。 -->
+    <string name="home_mode_local">本机模式 · 嗅探与下载都在手机</string>
+    <string name="home_mode_engine">电脑引擎模式 · 嗅探与下载都在电脑</string>
     <!-- 下载中那一条：说清楚是谁在下载，两条腿的等待感受完全不同。 -->
     <string name="home_active_download_engine">电脑正在下载</string>
     <string name="home_active_download_local">手机正在下载</string>
@@ -173,24 +171,19 @@
     <string name="engine_url_public_cancel">取消</string>
     <string name="engine_guard_privacy_hint">引擎连接采用动态封装：只有在您保存并启用的电脑局域网 IP 下，App 才会向其发送明文请求；其余所有网络请求默认受 Android 系统严格网络策略保护。</string>
 
-    <string name="download_executor_label">下载执行者</string>
-    <string name="download_executor_engine">引擎</string>
-    <string name="download_executor_local">本地直链</string>
-    <string name="download_executor_hint">本地直链：手机直接下载嗅探到的链接，不做音视频合并；切换会丢弃当前画质表</string>
-    <string name="download_executor_busy">有任务正在进行：等它结束或取消后才能切换执行者</string>
-
     <string name="selfcheck_title">引擎自检</string>
     <string name="selfcheck_cookie">Cookie 策略</string>
     <string name="selfcheck_output">输出白名单</string>
     <string name="selfcheck_cache">缓存</string>
     <string name="selfcheck_none">无</string>
 
-    <string name="sniff_mode_label">嗅探方式</string>
+    <!-- M23：嗅探与下载合并成一个模式，两个执行者不再各配一遍。 -->
+    <string name="sniff_mode_label">嗅探和下载模式</string>
     <string name="sniff_mode_engine">电脑引擎</string>
-    <string name="sniff_mode_local">本机嗅探</string>
-    <string name="sniff_mode_hint">本机嗅探开箱即用；电脑引擎解析更强，但需要电脑在线</string>
-    <string name="sniff_offline_hint">电脑引擎离线。可以点上方状态重连，或切到本机嗅探（仅直链）继续。</string>
-    <string name="sniff_offline_switch">切到本机嗅探</string>
+    <string name="sniff_mode_local">本机</string>
+    <string name="sniff_mode_hint">本机：嗅探与下载都在手机上完成，开箱即用；电脑引擎：两步都交给电脑，解析更强（可合并音视频），但需要电脑在线</string>
+    <string name="sniff_offline_hint">电脑引擎离线。可以点上方状态重连，或切到本机模式（嗅探与下载都在手机）继续。</string>
+    <string name="sniff_offline_switch">切到本机模式</string>
     <string name="sniff_notice_dismiss">知道了</string>
 
     <string name="sniff_title">网页链接</string>
