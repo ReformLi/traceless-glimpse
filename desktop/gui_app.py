@@ -537,7 +537,8 @@ class ControlPanel(ctk.CTk):
             L.log(f"窗口图标设置失败（不影响功能）: {exc!r}")
 
     def _build_ui(self) -> None:
-        # ---- 全局：标题 + 外观切换（两个标签共用） ----
+        # ---- 全局顶部栏：标题 | 标签胶囊 | 外观切换（两个标签共用） ----
+        # 标签胶囊并进标题行：它独立居中占一行时两侧大片留白，顶部显空。
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=24, pady=(16, 8))
         left = ctk.CTkFrame(header, fg_color="transparent")
@@ -546,8 +547,8 @@ class ControlPanel(ctk.CTk):
                      anchor="w").pack(anchor="w")
         ctk.CTkLabel(left, text="PC 控制面板 · 手机 App 联机 / 本机独立下载",
                      font=_font(11), text_color=T.TEXT_MUTED, anchor="w").pack(anchor="w")
-        ctk.CTkLabel(header, text="外观", font=_font(11),
-                     text_color=T.TEXT_MUTED).pack(side="right", padx=(0, 8))
+        # 外观切换不带行内标签：右缘挂一个孤字不好看，下拉框的值
+        # （跟随系统 / 浅色 / 深色）本身自解释。
         self.appearance_menu = ctk.CTkOptionMenu(
             header, width=110, height=30, values=list(APPEARANCE_LABELS.values()),
             font=_font(11), corner_radius=T.RADIUS,
@@ -557,9 +558,28 @@ class ControlPanel(ctk.CTk):
         )
         self.appearance_menu.pack(side="right")
 
+        # 标签胶囊样式：未选中与底同色、选中吃淡强调容器色（Android
+        # primaryContainer）。CTkSegmentedButton 选中/未选中共用一个 text_color，
+        # 实心强调色没法两边都可读，容器色 + 近黑/近白字才是两全解。
+        # 两侧等宽弹性间隔把它顶到标题行中部。
+        self.tab_switch = ctk.CTkSegmentedButton(
+            header, values=["引擎设置", "下载控制台"], height=30,
+            font=_font(12, "bold"), corner_radius=T.RADIUS,
+            fg_color=T.BG, selected_color=T.ACCENT_CONTAINER,
+            selected_hover_color=T.ACCENT_CONTAINER_HOVER,
+            unselected_color=T.BG, unselected_hover_color=T.SURFACE_2,
+            text_color=("gray15", "gray75"),
+            command=lambda name: self.tabs.set(name),
+        )
+        ctk.CTkFrame(header, fg_color="transparent", height=1).pack(
+            side="left", fill="x", expand=True)
+        self.tab_switch.pack(side="left")
+        ctk.CTkFrame(header, fg_color="transparent", height=1).pack(
+            side="left", fill="x", expand=True)
+
         # ---- 全局：黄色安全警告（无论切到哪个标签都看得到） ----
         warn = ctk.CTkFrame(self, corner_radius=T.RADIUS, fg_color=T.WARN_BG)
-        warn.pack(fill="x", padx=24, pady=(4, 10))
+        warn.pack(fill="x", padx=24, pady=(4, 8))
         self.warn_label = ctk.CTkLabel(
             warn, text=SECURITY_NOTICE, font=_font(12, "bold"),
             text_color=T.WARN_TEXT, anchor="w", justify="left", wraplength=920,
@@ -567,19 +587,32 @@ class ControlPanel(ctk.CTk):
         self.warn_label.pack(fill="x", padx=14, pady=9)
 
         # ---- M16：双标签主体 ----
-        self.tabs = ctk.CTkTabview(self, fg_color=T.BG, corner_radius=T.RADIUS)
+        # 容器不画自己的外框（corner_radius=0 / border_width=0）：内容卡直接浮在
+        # 窗口底上、与标题/警告条同 24px 对齐；否则外框底色同窗口底，只在警告条
+        # 下面留出一段「框内空白」，还让内容比警告条多缩进一圈。
+        self.tabs = ctk.CTkTabview(self, fg_color=T.BG, corner_radius=0,
+                                   border_width=0)
         self.tabs.pack(fill="both", expand=True, padx=24, pady=(0, 8))
-        # 标签页本身做成「胶囊」：未选中与底同色、选中吃强调色，弱化到近乎隐形。
-        seg = self.tabs._segmented_button
-        seg.configure(corner_radius=T.RADIUS, fg_color=T.BG,
-                      selected_color=T.ACCENT, selected_hover_color=T.ACCENT_HOVER,
-                      unselected_color=T.BG, unselected_hover_color=T.SURFACE_2,
-                      # 浅色下选中态是蓝底，文字必须近黑才可读（浅色截图复核抓到）；
-                      # 深色下浅灰字在蓝底与暗底上都清晰。
-                      text_color=("gray15", "gray75"),
-                      font=_font(12, "bold"))
         self.tab_engine = self.tabs.add("引擎设置")
         self.tab_console = self.tabs.add("下载控制台")
+        # CTkTabview 自带的胶囊无法换父容器，藏掉它，改由标题行的胶囊驱动；
+        # 再包一层 tabs.set：程序性切页（冒烟脚本 / e2e）也能同步胶囊高亮。
+        self.tabs._segmented_button.grid_forget()
+        # 藏掉胶囊后，CTkTabview 顶部给胶囊预留的三行也没了意义，清零收回——
+        # 否则警告条与内容卡之间会空出一条胶囊的位置。
+        self.tabs._outer_spacing = 0
+        self.tabs._outer_button_overhang = 0
+        self.tabs._configure_grid()
+        self.tabs._set_grid_canvas()
+        self.tabs._draw()
+        _tabview_set = self.tabs.set
+
+        def _set_tab(name: str) -> None:
+            _tabview_set(name)
+            self.tab_switch.set(name)
+
+        self.tabs.set = _set_tab
+        self.tab_switch.set(self.tabs.get())
         self._build_engine_tab(self.tab_engine)
         self.console = DownloadConsole(
             self.tab_console, font=_font, ui_call=self.ui_call,
@@ -615,11 +648,12 @@ class ControlPanel(ctk.CTk):
                      font=_font(11), text_color=T.TEXT_MUTED,
                      anchor="w").pack(anchor="w", padx=18, pady=(14, 0))
         self.addr_label = ctk.CTkLabel(addr_card, text="http://...", font=_font(22, "bold"),
-                                       anchor="w", text_color=(T.ACCENT, "#6CB6FF"))
+                                       anchor="w", text_color=T.ACCENT)
         self.addr_label.pack(anchor="w", padx=18, pady=(4, 8))
         copy_wrap, self.copy_button = T.lift_button(
             addr_card, text="一键复制", width=120, height=34, font=_font(12),
-            base=T.ACCENT, hover=T.ACCENT_HOVER, command=self._copy_address)
+            base=T.ACCENT, hover=T.ACCENT_HOVER, text_color=T.ACCENT_TEXT,
+            command=self._copy_address)
         copy_wrap.pack(anchor="w", padx=18)
         self.addr_hint = ctk.CTkLabel(addr_card, text="", font=_font(11),
                                       text_color=T.TEXT_MUTED, anchor="w",
@@ -643,13 +677,13 @@ class ControlPanel(ctk.CTk):
         btns.grid_columnconfigure((0, 1), weight=1, uniform="ctl")
         start_wrap, self.start_button = T.lift_button(
             btns, text="启动", width=140, height=36, font=_font(12),
-            base=T.ACCENT, hover=T.ACCENT_HOVER,
+            base=T.ACCENT, hover=T.ACCENT_HOVER, text_color=T.ACCENT_TEXT,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_start,
             enabled=lambda: str(self.start_button.cget("state")) != "disabled")
         start_wrap.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         stop_wrap, self.stop_button = T.lift_button(
             btns, text="停止", width=140, height=36, font=_font(12),
-            base=T.DANGER, hover=T.DANGER_HOVER,
+            base=T.DANGER, hover=T.DANGER_HOVER, text_color=T.DANGER_TEXT,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_stop,
             enabled=lambda: str(self.stop_button.cget("state")) != "disabled")
         stop_wrap.grid(row=0, column=1, sticky="ew", padx=(4, 0))
@@ -868,7 +902,7 @@ class ControlPanel(ctk.CTk):
         self.dep_chromium_label.pack(side="left", fill="x", expand=True)
         install_wrap, self.dep_install_button = T.lift_button(
             cr_row, text="一键安装内核", width=110, height=28, font=_font(11),
-            base=T.ACCENT, hover=T.ACCENT_HOVER,
+            base=T.ACCENT, hover=T.ACCENT_HOVER, text_color=T.ACCENT_TEXT,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_install_chromium,
             enabled=lambda: str(self.dep_install_button.cget("state")) != "disabled")
         install_wrap.pack(side="right")
@@ -1192,7 +1226,7 @@ class ControlPanel(ctk.CTk):
     def _set_detail(self, text: str, *, error: bool = False) -> None:
         self.detail_label.configure(
             text=text.replace("\n", " ")[:220],
-            text_color=("#B4443C", "#FF8A80") if error else ("gray40", "gray65"),
+            text_color=T.DANGER if error else T.TEXT_MUTED,
         )
 
     def _set_state(self, state: str, detail: str = "") -> None:
@@ -1716,6 +1750,7 @@ class ControlPanel(ctk.CTk):
             ctk.CTkCheckBox(
                 dlg, text="记住我的选择，不再询问", font=_font(11),
                 variable=remember, fg_color=T.ACCENT, corner_radius=4,
+                checkmark_color=T.ACCENT_TEXT,
             ).pack(anchor="w", padx=22, pady=(0, 6))
 
         btns = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -1738,18 +1773,19 @@ class ControlPanel(ctk.CTk):
             else:
                 self.hide_to_tray()
 
-        def _btn(text: str, color, hover, choice: str | None, side: str) -> None:
+        def _btn(text: str, color, hover, choice: str | None, side: str,
+                 text_color=None) -> None:
             b = ctk.CTkButton(btns, text=text, width=108, height=32, font=_font(11),
                               corner_radius=T.RADIUS, fg_color=color, hover_color=hover,
-                              command=lambda: _choose(choice))
+                              text_color=text_color, command=lambda: _choose(choice))
             b.pack(side=side, padx=(0 if side == "left" else 6, 0))
 
         if allow_tray:
-            _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left")
+            _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left", T.DANGER_TEXT)
             _btn("最小化到托盘", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, "tray", "left")
             _btn("取消", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, None, "right")
         else:
-            _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left")
+            _btn("退出程序", T.DANGER, T.DANGER_HOVER, "exit", "left", T.DANGER_TEXT)
             _btn("取消", T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER, None, "right")
 
         dlg.update_idletasks()  # 布局收敛后量需求尺寸（设备像素，CTk 已把组件缩放过）

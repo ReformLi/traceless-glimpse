@@ -51,7 +51,7 @@ BLUE = T.ACCENT
 BLUE_HOVER = T.ACCENT_HOVER
 GREEN = T.SUCCESS
 RED = T.DANGER
-AMBER = "#E5A23C"
+AMBER = T.WARNING
 BTN_DISABLED = T.BTN_DISABLED
 BTN_DISABLED_TEXT = T.BTN_DISABLED_TEXT
 #: CTk 默认蓝主题下 CTkOptionMenu 的 fg_color / button_color，启用时还原到它。
@@ -322,7 +322,7 @@ class TaskRow:
             self._enter_indeterminate(speed_bps, bytes_downloaded)
             self.status_label.configure(
                 text=PHASE_TEXT.get(phase, phase),
-                text_color=("gray45", "gray65"),
+                text_color=T.TEXT_MUTED,
             )
             return
         self._leave_indeterminate()
@@ -333,9 +333,8 @@ class TaskRow:
         self.eta_label.configure(text=f"剩余 {eta}" if eta and phase == "downloading" else "")
         self.status_label.configure(
             text=PHASE_TEXT.get(phase, phase),
-            text_color=(GREEN if phase == "done" else RED if phase == "failed"
-                        else "gray45", GREEN if phase == "done"
-                        else "#FF8A80" if phase == "failed" else "gray65"),
+            text_color=GREEN if phase == "done" else RED if phase == "failed"
+                       else T.TEXT_MUTED,
         )
 
     # -- 不确定进度（percent=0 但字节在涨）-----------------------------------
@@ -458,7 +457,7 @@ class DownloadConsole:
         ctk.CTkLabel(head, text="① 输入网页地址", font=self.font(12, "bold"),
                      anchor="w").pack(side="left")
         self.demo_badge = ctk.CTkLabel(head, text="", font=self.font(10),
-                                       text_color=(AMBER, "#FFD966"), anchor="e")
+                                       text_color=AMBER, anchor="e")
         self.demo_badge.pack(side="right")
         row = ctk.CTkFrame(self.sniff_card, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=(8, 14))
@@ -469,7 +468,7 @@ class DownloadConsole:
         self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         sniff_wrap, self.sniff_button = T.lift_button(
             row, text="开始嗅探", width=110, height=36, font=self.font(12),
-            base=BLUE, hover=BLUE_HOVER,
+            base=BLUE, hover=BLUE_HOVER, text_color=T.ACCENT_TEXT,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_sniff_click,
             enabled=lambda: str(self.sniff_button.cget("state")) != "disabled")
         sniff_wrap.pack(side="right")
@@ -505,7 +504,7 @@ class DownloadConsole:
         self.format_menu.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         dl_wrap, self.download_button = T.lift_button(
             row, text="开始下载", width=110, height=36, font=self.font(12),
-            base=BLUE, hover=BLUE_HOVER,
+            base=BLUE, hover=BLUE_HOVER, text_color=T.ACCENT_TEXT,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_download_click,
             enabled=lambda: str(self.download_button.cget("state")) != "disabled")
         dl_wrap.grid(row=0, column=1)
@@ -746,7 +745,7 @@ class DownloadConsole:
         self._refresh_controls()
 
     def show_info(self, text: str) -> None:
-        self._show_message(text, ("gray40", "gray65"))
+        self._show_message(text, T.TEXT_MUTED)
 
     def clear_message(self) -> None:
         # 必须连文本一起清：只 pack_forget 会留下上一轮的错误文案，重新嗅探时

@@ -1,8 +1,11 @@
 """桌面端统一视觉主题 —— 配色 / 圆角 / 阴影 / 悬浮动画的单一事实来源。
 
 设计语言（2026-11 美化轮）：
-- **现代极简、深色优先**：低饱和深底 + 单一强调色（``ACCENT`` 蓝），
-  其余全部中性灰阶，状态色（绿/红/琥珀）只用于语义指示，不当装饰；
+- **与 Android 端同一色板**：配色逐项映射
+  ``android/.../ui/theme/Color.kt`` 的「科技青蓝」令牌（primary /
+  surface / surfaceVariant / outlineVariant / 状态色）——浅色白/浅灰底 +
+  深青蓝强调，深色「深空灰」底 + 浅青蓝强调，两端观感一致；
+  状态色（绿/红/琥珀）只用于语义指示，不当装饰；
 - **圆角统一 12px**（``RADIUS``）：卡片 / 按钮 / 输入框 / 状态条一律 12，
   细线条组件（进度条）例外用小圆角，视觉上仍属同族；
 - **柔和阴影**：Tk 没有真高斯模糊，卡片用两段 1–2px 渐变条在卡片下缘外推
@@ -31,34 +34,48 @@ WINDOW_GEOMETRY = "1000x780"
 WINDOW_MIN = (920, 640)
 
 # -- 配色（浅色, 深色）元组，跟随 CTk appearance mode -------------------------
-#: 窗口 / 标签页底
-BG = ("#EEF1F5", "#0F1218")
-#: 卡片
-SURFACE = ("#FFFFFF", "#171C24")
-#: 次级表面：任务行 / 状态条 / 输入框内底
-SURFACE_2 = ("#F1F4F8", "#1E242E")
-BORDER = ("#E2E6EC", "#272E39")
-TEXT_MUTED = ("#6B7280", "#8A93A0")
+# 逐项映射 Android 端 ui/theme/Color.kt 的「科技青蓝」色板。
+#: 窗口 / 标签页底（Android background）
+BG = ("#F6F8FA", "#111418")
+#: 卡片（Android surface）
+SURFACE = ("#FFFFFF", "#15181D")
+#: 次级表面：任务行 / 状态条 / 输入框内底（Android surfaceVariant）
+SURFACE_2 = ("#EDF1F6", "#22262B")
+#: 描边（Android outlineVariant）
+BORDER = ("#E2E8F0", "#44484E")
+#: 次级文字（Android onSurfaceVariant）
+TEXT_MUTED = ("#5F6B78", "#C4CAD1")
 
-# 单一强调色（蓝）。hover 提亮而非压暗——深色 UI 上「变亮 = 浮起」。
-ACCENT = "#1F6FEB"
-ACCENT_HOVER = "#3B85F0"
-DANGER = "#E5484D"
-DANGER_HOVER = "#EF6B6F"
-SUCCESS = "#30A46C"
+# 单一强调色（Android primary「科技青蓝」）。hover 提亮而非压暗——深色 UI 上
+# 「变亮 = 浮起」。主按钮文字用 ACCENT_TEXT（Android onPrimary）：深色模式主色
+# 是浅青蓝，白字会看不清，必须配深色字。
+ACCENT = ("#00668F", "#8CC8F8")
+ACCENT_HOVER = ("#0077A6", "#A9D8FB")
+ACCENT_TEXT = ("#FFFFFF", "#00344F")
+#: 强调色容器（Android primaryContainer）：标签页选中胶囊等「淡强调」场景。
+#: CTkSegmentedButton 选中/未选中共用一个 text_color，只有容器色能同时和
+#: 近黑/近白文字共存。
+ACCENT_CONTAINER = ("#C7E7FF", "#004B6F")
+ACCENT_CONTAINER_HOVER = ("#B4DDFA", "#0A5B87")
+DANGER = ("#DC2626", "#F87171")
+DANGER_HOVER = ("#E05252", "#F98D8D")
+DANGER_TEXT = ("#FFFFFF", "#450A0A")
+SUCCESS = ("#16A34A", "#4ADE80")
+WARNING = ("#D97706", "#FBBF24")
 
-# 语义提示底（安全警告 / 离线提示），克制版琥珀与红。
-WARN_BG = ("#FFF6DE", "#33290F")
+# 语义提示底（安全警告 / 离线提示）：浅色用 Android tertiaryContainer /
+# errorContainer，深色沿用克制的暗底。
+WARN_BG = ("#FEF3C7", "#33290F")
 WARN_TEXT = ("#8A6400", "#F5C84B")
-OFFLINE_BG = ("#FDEBE9", "#33201E")
+OFFLINE_BG = ("#FEE2E2", "#33201E")
 OFFLINE_TEXT = ("#C0372F", "#FF8A80")
 
-# 按钮体系。次级按钮：浅色模式必须保持「中灰底 + 白字」（浅灰底 + 白字
-# 会隐身——浅色截图复核抓到过），深色模式用略亮的表面色。
+# 按钮体系。次级按钮取 Android secondary / secondaryContainer（深板岩蓝），
+# 与 CTk 默认浅色文字（#DCE4EE）对比充足；禁用态连底色一起变灰。
 BTN_DISABLED = ("#C7CCD3", "#333A45")
 BTN_DISABLED_TEXT = ("#8A9099", "#6F7783")
-BTN_SECONDARY = ("#77808C", "#2A3140")
-BTN_SECONDARY_HOVER = ("#646D79", "#39414F")
+BTN_SECONDARY = ("#4E616E", "#34485A")
+BTN_SECONDARY_HOVER = ("#41525E", "#3E5468")
 
 # 影：卡片下缘渐变条两段（由近及远淡出），与按钮「上浮露影」的影条。
 SHADOW_A = ("#CBD3DC", "#0A0D13")
@@ -109,7 +126,14 @@ def attach_hover(button, base, target, *, enabled=None, wrap=None,
     step_ms = max(1, ms // HOVER_STEPS)
 
     def paint(t: float) -> None:
-        button.configure(fg_color=lerp(resolve(base), resolve(target), t))
+        # 中间帧用内插单色；到头（t=1）/回底（t=0）写回 (浅, 深) 元组——
+        # 单色会被 CTk 冻结在当前外观模式的颜色上，切模式后不跟手。
+        if t <= 0:
+            button.configure(fg_color=base)
+        elif t >= 1:
+            button.configure(fg_color=target)
+        else:
+            button.configure(fg_color=lerp(resolve(base), resolve(target), t))
         if wrap is not None and lift_px > 0:
             button.place(x=0, y=max(0, round(lift_px * (1 - t))), relwidth=1.0)
 
@@ -162,6 +186,8 @@ def lift_button(parent, *, base, hover, lift_px: int = 3, enabled=None,
     w = int(btn_kwargs.get("width", 120))
     h = int(btn_kwargs.get("height", 36))
     btn_kwargs.setdefault("corner_radius", RADIUS)
+    # 底色在创建时就给：否则按钮一直停在 CTk 默认蓝，只有悬浮过才变强调色。
+    btn_kwargs.setdefault("fg_color", base)
     wrap = ctk.CTkFrame(parent, width=w, height=h + lift_px, fg_color="transparent")
     wrap.pack_propagate(False)
     # 影条在按钮下层：静止时被按钮盖住，上浮后露出。颜色直接给 (浅, 深)
