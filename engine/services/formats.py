@@ -20,6 +20,7 @@ from models import (
     SelectionStrategy,
 )
 from security import SecurityError, validate_outbound_url
+from services import proxy as proxy_settings
 from services.redirect import resolve_redirects
 
 WIDEVINE_KEYFORMAT_UUID = "urn:uuid:edef8ba9-79ec-483b-86c7-1d2b1c8b0a9b"
@@ -210,7 +211,13 @@ def fetch_manifest_text(
 ) -> str:
     """按逐跳校验后的地址取 manifest 文本（首跳同样过 SSRF 校验）。"""
     final_url = resolve_redirects(url, transport=transport, task_id=task_id).url
-    with httpx.Client(follow_redirects=False, timeout=5.0, transport=transport) as client:
+    with httpx.Client(
+        follow_redirects=False,
+        timeout=5.0,
+        transport=transport,
+        # M21：与嗅探 / 下载同一代理口径；测试注入 transport 时让位（httpx 不允许两者并存）
+        **proxy_settings.httpx_proxy_kwargs(transport=transport),
+    ) as client:
         response = client.get(final_url)
         try:
             return response.text

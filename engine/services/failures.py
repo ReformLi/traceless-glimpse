@@ -10,7 +10,8 @@
 1. 异常**类型 / errno**：`socket.gaierror`、`ssl.SSLError`、`TimeoutError`、
    `httpx.TimeoutException`、`PermissionError`、`errno.ENOSPC` 这些是确定的事实；
 2. 异常**文本**里的标记：yt-dlp 会把底层异常包成 `DownloadError`，链条常常断掉，
-   只剩一句 `... getaddrinfo failed ...`，这时才按关键字判；
+   只剩一句 `... getaddrinfo failed ...`，这时才按关键字判；嗅探侧拿到的是
+   Chromium 的网络错误码（`net::ERR_CONNECTION_RESET` 一类，M21 起同样在这张表里）；
 3. 文本里的 **HTTP 状态码**：401/403 → `AUTH_REQUIRED`（站点拒绝，通常是缺 Cookie），
    429 → `RATE_LIMITED`，其余 4xx/5xx → `NETWORK_HTTP_ERROR`；
 4. 都判不出来 → 调用方给的 `fallback`（完整性类落 `PARTIAL_DOWNLOAD`，其它落 `UNKNOWN`）。
@@ -43,6 +44,9 @@ _DNS_MARKERS = (
     "temporary failure in name resolution",
     "unknown host",
     "name resolution",
+    # Chromium/Playwright 的网络错误码（M21）
+    "err_name_not_resolved",
+    "err_name_resolution_failed",
 )
 _TLS_MARKERS = (
     "certificate",
@@ -50,8 +54,46 @@ _TLS_MARKERS = (
     "tls",
     "handshake",
     "unable to get local issuer",
+    "err_ssl_",
+    "err_cert_",
 )
-_TIMEOUT_MARKERS = ("timed out", "timeout", "read operation timed")
+_TIMEOUT_MARKERS = (
+    "timed out",
+    "timeout",
+    "read operation timed",
+    "err_timed_out",
+    "err_connection_timed_out",
+)
+# M21：连接被重置/拒绝/地址不可达——**不是**「站点已变更」，是链路层掐断。
+# 国内被阻断的域名典型表现就是 ERR_CONNECTION_RESET（TLS 握手期 RST），
+# 所以这类必须与 EXTRACTOR_FAILED 分开，并给出「可尝试代理」的提示。
+# 归到 NETWORK_HTTP_ERROR：category=network、retryable=true，语义最贴近的既有码。
+_BLOCKED_MARKERS = (
+    "err_connection_reset",
+    "err_connection_closed",
+    "err_connection_refused",
+    "err_connection_aborted",
+    "err_address_unreachable",
+    "err_internet_disconnected",
+    "err_network_changed",
+    "err_network_access_denied",
+    "err_empty_response",
+    "err_http2_protocol_error",
+)
+# 代理自己不通（端口错 / 未启动 / 需要认证）：同样是链路问题，但要说清是代理的锅，
+# 而不是让用户以为站点被封、再去改一次代理地址。
+_PROXY_MARKERS = (
+    "err_proxy_connection_failed",
+    "err_tunnel_connection_failed",
+    "err_proxy_auth",
+)
+
+#: 连接层被掐断时给用户的话。与 EXTRACTOR_FAILED 的「解析失败，可能站点已变更」区分开：
+#: 站点没变、页面也没解析过，是**连接根本没建立**——暗示用户去配代理才有意义。
+CONNECTION_BLOCKED_MESSAGE = "目标站点连接被重置，可能被网络阻断；可在电脑端配置代理后重试"
+
+#: 配了代理但代理本身不可用（端口写错 / 代理软件没开）时的话。
+PROXY_UNREACHABLE_MESSAGE = "代理不可用：连不上配置的代理地址，请检查「网络代理」的地址与端口"
 _RATE_LIMIT_MARKERS = ("too many requests", "rate limit", "429")
 _DISK_MARKERS = (
     "no space left on device",
@@ -115,11 +157,13 @@ def _code_from_type(item: BaseException) -> ErrorCode | None:
 
 
 def _code_from_markers(text: str) -> ErrorCode | None:
-    """按「最不可能误判」排：DNS → TLS → 超时 → 限流 → 磁盘 → 写权限 → 半路断流。"""
+    """按「最不可能误判」排：DNS → TLS → 超时 → 连接掐断 → 限流 → 磁盘 → 写权限 → 半路断流。"""
     for markers, code in (
         (_DNS_MARKERS, ErrorCode.DNS_FAILURE),
         (_TLS_MARKERS, ErrorCode.TLS_ERROR),
         (_TIMEOUT_MARKERS, ErrorCode.NETWORK_TIMEOUT),
+        (_PROXY_MARKERS, ErrorCode.NETWORK_HTTP_ERROR),
+        (_BLOCKED_MARKERS, ErrorCode.NETWORK_HTTP_ERROR),
         (_RATE_LIMIT_MARKERS, ErrorCode.RATE_LIMITED),
         (_DISK_MARKERS, ErrorCode.DISK_FULL),
         (_WRITE_MARKERS, ErrorCode.WRITE_PERMISSION_DENIED),

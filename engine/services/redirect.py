@@ -12,6 +12,7 @@ from urllib.parse import urljoin
 import httpx
 
 from security import validate_outbound_url
+from services import proxy as proxy_settings
 
 logger = logging.getLogger("bgv.engine")
 
@@ -85,7 +86,13 @@ def resolve_redirects(
     """
     validate_outbound_url(url)
     current = url
-    with httpx.Client(follow_redirects=False, timeout=timeout, transport=transport) as client:
+    with httpx.Client(
+        follow_redirects=False,
+        timeout=timeout,
+        transport=transport,
+        # M21：逐跳探测与嗅探/下载共用代理口径；测试注入 transport 时让位
+        **proxy_settings.httpx_proxy_kwargs(transport=transport),
+    ) as client:
         for _ in range(max_hops):
             with client.stream(
                 "GET", current, headers={"Range": "bytes=0-0"}

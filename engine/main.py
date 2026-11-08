@@ -24,6 +24,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -520,11 +521,15 @@ def _download_real(record: TaskRecord) -> None:
 
 
 def _fail_task(
-    task: Task, code: ErrorCode, detail: dict[str, Any] | None = None
+    task: Task,
+    code: ErrorCode,
+    detail: dict[str, Any] | None = None,
+    *,
+    message: str | None = None,
 ) -> None:
     if task.status in TERMINAL_STATES:
         return  # 取消与失败竞态：终态优先，不覆盖
-    task.error = error_payload(code, detail=detail)
+    task.error = error_payload(code, detail=detail, message=message)
     _transition(task, TaskStatus.FAILED)
 
 
@@ -706,7 +711,8 @@ def _advance(record: TaskRecord) -> None:
         failure = _sniff_real(record)
         record.sniffed = True
         if failure is not None:
-            _fail_task(task, failure, {"reason": "sniff_failed"})
+            code, detail, message = failure
+            _fail_task(task, code, detail, message=message)
             return
     if task.status == TaskStatus.SNIFFING:
         if task.mode == TaskMode.SNIFF:
@@ -740,12 +746,45 @@ def _selector_key(selector: FormatSelector) -> str:
     return selector.model_dump_json()
 
 
-def _sniff_real(record: TaskRecord) -> ErrorCode | None:
+_CHROMIUM_NET_RE = re.compile(r"net::(ERR_[A-Z0-9_]+)")
+
+
+def _sniff_failure(exc: Exception) -> tuple[ErrorCode, dict[str, Any], str | None]:
+    """嗅探异常 → (错误码, detail, 文案覆写)。
+
+    M21：**连接层被掐断**（`ERR_CONNECTION_RESET` 一类）不再冒充 `EXTRACTOR_FAILED`
+    （「解析失败，可能站点已变更」）——页面根本没加载，站点也没变。这类归
+    `NETWORK_HTTP_ERROR`（category=network / retryable=true 都合适），文案换成
+    「可能被网络阻断，可配置代理」；DNS / 超时 / TLS 各自归既有码，用表内文案。
+
+    detail 只带**错误码值**，不带异常原文：原文里有 URL 与查询串（§1.7 脱敏口径）。
+    返回的第三个元素是 message 覆写，None 表示用 §5 表内文案。
+    """
+    code, _ = failures_service.classify_download_failure(
+        exc, fallback=ErrorCode.EXTRACTOR_FAILED
+    )
+    detail: dict[str, Any] = {"reason": "sniff_failed"}
+    match = _CHROMIUM_NET_RE.search(str(exc))
+    if match:
+        detail["net"] = match.group(1)
+    message: str | None = None
+    if code is ErrorCode.NETWORK_HTTP_ERROR:
+        net_code = str(detail.get("net", ""))
+        # 代理自己不通 ≠ 站点被阻断：说清是谁的锅，用户才知道该改哪里。
+        message = (
+            failures_service.PROXY_UNREACHABLE_MESSAGE
+            if net_code.startswith(("ERR_PROXY_", "ERR_TUNNEL_"))
+            else failures_service.CONNECTION_BLOCKED_MESSAGE
+        )
+    return code, detail, message
+
+
+def _sniff_real(record: TaskRecord) -> tuple[ErrorCode, dict[str, Any], str | None] | None:
     """real 模式嗅探 + yt-dlp 格式解析：结果写回 record.sniff / record.formats。
 
-    成功返回 None；失败返回 §5 错误码，由调用方置 failed：
-    嗅探异常 → EXTRACTOR_FAILED，页面无媒体流 → NO_MEDIA_FOUND
-    （两者均 retryable，detail.reason=sniff_failed；不新增错误码）。
+    成功返回 None；失败返回 (错误码, detail, 文案覆写)，由调用方置 failed。
+    嗅探异常按 [services.failures] 归因（M21：连接被掐断 → NETWORK_HTTP_ERROR），
+    页面无媒体流 → NO_MEDIA_FOUND；两者的 detail.reason 都是 sniff_failed。
     """
     from services.sniffer import SniffError, get_sniffer
 
@@ -755,13 +794,21 @@ def _sniff_real(record: TaskRecord) -> ErrorCode | None:
             task.id, task.sourceUrl, task.cookiePolicy.value
         )
     except SniffError as exc:
-        logger.warning("sniff_failed task_id=%s type=%s", task.id, type(exc).__name__)
+        code, detail, message = _sniff_failure(exc)
+        # 只打类型与网络码：异常原文带 URL，不进日志（§1.7）
+        logger.warning(
+            "sniff_failed task_id=%s type=%s net=%s code=%s",
+            task.id,
+            type(exc).__name__,
+            detail.get("net", "-"),
+            code.value,
+        )
         record.sniff = None
-        return ErrorCode.EXTRACTOR_FAILED
+        return code, detail, message
     if observed is None:
         logger.warning("sniff_no_media task_id=%s", task.id)
         record.sniff = None
-        return ErrorCode.NO_MEDIA_FOUND
+        return ErrorCode.NO_MEDIA_FOUND, {"reason": "sniff_failed"}, None
     # DRM 判定（§3.2）：播放列表按 keyformat 三态判定；取不到 manifest（如回环媒体
     # 被 SSRF 拦截）时保持 false，并记 sniff_manifest_blocked 审计行（只带 task_id）
     drm_detected, drm_system_name = False, None

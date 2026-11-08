@@ -53,6 +53,30 @@ python -m venv .venv
 
   桌面启动器注入的完整变量族（另有 `BGV_ENGINE_MODE=real`、`BGV_OUTPUT_DIR_ALLOWLIST`、
   `BGV_LISTEN_HOST/PORT`）与进程树清理方式见 `desktop/README.md` §6。
+- `BGV_PROXY`（M21）：**出站代理**，嗅探 Chromium、清单抓取（`services/formats.py`）、
+  逐跳探测（`services/redirect.py`）、直链下载（`services/downloader.py`）与 yt-dlp
+  五处共用一套口径（`services/proxy.py`）。只认显式配置，**不读系统代理**——
+  系统代理会在用户不知情时变化，静默改出站路径比「代理不生效」更难排查。
+  留空 = 直连，行为与本功能上线前完全一致。写法：`http://127.0.0.1:7890`、
+  `http://user:pass@host:port`、`socks5://host:port`（socks 供 Playwright / yt-dlp，
+  httpx 需 `httpx[socks]`）。桌面控制面板「网络代理」输入框写的就是它，改完需重启引擎。
+
+
+### 嗅探失败的归因（M21）
+
+嗅探异常不再一律报 `EXTRACTOR_FAILED`（「解析失败，可能站点已变更」）——那句话只对
+「页面打开了但结构变了」成立。连接层根本没建立时按 `services/failures.py` 的归因表分：
+
+| Chromium 网络码 | §5 错误码 | 用户看到的话 |
+|---|---|---|
+| `ERR_NAME_NOT_RESOLVED` | `DNS_FAILURE` | 域名解析失败 |
+| `ERR_TIMED_OUT` / `ERR_CONNECTION_TIMED_OUT` | `NETWORK_TIMEOUT` | 网络超时 |
+| `ERR_SSL_*` / `ERR_CERT_*` | `TLS_ERROR` | 安全连接失败 |
+| `ERR_CONNECTION_RESET` / `REFUSED` / `CLOSED` 等 | `NETWORK_HTTP_ERROR` | 目标站点连接被重置，可能被网络阻断；可在电脑端配置代理后重试 |
+| `ERR_PROXY_*` / `ERR_TUNNEL_*` | `NETWORK_HTTP_ERROR` | 代理不可用：连不上配置的代理地址… |
+
+`detail` 固定 `{"reason": "sniff_failed", "net": "<ERR码>"}`，**不含异常原文**
+（原文带完整 URL 与查询串）；日志同理，只打 `type=SniffError net=<ERR码> code=<§5 码>`。
 
 ### 嗅探雷达与反反爬（M18）
 

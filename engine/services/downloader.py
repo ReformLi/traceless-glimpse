@@ -31,6 +31,7 @@ from security import (
 )
 from services import cookies as cookies_service
 from services import ffmpeg_path as ffmpeg_paths
+from services import proxy as proxy_settings
 from services.formats import validate_download_urls
 from services.redirect import resolve_redirects
 
@@ -278,7 +279,13 @@ def download_direct(
 
     cookie_retry_done = False
     with httpx.Client(
-        transport=transport, follow_redirects=False, timeout=timeout, trust_env=False
+        transport=transport,
+        follow_redirects=False,
+        timeout=timeout,
+        trust_env=False,
+        # M21：直链下载与嗅探/清单抓取同一代理口径；信用环境变量（trust_env）仍关，
+        # 只认显式 BGV_PROXY——系统代理不该在后台悄悄改变落盘路径。
+        **proxy_settings.httpx_proxy_kwargs(transport=transport),
     ) as client:
         while True:
             request_headers = dict(headers)
@@ -420,6 +427,10 @@ def download_media(
             options["ffmpeg_location"] = ffmpeg
         if cookiefile is not None:
             options["cookiefile"] = str(cookiefile)
+        # M21：与嗅探 / 清单抓取同一代理口径；未配置就不写这个键，直连行为不变。
+        configured_proxy = proxy_settings.proxy_url()
+        if configured_proxy:
+            options["proxy"] = configured_proxy
         return options
 
     def _attempt(options: dict[str, Any]) -> tuple[dict[str, Any], Path]:

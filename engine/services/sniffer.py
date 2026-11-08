@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 from security import sanitize_headers
 from services import cookies as cookies_service
+from services import proxy as proxy_settings
 
 logger = logging.getLogger("bgv.engine")
 
@@ -240,11 +241,17 @@ class _SniffWorker(threading.Thread):
 
         with sync_playwright() as pw:
             headed = os.getenv(_ENV_SNIFF_HEADED, "").strip() == "1"
+            # M21：出站代理与清单抓取 / yt-dlp 同一口径（BGV_PROXY），留空即直连。
+            launch_proxy = proxy_settings.playwright_proxy()
+            if launch_proxy:
+                logger.info("sniff_proxy_enabled server=%s", launch_proxy["server"])
             if headed:
                 # 有头但窗口在屏幕外：真实渲染管线，反爬指纹最弱，也不打扰用户
-                browser = pw.chromium.launch(headless=False, args=list(_STEALTH_LAUNCH_ARGS))
+                browser = pw.chromium.launch(
+                    headless=False, args=list(_STEALTH_LAUNCH_ARGS), proxy=launch_proxy
+                )
             else:
-                browser = pw.chromium.launch(headless=True)
+                browser = pw.chromium.launch(headless=True, proxy=launch_proxy)
             try:
                 while True:
                     job = self._jobs.get()

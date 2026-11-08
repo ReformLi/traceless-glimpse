@@ -60,6 +60,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 # 源码模式与 PyInstaller 单文件模式下都要能 import 到同目录的 launcher.py。
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -117,6 +118,8 @@ DEFAULTS: dict = {
     "close_action": "tray",
     # M16.5：空串 = 未自定义，走系统 PATH；否则是 ffmpeg.exe 的绝对路径。
     "ffmpeg_path": "",
+    # M21：出站代理（嗅探/清单抓取/下载三段共用）。空串 = 直连，行为与本功能前一致。
+    "proxy": "",
 }
 
 STATE_STOPPED = "stopped"
@@ -238,6 +241,30 @@ def _validate_output_dir(raw: str) -> tuple[bool, str]:
     return True, ""
 
 
+def normalize_proxy(raw: str) -> tuple[bool, str, str]:
+    """归一化「网络代理」输入：返回 (是否合法, 归一化地址, 失败原因)。
+
+    空串合法（= 直连）。其余接受两种写法：带 scheme 的 URL（http/socks5）或裸
+    ``host:port``（补 ``http://``）。**必须带端口**——没有端口的代理地址在
+    Playwright 里会退化成「连到主机 80」，报错难懂，不如在这里当场拒绝。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return True, "", ""
+    candidate = text if "://" in text else f"http://{text}"
+    try:
+        parsed = urlsplit(candidate)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        return False, "", f"地址格式不合法（{exc}）"
+    if not host:
+        return False, "", "缺少主机名"
+    if not port:
+        return False, "", "缺少端口，例如 127.0.0.1:7890"
+    return True, candidate, ""
+
+
 class Config:
     """``desktop/config.json`` 的读写。字段容错、损坏文件自动备份、原子落盘。"""
 
@@ -294,6 +321,10 @@ class Config:
         ffmpeg = str(d.get("ffmpeg_path") or "").strip().strip('"').strip("'")
         if ffmpeg and not Path(ffmpeg).is_absolute():
             ffmpeg = str(Path(ffmpeg).resolve())
+        # 代理只在「非空且能解析出主机+端口」时保留，否则回空（直连）：
+        # 一个写坏的代理地址会让所有嗅探失败，宁可直连也不要静默全军覆没。
+        raw_proxy = str(d.get("proxy") or "").strip()
+        proxy_ok, proxy, _reason = normalize_proxy(raw_proxy)
         self.data = {
             "host": host,
             "port": port,
@@ -302,6 +333,7 @@ class Config:
             "appearance": appearance,
             "close_action": close_action,
             "ffmpeg_path": ffmpeg,
+            "proxy": proxy if proxy_ok else "",
         }
 
     def update(self, **kwargs) -> None:
@@ -605,6 +637,22 @@ class ControlPanel(ctk.CTk):
         T.attach_hover(self.browse_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER,
                        enabled=lambda: str(self.browse_button.cget("state")) != "disabled")
 
+        # M21：出站代理。留空 = 直连（与老版本行为一致）；嗅探、清单抓取、下载三段共用。
+        row_proxy = ctk.CTkFrame(settings, fg_color="transparent")
+        row_proxy.pack(fill="x", padx=18, pady=(0, 2))
+        ctk.CTkLabel(row_proxy, text="网络代理", font=_font(12), width=72,
+                     anchor="w").pack(side="left")
+        self.proxy_entry = ctk.CTkEntry(
+            row_proxy, height=30, font=_font(11), corner_radius=T.RADIUS,
+            fg_color=T.SURFACE_2, border_color=T.BORDER,
+            placeholder_text="http://127.0.0.1:7890（留空=直连）",
+        )
+        self.proxy_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.proxy_entry.bind("<KeyRelease>", lambda _e: self._schedule_save())
+        ctk.CTkLabel(settings, text="目标站点被网络阻断时，填本机代理地址可让引擎经代理出网；重启引擎后生效",
+                     font=_font(10), text_color=T.TEXT_MUTED, anchor="w").pack(
+            anchor="w", padx=18, pady=(0, 2))
+
         row3 = ctk.CTkFrame(settings, fg_color="transparent")
         row3.pack(fill="x", padx=18, pady=(4, 6))
         self.auto_start_switch = ctk.CTkSwitch(
@@ -835,6 +883,9 @@ class ControlPanel(ctk.CTk):
         self.port_entry.insert(0, str(self.cfg["port"]))
         self.output_entry.delete(0, "end")
         self.output_entry.insert(0, self.cfg["output_dir"])
+        self.proxy_entry.delete(0, "end")
+        if self.cfg["proxy"]:
+            self.proxy_entry.insert(0, self.cfg["proxy"])
         self.appearance_menu.set(APPEARANCE_LABELS[self.cfg["appearance"]])
         self.close_menu.set(CLOSE_ACTION_LABELS[self.cfg["close_action"]])
         if self.cfg["auto_start"]:
@@ -890,6 +941,24 @@ class ControlPanel(ctk.CTk):
                 messagebox.showwarning("输出目录不合适", f"{reason}\n\n引擎会拒绝写入该目录。")
             return False
 
+        # M21：代理格式当场校验——写坏的地址在引擎里会表现成「所有嗅探都失败」，
+        # 在这里拦下比让用户去翻日志强。
+        raw_proxy = self.proxy_entry.get().strip()
+        proxy_ok, proxy, proxy_reason = normalize_proxy(raw_proxy)
+        if not proxy_ok:
+            self._set_detail(f"代理地址不可用：{proxy_reason}，已保留原值")
+            self.proxy_entry.delete(0, "end")
+            if self.cfg["proxy"]:
+                self.proxy_entry.insert(0, self.cfg["proxy"])
+            if not self.smoke:
+                messagebox.showwarning("代理地址不可用",
+                                       f"{proxy_reason}\n\n留空表示直连。")
+            return False
+        if proxy != raw_proxy:
+            self.proxy_entry.delete(0, "end")
+            if proxy:
+                self.proxy_entry.insert(0, proxy)
+
         self.cfg.update(
             host=host,
             port=port,
@@ -898,6 +967,7 @@ class ControlPanel(ctk.CTk):
             appearance=APPEARANCE_VALUES.get(self.appearance_menu.get(), "system"),
             close_action=CLOSE_ACTION_VALUES.get(self.close_menu.get(),
                                                  DEFAULTS["close_action"]),
+            proxy=proxy,
         )
         self.cfg.save()
         ctk.set_appearance_mode(self.cfg["appearance"])
@@ -1016,12 +1086,16 @@ class ControlPanel(ctk.CTk):
 
     # -- 引擎启停 -------------------------------------------------------------
     @staticmethod
-    def _build_engine_env(output_dir: str, ffmpeg_path: str = "") -> dict:
+    def _build_engine_env(output_dir: str, ffmpeg_path: str = "",
+                          proxy: str = "") -> dict:
         """组装注入引擎子进程的环境变量；单独成函数便于冒烟硬断言。"""
         extra = {"BGV_OUTPUT_DIR_ALLOWLIST": output_dir}
         if ffmpeg_path:
             # M16.5：自定义 FFmpeg 绝对路径 → BGV_FFMPEG_PATH（引擎侧优先读取）
             extra[L.FFMPEG_ENV] = ffmpeg_path
+        if proxy:
+            # M21：引擎侧 services.proxy 读它，嗅探/清单抓取/下载三段统一出网
+            extra["BGV_PROXY"] = proxy
         return extra
 
     def _on_start(self) -> None:
@@ -1037,12 +1111,13 @@ class ControlPanel(ctk.CTk):
         gen = self._gen
         self._set_state(STATE_STARTING, f"正在启动引擎（{host}:{port}）…")
         ffmpeg_path = str(self.cfg["ffmpeg_path"] or "").strip()
+        proxy = str(self.cfg["proxy"] or "").strip()
         threading.Thread(target=self._start_worker,
-                         args=(gen, host, port, out, ffmpeg_path),
+                         args=(gen, host, port, out, ffmpeg_path, proxy),
                          name="bgv-engine-start", daemon=True).start()
 
     def _start_worker(self, gen: int, host: str, port: int, out: str,
-                      ffmpeg_path: str = "") -> None:
+                      ffmpeg_path: str = "", proxy: str = "") -> None:
         if self._quitting or self._gen != gen:
             return
         if L.port_in_use(port):
@@ -1055,7 +1130,7 @@ class ControlPanel(ctk.CTk):
                 if self._quitting or self._gen != gen:
                     return
                 self.engine.start(host=host, port=port,
-                                  extra_env=self._build_engine_env(out, ffmpeg_path))
+                                  extra_env=self._build_engine_env(out, ffmpeg_path, proxy))
             proc = self.engine.proc
         except Exception as exc:
             self.ui_call(self._set_state, STATE_ERROR,
@@ -1607,6 +1682,32 @@ class ControlPanel(ctk.CTk):
                           Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"] == "tray"
                           and Config(Path(CONFIG_PATH), {}).data["close_action"] == "tray",
                           str(Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"]))
+        # M21：网络代理——归一化/拒绝规则 + 注入引擎 env 的口径。
+        self._smoke_check("代理地址归一化（裸 host:port 补 http://，缺端口拒绝）",
+                          normalize_proxy("127.0.0.1:7890") == (True, "http://127.0.0.1:7890", "")
+                          and normalize_proxy("socks5://127.0.0.1:1080")[1] == "socks5://127.0.0.1:1080"
+                          and normalize_proxy("http://u:p@10.0.0.2:8080") == (True, "http://u:p@10.0.0.2:8080", "")
+                          and normalize_proxy("127.0.0.1")[0] is False
+                          and normalize_proxy("") == (True, "", ""),
+                          str(normalize_proxy("127.0.0.1:7890")))
+        proxy_env = self._build_engine_env("D:\\out", "", "http://127.0.0.1:7890")
+        direct_env = self._build_engine_env("D:\\out", "", "")
+        self._smoke_check("代理注入 BGV_PROXY（留空不注入，直连行为不变）",
+                          proxy_env.get("BGV_PROXY") == "http://127.0.0.1:7890"
+                          and "BGV_PROXY" not in direct_env,
+                          f"proxy={proxy_env.get('BGV_PROXY')} direct={sorted(direct_env)}")
+        self._smoke_check("Config 对非法 proxy 回退直连",
+                          Config(Path(CONFIG_PATH), {"proxy": "not-a-host"}).data["proxy"] == ""
+                          and Config(Path(CONFIG_PATH), {"proxy": "10.0.0.2:8080"}).data["proxy"]
+                          == "http://10.0.0.2:8080",
+                          str(Config(Path(CONFIG_PATH), {"proxy": "10.0.0.2:8080"}).data["proxy"]))
+        # 新增一行代理输入后，设置卡底部不能被窗口裁切（M21 随行加高窗口到 780）。
+        self.update_idletasks()
+        close_row = self.close_menu.master
+        row_bottom = close_row.winfo_rooty() - self.winfo_rooty() + close_row.winfo_height()
+        self._smoke_check("设置卡底部完整可见（无裁切）",
+                          0 < row_bottom <= self.winfo_height() - 4,
+                          f"bottom={row_bottom} h={self.winfo_height()}")
         # 询问模式一律弹窗（M18.6 演进）：引擎闲时也要被问。真 Toplevel 不在 smoke 里
         # 建——实测中途建 CTkToplevel 会触发 Tk 原生崩溃（0xC0000005），改为
         # 纯文案函数断言 + 分流 dry-run（猴补丁拦截弹窗调用，不真建窗）。

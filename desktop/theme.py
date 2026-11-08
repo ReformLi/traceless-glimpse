@@ -27,7 +27,7 @@ HOVER_MS = 200
 HOVER_STEPS = 8
 #: 窗口：横向宽幅（旧 760x850 接近正方形，用户嫌「太方」）。712 高是按
 #: 「控制台页结果区展开 + 一条任务行」实测不裁底定的。
-WINDOW_GEOMETRY = "1000x728"
+WINDOW_GEOMETRY = "1000x780"
 WINDOW_MIN = (920, 640)
 
 # -- 配色（浅色, 深色）元组，跟随 CTk appearance mode -------------------------

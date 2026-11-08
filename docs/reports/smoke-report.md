@@ -3946,3 +3946,75 @@ PASS（notify=1 hidden=True）。
 
 gui-smoke 88/88 ×3 连跑确认（首次复跑曾 87/88 一次，日志被覆盖无法定位具体项；
 本改动在 smoke 里走 dry-run 不真建窗，与该偶发无关，判断为既有检查的时序抖动）。
+
+## 48. M21：真机「电脑引擎嗅探总是失败」根因与出站代理（2026-11-08）
+
+**现象**：真机连电脑引擎（8735），每次嗅探都失败；logcat 只有华为 FAS 的
+`/proc/fas/render` avc denied（噪音）与每 5s 一次的 `[Posix_connect] :8735`（M20 心跳）。
+
+### 48.1 定位过程（全在 PC 侧完成，不改 App）
+
+1. 引擎日志显示 `sniff_context_open → close` 只隔 300~450ms 就 `sniff_failed type=SniffError`
+   ——秒失败，不是慢，是浏览器连页面都没打开；
+2. 从内存任务记录取出真实 URL（`www.clgw555.com/...`），本地复现嗅探：
+   `Page.goto: net::ERR_CONNECTION_RESET`；
+3. 对照实验定死「不是反爬、不是 App」：
+
+| 实验 | 结果 |
+|---|---|
+| 同环境嗅探 `example.com` | 正常（无媒体，如常） |
+| `curl` 访问该域名（不同 TLS 栈） | 0.1s 连接重置（80/443 皆然） |
+| 同一 Cloudflare IP 换 SNI `cloudflare.com` | **200 OK**（IP 未被封） |
+| 同一域名换另一个 Cloudflare IP | 依然秒断（按 SNI/域名精确阻断） |
+| 新代码端到端（TestClient，真实嗅探） | `ERR_CONNECTION_RESET` → 新归因生效 |
+
+结论：**该域名在本机网络路径被 TLS 层阻断**，任何客户端都打不开；嗅探取页在电脑上，
+所以手机必然收到失败。
+
+### 48.2 修复 A：引擎出站代理（三段链路统一口径）
+
+- 新增 `engine/services/proxy.py`：只认显式 `BGV_PROXY`，**不读系统代理**
+  （系统代理静默变化比「不生效」更难排查）；`playwright_proxy()` 拆凭据
+  （Playwright 不接受把 `user:pass@` 塞在 server 里），`httpx_proxy_kwargs()`
+  在测试注入 transport 时让位（httpx 不允许 proxy 与 transport 并存）；
+- 接入点五处：Playwright `launch(proxy=…)`、`formats.fetch_manifest_text`、
+  `redirect.resolve_redirects`、`downloader.download_direct`、yt-dlp `options["proxy"]`；
+- 桌面控制面板新增「网络代理」行（留空=直连，占位符给示例），
+  `normalize_proxy()` 归一化（裸 `host:port` 补 `http://`，**必须带端口**，
+  非法输入当场拒绝并回滚）+ 注入引擎子进程 `BGV_PROXY`；窗口 728 → 780 容纳新行；
+- 变更后需重启引擎（`BGV_PROXY` 是进程启动时读的），GUI 已按既有口径提示。
+
+### 48.3 修复 B：嗅探失败归因（文案说真话）
+
+- `services/failures.py` 标记表补 Chromium 网络码：DNS / TLS / 超时 / 连接掐断 / 代理不可用
+  五组，`_code_from_markers` 顺序按「最不可能误判」排（代理 → 连接 → ……）；
+- `main._sniff_failure()`：归到 `NETWORK_HTTP_ERROR` 时按网络码选文案——
+  `ERR_PROXY_*`/`ERR_TUNNEL_*` → 「代理不可用…」；其余连接类 → 「目标站点连接被重置，
+  可能被网络阻断；可在电脑端配置代理后重试」；DNS/超时/TLS 用 §5 表内文案；
+- `models.error_payload(code, detail, message=…)` 放开 message 覆写，
+  `category`/`retryable` 仍以码为准；**不新增错误码**（仍 30 个）；
+- `detail = {"reason": "sniff_failed", "net": "<ERR码>"}`，**不含异常原文**（原文带 URL）；
+  日志同步：`sniff_failed task_id=… type=SniffError net=ERR_CONNECTION_RESET code=NETWORK_HTTP_ERROR`。
+
+### 48.4 验证
+
+- 新增 `engine/test_proxy_and_transport.py`（19）：代理解析（裸 host、凭据拆分、socks、
+  坏输入给 None、transport 让位）、网络码归因表、`_sniff_failure` 的 detail/文案分流；
+- 引擎全量 **277 passed**（258 基线 + 19），0 失败；
+- 端到端（TestClient + 真实嗅探，同一被阻断 URL，连跑两次）：
+  `failed` / `NETWORK_HTTP_ERROR` / 文案「目标站点连接被重置，可能被网络阻断；可在电脑端配置代理后重试」
+  / `detail={"reason":"sniff_failed","net":"ERR_CONNECTION_RESET"}`；
+- 代理生效证明：`BGV_PROXY=http://127.0.0.1:9`（死端口）→
+  `ERR_PROXY_CONNECTION_FAILED`，即 Playwright 确实走了代理；
+- gui-smoke **92/92**（88 基线 + 4：代理归一化、env 注入、非法 proxy 回退、设置卡无裁切）；
+  首次 87/92 的 4 个失败全部是「端口 8735 被用户正在运行的引擎占用」，
+  换隔离数据目录 + 空端口重跑即 92/92，与本改动无关。
+
+### 48.5 边界与已知缺口
+
+- **代理是否存在不体检**：GUI 不联网验证代理可用性（离线环境会误判），
+  写错的代理会在第一次嗅探时以「代理不可用」文案暴露；
+- **socks5 只覆盖 Playwright / yt-dlp**：httpx 段需 `httpx[socks]`，未随包安装；
+- 阻断是**间歇性**的（同一 URL 有时 RST、有时能开）：这类站点即便配了代理也可能
+  偶发失败，属链路侧行为，不在引擎可控范围；
+- 手机端「本机嗅探 + 蜂窝数据」是否能开该站未验证（需用户实机确认）。

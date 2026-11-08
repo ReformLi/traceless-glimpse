@@ -3,6 +3,25 @@
 记录 `docs/PROTOCOL.md` 正文之外的**增量裁决**。协议正文仍以 `docs/PROTOCOL.md` v0.2 为准，
 本文件不改动正文；条目最终是否并入正式协议版本，由下一版协议评审时确认。
 
+## M21 阶段裁决（2026-11-08）
+
+### sniff 失败的归因收窄：连接层失败不再冒充 `EXTRACTOR_FAILED`
+
+来源：**M21 阶段裁决**（真实设备反馈「电脑引擎嗅探总是失败」的根因修复）。
+
+- 旧行为：嗅探异常一律 `EXTRACTOR_FAILED`（「解析失败，可能站点已变更」）。
+  但目标域名被网络阻断时页面**根本没加载**，这句文案把人引向错误方向。
+- 新行为：嗅探异常按 `services/failures.py` 归因表分到既有网络码——
+  DNS → `DNS_FAILURE`、超时 → `NETWORK_TIMEOUT`、TLS → `TLS_ERROR`、
+  连接被重置/拒绝 → `NETWORK_HTTP_ERROR`（`retryable=true` 不变）。
+  **不新增错误码**（仍为 30 个）。
+- `detail` 固定 `{"reason": "sniff_failed", "net": "<Chromium ERR 码>"}`，不含异常原文。
+- `message` 允许按现场覆写：`NETWORK_HTTP_ERROR` 有两个专用文案（站点被阻断 /
+  代理不可用），其余码仍用 §5 表内文案。`error_payload(code, detail, message=...)`
+  只放开 message，`category` / `retryable` 仍以码为准。
+- 影响面：仅 `mode=sniff`（及隐式嗅探）的失败载荷；下载路径的归因算法不变，
+  只是共享了同一张标记表。
+
 ## M5 阶段裁决（2026-11-02）
 
 ### `Task.outputPath`（协议 0.1 → 0.2）

@@ -283,13 +283,23 @@ class Task(StrictModel):
     outputPath: Optional[str] = None
 
 
-def error_payload(code: ErrorCode, detail: dict[str, Any] | None = None) -> ErrorPayload:
-    """由错误码构造 ErrorPayload：category / retryable / message 以 §5 表为准。"""
-    category, retryable, message = ERROR_CODE_INFO[code]
+def error_payload(
+    code: ErrorCode,
+    detail: dict[str, Any] | None = None,
+    *,
+    message: str | None = None,
+) -> ErrorPayload:
+    """由错误码构造 ErrorPayload：category / retryable / message 以 §5 表为准。
+
+    ``message`` 只给「同一个码在不同现场要说不同话」的情形（M21 起：连接被掐断
+    归 NETWORK_HTTP_ERROR，但文案要说清是链路阻断而不是站点报错）。不改码、不改
+    category / retryable——那两个是协议口径，不能因文案需要而漂移。
+    """
+    category, retryable, default_message = ERROR_CODE_INFO[code]
     return ErrorPayload(
         code=code,
         category=category,
-        message=message,
+        message=message or default_message,
         retryable=retryable,
         detail=detail,
     )
