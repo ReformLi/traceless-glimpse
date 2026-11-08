@@ -19,6 +19,11 @@ python -m venv .venv
 ```
 
 - `engine/schema/*.json` 为契约产物，由导出脚本生成后提交，勿手工修改。
+- **AES-128 加密 HLS 必须装 `pycryptodomex`**（M22，已进 `requirements-lock.txt`）。缺它时
+  yt-dlp 的 `HlsFD` 会把整个下载**委托给 ffmpeg**，而 ffmpeg 路径不回调 `progress_hooks`：
+  进度恒为 0（客户端只看到 0% → 已完成），`should_abort` 也不再被检查（点了取消，下载照跑）。
+  现场证据是引擎日志里这一行：
+  `hls_aes_ffmpeg_fallback task_id=… reason=pycryptodomex_missing impact=no_progress,no_cancel`。
 - **schema 文件命名风格**：小写蛇形，与模型导出顺序一一对应 `shared/schema/`——
   `task.json` / `sniff_result.json` / `format_info.json` / `format_selector.json` / `post_action.json` / `error_payload.json`；
   导出命令：`.\.venv\Scripts\python.exe export_schema.py`。
@@ -109,6 +114,20 @@ URL 关键字（`playlist/master/stream/manifest`，仅兜底，主文档导航�
 每次放行打印一行 `ssrf_allowlist_bypass host=<host>`（只带 host，不带 URL / 端口 / 路径），
 被拒路径同样补一行 `ssrf_blocked host=<host> reason=<类别>`。
 生产部署不要设置这两个变量；测试基线（`conftest.py`）会显式清除，防止本机 shell 环境串味。
+
+## 联机状态（M22）
+
+`GET /v1/peers` 只读返回「谁连着、在跑什么」，供桌面端「运行状态」卡使用：
+
+- `peers`：最近 `windowSeconds`（15s）内调用过 `/v1/health` 的**非回环**地址。
+  桌面端自己轮询 health 不计入——设备数只数外部连进来的。
+- `tasks`：最近 10 条任务 + `origin`（建任务时的对端地址，只在内存，按 200 条裁剪）
+  + `sourceHost`（只有域名，不含路径与查询串）。
+
+**为什么单开端点而不是给 `/v1/health` 加字段**：手机端 `BgvJson` 是严格模式，
+响应体多一个未知键，整条 JSON 反序列化失败、心跳当场变红。`Task` 模型同理——
+`GET /v1/tasks/{id}` 的响应体直接来自 `Task.model_dump()`，所以来源信息既没进模型、
+也没进任何既有响应。裁决记录见 `docs/PROTOCOL-CHANGELOG.md` 的「M22 阶段裁决」。
 
 ## 隐私自检（§6.5）
 

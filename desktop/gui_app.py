@@ -58,6 +58,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
@@ -168,6 +169,86 @@ BTN_STOP = T.DANGER
 BTN_STOP_HOVER = T.DANGER_HOVER
 BTN_SECONDARY = T.BTN_SECONDARY
 BTN_SECONDARY_HOVER = T.BTN_SECONDARY_HOVER
+
+# M22：手机上发起的任务，桌面端要能一眼认出「这条不是本机下的」。
+# 用「手机端 / 本机」这一对词，而不是「远程 / 本地」——用户口述的就是前者。
+PRESENCE_TASK_STATUS = {
+    "queued": "排队中",
+    "sniffing": "嗅探中",
+    "awaiting_selection": "选画质",
+    "downloading": "下载中",
+    "merging": "合并中",
+    "post_processing": "处理中",
+    "done": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+PRESENCE_TERMINAL = {"done", "failed", "cancelled"}
+
+
+def _is_local_address(address: str) -> bool:
+    """回环 / 空地址都算「本机」：桌面端自己发起的任务不该被标成手机端。"""
+    return address in {"", "::1", "localhost"} or address.startswith("127.")
+
+
+def presence_device_line(peers: list[dict]) -> tuple[str, str]:
+    """``(标题, 明细)``。没有设备时给一句「等 App 连上来」的空态，不留空白。"""
+    if not peers:
+        return "已连接设备 0 台", "手机 App 连上后，这里显示在线设备与它发起的任务"
+    shown = []
+    for peer in peers[:3]:
+        address = str(peer.get("address") or "?")
+        seconds = int(peer.get("lastSeenSecondsAgo") or 0)
+        shown.append(f"{address}（{seconds} 秒前）")
+    detail = "、".join(shown)
+    if len(peers) > 3:
+        detail += f" 等 {len(peers)} 台"
+    return f"已连接设备 {len(peers)} 台", detail
+
+
+def presence_task_line(task: dict) -> str:
+    """一条任务行：``手机端 · 192.168.31.250 · clgw555.com 下载 · 10:03:37 · 下载中 · 34%``。
+
+    只显示域名，不带路径与查询串（与引擎日志的脱敏口径一致）。
+    """
+    origin = str(task.get("origin") or "")
+    phone = bool(origin) and not _is_local_address(origin)
+    host = str(task.get("sourceHost") or "未知站点")
+    kind = "嗅探" if str(task.get("mode")) == "sniff" else "下载"
+    raw_status = str(task.get("status") or "")
+    status = PRESENCE_TASK_STATUS.get(raw_status, raw_status)
+    parts = ["手机端"] if phone else ["本机"]
+    if phone:
+        parts.append(origin)
+    parts.append(f"{host} {kind}")
+    stamp = _clock(task.get("startedAt"))
+    if stamp:
+        parts.append(stamp)
+    if status:
+        parts.append(status)
+    percent = task.get("percent")
+    if raw_status == "downloading" and isinstance(percent, (int, float)):
+        parts.append(f"{percent:.0f}%")
+    return " · ".join(parts)
+
+
+def presence_task_lines(tasks: list[dict], limit: int = 2) -> list[str]:
+    """在跑的优先；一条都没有时才退回去显示最近的终态行。"""
+    live = [t for t in tasks if str(t.get("status")) not in PRESENCE_TERMINAL]
+    picked = (live or tasks)[:limit]
+    return [presence_task_line(task) for task in picked]
+
+
+def _clock(value: object) -> str:
+    """ISO8601（``...Z``）→ 本地 ``HH:MM:SS``；解析不了就不显示这一格。"""
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return stamp.astimezone().strftime("%H:%M:%S")
+
 
 _FONT_FAMILY: str | None = None
 
@@ -399,6 +480,8 @@ class ControlPanel(ctk.CTk):
         self._net_stop = threading.Event()
         self._net_cancels = 0
         self._net_threads: list[threading.Thread] = []
+        #: M22：联机轮询只跟着「当前这一代」跑，同一代不叠第二个线程。
+        self._presence_gen = -1
         self._save_job: str | None = None
         #: M16.5：安装内核期间的防重入标志 + 最近一次依赖探测结果（供冒烟断言）。
         self._installing = False
@@ -584,6 +667,45 @@ class ControlPanel(ctk.CTk):
         T.attach_hover(self.log_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER)
         T.attach_hover(self.hide_button, T.BTN_SECONDARY, T.BTN_SECONDARY_HOVER)
         T.soft_shadow(control)
+
+        # -- 左栏 · M22 运行状态：谁连着、在跑什么 --
+        # 放左栏而不是右栏：右栏「设置 + 环境依赖自检」本来就已顶到窗口底，
+        # 再插一张卡会把依赖自检裁掉（截图复核抓到）。左栏控制区下方正好是空白，
+        # 而且「谁连着我」和上面的「连接地址」是同一件事的两面。
+        #
+        # 两条硬约束：
+        # 1) 只读展示，不进锁定列表（引擎停止时由 _set_state 复位）；
+        # 2) 数据只来自 /v1/peers —— 绝不给 /v1/health 或 Task 加字段，
+        #    手机端严格 JSON 多一个未知键就整条解析失败。
+        presence = ctk.CTkFrame(left, corner_radius=T.RADIUS, fg_color=T.SURFACE,
+                                border_width=1, border_color=T.BORDER)
+        presence.pack(fill="x", pady=(4, 8))
+        p_head = ctk.CTkFrame(presence, fg_color="transparent")
+        p_head.pack(fill="x", padx=18, pady=(12, 2))
+        ctk.CTkLabel(p_head, text="运行状态", font=_font(13, "bold"),
+                     anchor="w").pack(side="left")
+        ctk.CTkLabel(p_head, text="5 秒心跳", font=_font(10),
+                     text_color=T.TEXT_MUTED).pack(side="right")
+        dev_row = ctk.CTkFrame(presence, fg_color="transparent")
+        dev_row.pack(fill="x", padx=18, pady=(2, 0))
+        self.presence_dot = ctk.CTkLabel(dev_row, text="●", font=_font(15), width=18,
+                                         text_color=LED_COLOR[STATE_STOPPED])
+        self.presence_dot.pack(side="left")
+        self.presence_devices = ctk.CTkLabel(
+            dev_row, text="已连接设备 0 台", font=_font(12, "bold"), anchor="w")
+        self.presence_devices.pack(side="left", fill="x", expand=True)
+        self.presence_peer_detail = ctk.CTkLabel(
+            presence, text="引擎启动后显示在线设备", font=_font(10),
+            text_color=T.TEXT_MUTED, anchor="w", justify="left", wraplength=300)
+        self.presence_peer_detail.pack(fill="x", padx=18, pady=(0, 2))
+        # 任务行固定两格：动态增删控件会让卡片高度抖动，而任务每秒都在变。
+        self.presence_task_labels = []
+        for _ in range(2):
+            row_label = ctk.CTkLabel(presence, text="", font=_font(10), anchor="w",
+                                     justify="left", wraplength=300)
+            row_label.pack(fill="x", padx=18, pady=(0, 1))
+            self.presence_task_labels.append(row_label)
+        T.soft_shadow(presence)
 
         # 环境自检属于「引擎设置」页；底部详情状态栏则是全局的。
         self.env_label = ctk.CTkLabel(left, text="环境自检中…", font=_font(10),
@@ -798,6 +920,59 @@ class ControlPanel(ctk.CTk):
         thread = threading.Thread(target=target, args=args, name=name, daemon=True)
         self._net_threads.append(thread)
         thread.start()
+
+    # -- M22：运行状态（联机设备 + 任务来源） ---------------------------------
+    def _start_presence_loop(self) -> None:
+        """起「运行状态」轮询。
+
+        周期 2s：手机端心跳是 5s，设备列表最迟 5 秒内就该出现；再快只是白烧
+        一个线程和一条本机 HTTP 请求。
+        """
+        gen, stop = self._net_gen, self._net_stop
+        self._spawn_network("bgv-net-presence", self._presence_worker, gen, stop)
+
+    def _presence_worker(self, gen: int, stop: threading.Event) -> None:
+        """后台线程：只读 ``GET /v1/peers``，渲染一律回主线程。"""
+        port = self.engine.active_port or self.cfg["port"]
+        with EngineClient(f"http://127.0.0.1:{port}") as client:
+            while not stop.wait(2.0):
+                if gen != self._net_gen or stop.is_set():
+                    return
+                try:
+                    payload = client.get_peers()
+                except Exception:  # noqa: BLE001 —— 引擎停了/端口换了，安静退出
+                    return
+                self._emit(gen, stop, self._render_presence, payload)
+
+    def _render_presence(self, payload: dict) -> None:
+        """主线程：把 /v1/peers 画到卡上。"""
+        peers = payload.get("peers") if isinstance(payload.get("peers"), list) else []
+        tasks = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
+        title, detail = presence_device_line([p for p in peers if isinstance(p, dict)])
+        self.presence_devices.configure(text=title)
+        self.presence_peer_detail.configure(text=detail)
+        self.presence_dot.configure(
+            text_color=LED_COLOR[STATE_RUNNING] if peers else LED_COLOR[STATE_STOPPED])
+        lines = presence_task_lines(
+            [t for t in tasks if isinstance(t, dict)], limit=len(self.presence_task_labels))
+        if not lines:
+            lines = ["暂无任务 · 手机端点下载后会出现在这里"]
+        for label, text in zip(self.presence_task_labels, lines):
+            label.configure(text=text)
+        for label in self.presence_task_labels[len(lines):]:
+            label.configure(text="")
+
+    def _reset_presence(self) -> None:
+        """引擎不在跑：设备数归零，别让上一轮的 IP 留在界面上当「还在线」。"""
+        if getattr(self, "presence_devices", None) is None:
+            return
+        self.presence_devices.configure(text="已连接设备 0 台")
+        self.presence_peer_detail.configure(text="引擎启动后显示在线设备")
+        self.presence_dot.configure(text_color=LED_COLOR[STATE_STOPPED])
+        for index, label in enumerate(self.presence_task_labels):
+            # 第一格留一句空态：两格全空会让卡片下半截像被掏了个洞。
+            label.configure(
+                text="暂无任务 · 手机端点下载后会出现在这里" if index == 0 else "")
 
     def _emit(self, gen: int, stop: threading.Event, fn, *args, **kwargs) -> None:
         """网络线程唯一的界面出口：**投递前 + 执行前**各校验一次代次。
@@ -1048,6 +1223,15 @@ class ControlPanel(ctk.CTk):
                 state == STATE_RUNNING,
                 self.engine.active_port or self.cfg["port"],
             )
+        # M22：联机状态跟引擎生命周期走。同一代只起一个轮询线程；
+        # 离开 RUNNING 立刻复位，别让上一轮的 IP 留在界面上冒充「还在线」。
+        if state == STATE_RUNNING:
+            if self._presence_gen != self._net_gen:
+                self._presence_gen = self._net_gen
+                self._start_presence_loop()
+        else:
+            self._presence_gen = -1
+            self._reset_presence()
         if state == STATE_ERROR and detail and not self.smoke:
             self.after(100, lambda: messagebox.showerror(
                 "引擎启动失败", f"{detail}\n\n完整日志见「日志」按钮。"))
@@ -1708,6 +1892,48 @@ class ControlPanel(ctk.CTk):
         self._smoke_check("设置卡底部完整可见（无裁切）",
                           0 < row_bottom <= self.winfo_height() - 4,
                           f"bottom={row_bottom} h={self.winfo_height()}")
+
+        # ---- M22：运行状态卡（联机设备 + 任务来源） ----
+        self._smoke_check("运行状态卡初始为 0 台设备",
+                          self.presence_devices.cget("text") == "已连接设备 0 台",
+                          self.presence_devices.cget("text"))
+        phone_row = presence_task_line({
+            "origin": "192.168.31.250", "sourceHost": "clgw555.com", "mode": "download",
+            "status": "downloading", "percent": 34.4,
+            "startedAt": "2026-11-08T03:09:03Z",
+        })
+        local_row = presence_task_line({
+            "origin": "", "sourceHost": "example.com", "mode": "sniff", "status": "done",
+            "startedAt": "2026-11-08T03:09:03Z",
+        })
+        self._smoke_check(
+            "任务行区分手机端与本机（含 IP / 域名 / 状态 / 百分比）",
+            phone_row.startswith("手机端 · 192.168.31.250 · clgw555.com 下载")
+            and phone_row.endswith("下载中 · 34%")
+            and local_row.startswith("本机 · example.com 嗅探")
+            and "192.168.31.250" not in local_row,
+            f"{phone_row} | {local_row}")
+        # 渲染一次再复位：设备数与任务行都要能跟着数据走，不能只写死空态。
+        self._render_presence({
+            "peers": [{"address": "192.168.31.250", "lastSeenSecondsAgo": 2}],
+            "tasks": [{"origin": "192.168.31.250", "sourceHost": "clgw555.com",
+                       "mode": "download", "status": "downloading", "percent": 7.0,
+                       "startedAt": "2026-11-08T03:09:03Z"}],
+        })
+        self.update_idletasks()
+        self._smoke_check(
+            "运行状态卡渲染设备数与任务行",
+            self.presence_devices.cget("text") == "已连接设备 1 台"
+            and "192.168.31.250" in str(self.presence_task_labels[0].cget("text")),
+            f"{self.presence_devices.cget('text')} | {self.presence_task_labels[0].cget('text')}")
+        self._reset_presence()
+        self.update_idletasks()
+        last = self.presence_task_labels[-1]
+        card_bottom = last.winfo_rooty() - self.winfo_rooty() + last.winfo_height()
+        self._smoke_check("运行状态卡不越过底部状态栏",
+                          self.presence_devices.cget("text") == "已连接设备 0 台"
+                          and 0 < card_bottom <= self.winfo_height() - 4,
+                          f"bottom={card_bottom} h={self.winfo_height()}")
         # 询问模式一律弹窗（M18.6 演进）：引擎闲时也要被问。真 Toplevel 不在 smoke 里
         # 建——实测中途建 CTkToplevel 会触发 Tk 原生崩溃（0xC0000005），改为
         # 纯文案函数断言 + 分流 dry-run（猴补丁拦截弹窗调用，不真建窗）。

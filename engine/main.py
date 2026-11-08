@@ -21,6 +21,7 @@ DRM 任务在 download 入口、审计行之后、下载逻辑之前短路返回
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import random
@@ -208,11 +209,67 @@ class TaskRecord:
 
 TASKS: dict[str, TaskRecord] = {}
 
+# ---------------------------------------------------------------------------
+# M22：联机登记（桌面端「运行状态」卡的数据源）
+# ---------------------------------------------------------------------------
+# **只在内存、只给桌面端看**。刻意不写进 `Task` 模型、也不塞进 `/v1/health`：
+# 手机端 `BgvJson` 是严格模式，响应体多一个未知字段，整条 JSON 就解析失败，
+# 心跳会当场变红——「加一个字段看看」在这个项目里是破坏性改动。
+PEERS: dict[str, float] = {}
+TASK_ORIGIN: dict[str, str] = {}
+# 心跳间隔 5s、连续 2 次失败才判离线；15s 窗口正好容下一次重试，不会把
+# 短暂抖动报成「设备断开」。
+PEER_WINDOW_SECONDS = 15.0
+# 来源表按任务量裁剪，长跑进程不无限长内存。
+TASK_ORIGIN_LIMIT = 200
+
+
+def _client_address(request: Request) -> str:
+    """对端地址。取不到就返回空串（当作「来源未知」）。"""
+    client = getattr(request, "client", None)
+    return (client.host if client else "") or ""
+
+
+def _is_loopback(address: str) -> bool:
+    """本机回环：桌面端自己每秒轮询 health，不能把自己算成「一台设备」。"""
+    if not address:
+        return True
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return address in {"localhost", "::1"}
+
+
+def _record_peer(address: str) -> None:
+    """登记一次心跳。回环与非 IP 地址不入表：设备数只数「外部连进来的」。
+
+    非 IP（例如测试客户端的 ``testclient``）一律不登记——宁可少报一台设备，
+    也不要在设备列表里写一行用户看不懂的字符串。
+    """
+    if _is_loopback(address):
+        return
+    try:
+        ipaddress.ip_address(address)
+    except ValueError:
+        return
+    PEERS[address] = time.time()
+
+
+def _remember_origin(task_id: str, address: str) -> None:
+    """记下任务是哪台设备建的（下载控制台的任务行靠它区分手机端/本机）。"""
+    TASK_ORIGIN[task_id] = address or ""
+    if len(TASK_ORIGIN) > TASK_ORIGIN_LIMIT:
+        keep = {record.task.id for record in TASKS.values()}
+        for key in [k for k in TASK_ORIGIN if k not in keep][: len(TASK_ORIGIN) - TASK_ORIGIN_LIMIT]:
+            TASK_ORIGIN.pop(key, None)
+
 
 def reset_state() -> None:
-    """测试隔离：清任务表 / 计数器 / 持久化任务行。"""
+    """测试隔离：清任务表 / 计数器 / 持久化任务行 / 联机登记。"""
     TASKS.clear()
     DOWNLOAD_COUNTER.reset()
+    PEERS.clear()
+    TASK_ORIGIN.clear()
     get_store().clear()
 
 
@@ -1061,14 +1118,63 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 
 @app.get("/v1/health")
-def health():
-    """§6.6。"""
+def health(request: Request):
+    """§6.6。
+
+    **响应体一个字段都不能加**：手机端 `BgvJson` 严格模式下多一个未知字段就会
+    整条解析失败，心跳直接变红。联机设备另开只读端点 `/v1/peers`。
+    """
+    # 心跳同时兼任「设备在线登记」：手机端每 5s 打一次，桌面端据此数设备。
+    _record_peer(_client_address(request))
     return JSONResponse(
         content={
             "status": "ok",
             "version": ENGINE_VERSION,
             "protocolVersion": PROTOCOL_VERSION,
             "uptimeSeconds": int(time.time() - START_TIME),
+        },
+        headers=PROTOCOL_HEADERS,
+    )
+
+
+@app.get("/v1/peers")
+def list_peers():
+    """M22：桌面端「运行状态」卡的唯一数据源（联机设备 + 最近任务来源）。
+
+    新端点而不是扩既有响应，理由见 :func:`health`。返回的 ``sourceHost`` 只有域名，
+    不带路径与查询串——与引擎日志的脱敏口径一致。
+    """
+    now = time.time()
+    seen = [(addr, stamp) for addr, stamp in PEERS.items() if now - stamp <= PEER_WINDOW_SECONDS]
+    seen.sort(key=lambda item: item[1], reverse=True)
+    peers = [
+        {"address": addr, "lastSeenSecondsAgo": int(now - stamp)} for addr, stamp in seen
+    ]
+
+    recent = sorted(TASKS.values(), key=lambda record: record.task.createdAt, reverse=True)[:10]
+    tasks = []
+    for record in recent:
+        task = record.task
+        try:
+            source_host = urlsplit(task.sourceUrl).hostname or ""
+        except ValueError:
+            source_host = ""
+        tasks.append(
+            {
+                "taskId": task.id,
+                "origin": TASK_ORIGIN.get(task.id, ""),
+                "mode": task.mode.value,
+                "sourceHost": source_host,
+                "status": task.status.value,
+                "percent": task.progress.percent if task.progress else 0.0,
+                "startedAt": task.createdAt,
+            }
+        )
+    return JSONResponse(
+        content={
+            "windowSeconds": int(PEER_WINDOW_SECONDS),
+            "peers": peers,
+            "tasks": tasks,
         },
         headers=PROTOCOL_HEADERS,
     )
@@ -1106,7 +1212,7 @@ def debug_download_counter():
 
 
 @app.post("/v1/tasks", status_code=201)
-def create_task(req: TaskCreateRequest):
+def create_task(req: TaskCreateRequest, request: Request):
     """§6.2 创建任务。校验顺序：sourceUrl 出站校验 → outputDir 白名单校验。"""
     validate_outbound_url(req.sourceUrl)
     validate_output_dir(req.outputDir, allowlist=OUTPUT_DIR_ALLOWLIST)
@@ -1133,6 +1239,8 @@ def create_task(req: TaskCreateRequest):
         sniff=_make_sniff(task.id, _scenario_for(req.sourceUrl)) if ENGINE_MODE == "stub" else None,
     )
     TASKS[task.id] = record
+    # 记住来源设备：桌面端任务行要能把「手机端发起的」和「本机发起的」分开说。
+    _remember_origin(task.id, _client_address(request))
     get_store().upsert(task)
     response = _task_response(task, status_code=201)
     # 先序列化响应再入队，保证 201 响应体为 queued（worker 随后推进）

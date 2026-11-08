@@ -124,6 +124,7 @@ cd engine
 | M19 | 自定义引擎 IP 的 HTTP 白名单封装与网络安检门（零信任 OkHttp 拦截器） | `eb9e966` |
 | M20 | 电脑引擎心跳检测：5s/拍 3s 超时，连续两拍失败判离线，离线点嗅探前端拦截 | （见 smoke-report §41） |
 | M21 | 引擎出站代理（`BGV_PROXY` + 桌面「网络代理」）与嗅探传输层失败归因（不再冒充「站点已变更」） | [§48](docs/reports/smoke-report.md) |
+| M22 | 手机端下载进度真实走动（补 `pycryptodomex`，加密 HLS 不再被委托给 ffmpeg）；电脑端「运行状态」卡（联机设备 + 任务来源 `GET /v1/peers`） | 本轮提交 |
 
 每阶段的现场证据、协议坑与自报缺口记在 [`docs/reports/smoke-report.md`](docs/reports/smoke-report.md)（§33 起按阶段编号）。
 

@@ -3,6 +3,46 @@
 记录 `docs/PROTOCOL.md` 正文之外的**增量裁决**。协议正文仍以 `docs/PROTOCOL.md` v0.2 为准，
 本文件不改动正文；条目最终是否并入正式协议版本，由下一版协议评审时确认。
 
+## M22 阶段裁决（2026-11-08）
+
+### 新增只读端点 `GET /v1/peers`：桌面端「运行状态」卡的数据源
+
+来源：**M22 阶段裁决**（用户需求「电脑端展示连接的设备状况」）。
+
+需求本身很小，但落地方式有一条硬约束：**不能扩任何既有响应**。
+
+- 手机端 `BgvJson` 是严格模式（`:strictMode = true`），响应体多一个未知键，
+  **整条 JSON 反序列化失败**——`/v1/health` 加个 `peers` 字段，心跳会当场变红，
+  这正是 M20 刚修好的那条链路。
+- 同理，`Task` 模型不能加 `origin` / `clientAddress`：`GET /v1/tasks/{id}` 的
+  响应体直接来自 `Task.model_dump()`。
+
+因此新增独立端点，既有响应**一个字节都没动**：
+
+```json
+GET /v1/peers
+{
+  "windowSeconds": 15,
+  "peers": [{"address": "192.168.31.250", "lastSeenSecondsAgo": 2}],
+  "tasks": [
+    {"taskId": "01a1...", "origin": "192.168.31.250", "mode": "download",
+     "sourceHost": "clgw555.com", "status": "downloading", "percent": 34.5,
+     "startedAt": "2026-11-08T03:09:03Z"}
+  ]
+}
+```
+
+- **设备判定**：`GET /v1/health` 每次调用记一次 `client.host`；**回环与非 IP 不入表**
+  （桌面端自己轮询 health，不能把自己算成一台设备）。窗口 15s ≈ 一次心跳重试的余量。
+- **来源记录**：`POST /v1/tasks` 时把 `client.host` 记进内存表，键是 `taskId`。
+  只在内存、按 200 条裁剪，不落库、不进协议。
+- **脱敏**：`sourceHost` 只有域名，`detail` 之类不含路径与查询串——与引擎日志
+  「日志不带源 URL」的既有承诺同口径。
+- **不新增错误码**，端点只读，不改任何状态。
+
+客户端兼容性：新端点对旧手机端**完全不可见**（没人调它）；桌面端旧版本也不会因为
+引擎多了路由而受影响。
+
 ## M21 阶段裁决（2026-11-08）
 
 ### sniff 失败的归因收窄：连接层失败不再冒充 `EXTRACTOR_FAILED`

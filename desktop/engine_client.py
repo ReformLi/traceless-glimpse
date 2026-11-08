@@ -184,6 +184,15 @@ class EngineClient:
         items = payload.get("items")
         return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
+    def get_peers(self) -> dict:
+        """``GET /v1/peers`` → 联机设备与最近任务来源（M22）。
+
+        只读端点，桌面端「运行状态」卡专用。**不要**把这个信息塞进
+        ``/v1/tasks`` 或 ``/v1/health``：手机端响应解析是严格模式，
+        多一个未知字段就整条失败。
+        """
+        return self._request("GET", "/v1/peers")
+
     def start_download(self, task_id: str, selector: dict) -> dict:
         """``POST /v1/tasks/{id}/download`` → 202。selector 包在 formatSelector 里。
 

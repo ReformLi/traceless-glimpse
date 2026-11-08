@@ -4018,3 +4018,60 @@ gui-smoke 88/88 ×3 连跑确认（首次复跑曾 87/88 一次，日志被覆�
 - 阻断是**间歇性**的（同一 URL 有时 RST、有时能开）：这类站点即便配了代理也可能
   偶发失败，属链路侧行为，不在引擎可控范围；
 - 手机端「本机嗅探 + 蜂窝数据」是否能开该站未验证（需用户实机确认）。
+
+## 49. M22：手机端下载进度恒为 0 的根因与「运行状态」卡（2026-11-08）
+
+### 49.1 现象
+
+手机端（连电脑引擎）点「开始下载」后：主页只有按钮置灰，下载页那行停在 0% 一路到「已完成」；
+电脑端也没有任何任务信息。上一轮把 `DownloadCoordinator` 丢掉 `percent` 的问题修了，
+真机复测**仍然没有进度**——说明还有一层更深的坑。
+
+### 49.2 定位过程（四步排除，每步都有实测证据）
+
+| 步 | 假设 | 实测 | 结论 |
+|---|---|---|---|
+| 1 | 客户端丢 `percent` | 上轮已修（`progressTotalBytes` 反推 + 下载页百分比格） | 不是它 |
+| 2 | 引擎 `percent` 算错 | 用 real 引擎跑真实任务，1s 采样一次任务详情：**88 个采样点全是 `dl=0/total=0/pct=0`，第 89 秒直接 `done/100%`** | 引擎中途根本没更新进度 |
+| 3 | yt-dlp 不回调 `progress_hooks` | 裸调 `yt_dlp.YoutubeDL`（不经引擎代码）挂 hook 下载同一 URL：**`hook_samples = 0`** | 钩子确实一次没调 |
+| 4 | 为什么钩子不调 | `verbose` 输出里那一行：`The stream has AES-128 encryption and pycryptodomex is not available; extraction will be delegated to ffmpeg` | **HlsFD 把整个下载委托给了 ffmpeg，ffmpeg 路径不回调 hooks** |
+
+旁证：下载过程中输出目录里 `X.mp4.part` 每秒钟稳定长大（1.3 MB/s），
+而 `should_abort` 在 22 秒时已返回 `True`，下载**照样跑到底**——
+同一个原因还让「取消」失效了（用户 11:13 点过取消，引擎日志有 `cancel_requested`，
+但没有任何 `download_aborted`）。
+
+装回 `pycryptodomex` 后立刻复测：`hook` 回调密集触发，
+`(frag 45/301)`、`total≈109.5MiB`、`downloaded` 持续递增 —— 原生分片下载器接管，两条能力一起回来。
+
+### 49.3 修复
+
+- `engine/requirements-lock.txt` 增 `pycryptodomex==3.24.2`（纯 wheel、无编译、无额外间接依赖）；
+- 引擎侧把「为什么会没有进度」变成可查日志：清单里出现 `#EXT-X-KEY:METHOD=AES-128`
+  且缺 `Cryptodome` 时打
+  `hls_aes_ffmpeg_fallback task_id=… reason=pycryptodomex_missing impact=no_progress,no_cancel`；
+- 探针放宽到「无后缀的裸 token 地址」（真实 HLS 地址长这样：`https://cdn/…/b3a240e2e4014f3eb0d8fe90d85607ee`），
+  同时改为**流式只读前 64KB**——否则对直链会整个读进内存（106MB）。
+
+### 49.4 「运行状态」卡（C 块）
+
+- 引擎新增只读 `GET /v1/peers`：15s 窗口内的非回环设备 + 最近任务来源；
+  **`/v1/health` 与 `Task` 一个字段都没加**（手机端严格 JSON 多一个键就整条解析失败）；
+- 桌面「引擎设置」页左栏新增「运行状态」卡：`● 已连接设备 1 台` +
+  `192.168.31.250（2 秒前）` + 任务行
+  `手机端 · 192.168.31.250 · clgw555.com 下载 · 11:09:03 · 下载中 · 34%`，2s 轮询，
+  引擎停止即复位。
+
+### 49.5 验证
+
+- 引擎全量 **295 passed**（289 + 新增 `test_peers.py` 6）；
+  `test_hls_progress.py` 12 项（新增裸 token / AES-128 检测 / 流式读上限 5 项）；
+- gui-smoke **97/97**（92 + 新增 5：卡初始态、任务行区分手机端与本机、渲染、无裁切、截图模式）；
+- 截图复核：新卡先放右栏会把「环境依赖自检」挤出窗口（第一版截图就是），
+  移到左栏空白区后左右两栏都完整可见。
+
+### 49.6 边界与已知缺口
+
+- **必须重启引擎**才生效（`pycryptodomex` 是装进 `engine/.venv` 的，进程启动时才加载）；
+- 若换机器部署忘装该库：下载仍能完成，但**进度不可见、取消无效**，日志里有上面那行可查；
+- 手机端无需重装 APK（这一轮的引擎修复不涉及客户端代码）。
