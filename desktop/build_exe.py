@@ -57,6 +57,11 @@ ENGINE_HIDDEN_IMPORTS = [
     "uvicorn", "fastapi", "starlette", "pydantic", "httpx",
     "playwright", "playwright.sync_api", "playwright.async_api",
     "yt_dlp",
+    # M22：AES-128 加密 HLS 的原生解密库。yt_dlp 里是
+    # `try: from Cryptodome.Cipher import AES / except ImportError: Cryptodome = None`
+    # 这种「可选导入」，静态分析抓不稳；漏收的后果不是报错，而是**静默降级**：
+    # HlsFD 把下载委托给 ffmpeg，进度恒 0、取消失效。所以显式列进 hidden-import。
+    "Cryptodome", "Cryptodome.Cipher", "Cryptodome.Cipher.AES",
 ]
 
 # 不进 exe 的开发期依赖 / 无关重型库，压体积
@@ -117,6 +122,8 @@ def build_command(py: str) -> list[str]:
     # yt_dlp 的 extractor 运行期动态导入，必须 collect-submodules。
     cmd += ["--collect-all", "playwright"]
     cmd += ["--collect-submodules", "yt_dlp"]
+    # M22：AES-128 HLS 解密。漏收不会报错，只会让进度条恒 0、取消失效。
+    cmd += ["--collect-submodules", "Cryptodome"]
     cmd += ["--collect-data", "customtkinter"]
     # importlib.metadata.version("playwright") 在 selfcheck 里被实时查询
     cmd += ["--copy-metadata", "playwright", "--copy-metadata", "yt-dlp"]
