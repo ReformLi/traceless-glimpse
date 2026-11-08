@@ -104,6 +104,151 @@ def _estimate_total_from_fragments(hook: dict[str, Any], downloaded: int) -> int
     return int(downloaded * frag_count / frag_index)
 
 
+def _is_hls_url(url: str) -> bool:
+    """只认路径以 ``.m3u8`` 结尾的；查询串里带 m3u8 模板的（如 ``?url=``）不算。"""
+    try:
+        return urlsplit(url).path.lower().endswith(".m3u8")
+    except ValueError:
+        return False
+
+
+def _count_hls_segments(playlist: str) -> int:
+    """数清单里的 ``#EXTINF`` 行 = 分片总数。
+
+    master playlist 只列子清单、没有 ``#EXTINF``，返回 0——调用方据此放弃，
+    而不是拿 1 或某个猜出来的数去糊进度条。
+    """
+    return sum(1 for line in playlist.splitlines() if line.lstrip().startswith("#EXTINF"))
+
+
+def _might_be_manifest_url(url: str) -> bool:
+    """可能是清单：显式 ``.m3u8``/``.mpd``，或路径末段没有扩展名。
+
+    后者是 CDN 的常态——真实嗅探到的 HLS 地址常常是
+    ``https://cdn/.../b3a240e2e4014f3eb0d8fe90d85607ee`` 这种裸 token 路径，
+    只看后缀会**漏掉全部加密 HLS 源**。探针本身按流式只读前 64KB，
+    对普通直链最多多打一次 HEAD 级别的请求，不会把整个文件拖下来。
+    """
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return False
+    lowered = path.lower()
+    if lowered.endswith((".m3u8", ".mpd")):
+        return True
+    return "." not in lowered.rsplit("/", 1)[-1]
+
+
+def _is_aes128_playlist(playlist: str) -> bool:
+    """清单是否用 AES-128 加密（``#EXT-X-KEY:METHOD=AES-128``）。"""
+    return any(
+        line.lstrip().upper().startswith("#EXT-X-KEY:") and "METHOD=AES-128" in line.upper()
+        for line in playlist.splitlines()
+    )
+
+
+def _cryptodome_available() -> bool:
+    """原生 AES 解密依赖在不在位。
+
+    这是 M22 花了一整轮才钉死的坑：缺 ``pycryptodomex`` 时 yt-dlp 的 HlsFD 会把
+    **整个下载委托给 ffmpeg**，而 ffmpeg 路径既不再回调 ``progress_hooks``
+    （进度恒 0，客户端只看到 0% → 已完成），也不再检查取消标志
+    （用户点取消，下载照跑到底）。装回这个库，原生分片下载器接管，
+    两条能力一起回来。
+    """
+    try:
+        import Cryptodome  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+_MANIFEST_HEAD_BYTES = 64 * 1024
+
+
+def _read_manifest_head(response: httpx.Response, limit: int = _MANIFEST_HEAD_BYTES) -> str:
+    """流式只读前 ``limit`` 字节。
+
+    探针现在也会被「无后缀的裸 token 地址」触发，而那些地址有可能就是直链媒体本身——
+    一次性 ``response.text`` 会把整个上百 MB 的视频读进内存。清单远小于 64KB，
+    足够判断 ``#EXTM3U`` 与数清分片数。
+    """
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_bytes():
+        chunks.append(chunk)
+        size += len(chunk)
+        if size >= limit:
+            break
+    return b"".join(chunks)[:limit].decode("utf-8", "ignore")
+
+
+def _probe_hls_fragment_count(
+    url: str,
+    *,
+    validator: Callable[[str], str],
+    task_id: str = "unknown",
+    timeout: float = 5.0,
+) -> int | None:
+    """拉一次 playlist 数 ``#EXTINF`` 行，作为 yt-dlp 不给 ``fragment_count`` 时的兜底。
+
+    HLS 分片流没有总字节，百分比只能靠「已完成片数 / 总片数」算。yt-dlp 的原生分片
+    下载器通常会带 ``fragment_count``，但并非所有清单都带（尤其是部分站点自定义的
+    非标准清单），拿不到时进度就会整段停在 0——用户看到的是「0% 然后突然已完成」。
+
+    master playlist（只列子清单、没有 ``#EXTINF``）与非 200 响应一律返回 None：
+    猜一个数只会让进度条比不动更糟。请求失败不影响下载本身，最坏情况是退回原来的行为。
+
+    **不跟随重定向**：逐跳校验只在 :mod:`services.redirect` 里做，这里放开了就等于
+    给一个不校验的出站口。多数 CDN 清单直连即 200；真被 302 挡下就放弃兜底。
+    """
+    validator(url)
+    parsed = urlsplit(url)
+    headers = {"Accept": "application/vnd.apple.mpegurl, */*"}
+    if parsed.scheme and parsed.netloc:
+        # 部分站点按 Referer 放行清单；顺手给一个同源 Referer，不额外泄露来源页面。
+        headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+    try:
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=timeout,
+            trust_env=False,
+            # M21：与下载同一代理口径；清单抓取与分片下载走同一条出站路径。
+            **proxy_settings.httpx_proxy_kwargs(),
+        ) as client:
+            with client.stream("GET", url, headers=headers) as response:
+                if response.status_code != 200:
+                    logger.info(
+                        "hls_fragment_probe_failed task_id=%s reason=http_%d",
+                        task_id,
+                        response.status_code,
+                    )
+                    return None
+                head = _read_manifest_head(response)
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.info(
+            "hls_fragment_probe_failed task_id=%s reason=%s", task_id, type(exc).__name__
+        )
+        return None
+    if not head.lstrip().startswith("#EXTM3U"):
+        # 裸 token 地址也可能是直链媒体：不是清单就干脆不探，别拿分片数去糊进度。
+        logger.info("hls_fragment_probe_skip task_id=%s reason=not_manifest", task_id)
+        return None
+    if _is_aes128_playlist(head) and not _cryptodome_available():
+        # 这条日志是「进度条不动 / 取消没反应」的唯一现场证据，别删。
+        logger.warning(
+            "hls_aes_ffmpeg_fallback task_id=%s reason=pycryptodomex_missing "
+            "impact=no_progress,no_cancel hint=install_pycryptodomex",
+            task_id,
+        )
+    count = _count_hls_segments(head)
+    if count <= 0:
+        logger.info("hls_fragment_probe_master task_id=%s reason=no_extinf", task_id)
+        return None
+    logger.info("hls_fragment_probe_ok task_id=%s fragments=%d", task_id, count)
+    return count
+
+
 # 响应 Content-Type -> 白名单内扩展名（只列我们能命名的类型，认不出就不改）
 _SUFFIX_BY_MIME = {
     "audio/mp4": ".m4a",
@@ -376,6 +521,14 @@ def download_media(
     validator(media_url)
     out_dir = prepare_output_dir(output_dir)
 
+    # 分片总数兜底：只在可能是清单时探一次，普通带后缀的直链不多打这一枪。
+    # 探不到（master 清单 / 站点不通 / 不是清单）就保持 None，行为与本改动前一致。
+    hls_fragments = (
+        _probe_hls_fragment_count(media_url, validator=validator, task_id=task_id)
+        if _might_be_manifest_url(media_url)
+        else None
+    )
+
     factory = ydl_factory
     if factory is None:
         import yt_dlp
@@ -398,8 +551,11 @@ def download_media(
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             if total is None:
                 # HLS 分片流大概率没有总字节数，用分片占比外推一个估算值；
-                # 估算不出（首片未落地）就传 None，percent 由 main.py 保持 0。
-                total = _estimate_total_from_fragments(d, downloaded)
+                # 清单没带 fragment_count 时用下载前探到的分片数补上。
+                hint = d
+                if not d.get("fragment_count") and hls_fragments:
+                    hint = {**d, "fragment_count": hls_fragments}
+                total = _estimate_total_from_fragments(hint, downloaded)
             on_progress(downloaded, int(total) if total else None)
 
     def _options(cookiefile: Path | None) -> dict[str, Any]:
