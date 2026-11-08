@@ -76,14 +76,32 @@ class RoomHistoryRepository(
         format: String?,
         outputPath: String?,
     ) {
-        mutate(id) {
-            it.copy(
-                status = RecordStatus.DOWNLOADING,
-                taskId = taskId ?: it.taskId,
-                format = format ?: it.format,
-                outputPath = outputPath ?: it.outputPath,
-                errorCode = null,
-                errorMessage = null,
+        rowGate.withLock {
+            val current = dao.findById(id) ?: return@withLock
+            // 终态不许被迟到的 Started 事件拉回「下载中」：DONE 是原有防线；
+            // CANCELLED 是封板审计补上的——取消后若被覆写回 DOWNLOADING，这一行
+            // 会永远停在假「下载中」且再也点不动取消（幽灵行）。
+            if (current.status == RecordStatus.DONE) {
+                audit.log("history_done_kept", mapOf("id" to id, "refused" to "downloading"))
+                return@withLock
+            }
+            if (current.status == RecordStatus.CANCELLED) {
+                audit.log(
+                    "history_cancelled_kept",
+                    mapOf("id" to id, "refused" to "downloading"),
+                )
+                return@withLock
+            }
+            dao.upsert(
+                current.copy(
+                    status = RecordStatus.DOWNLOADING,
+                    taskId = taskId ?: current.taskId,
+                    format = format ?: current.format,
+                    outputPath = outputPath ?: current.outputPath,
+                    errorCode = null,
+                    errorMessage = null,
+                    updatedAt = now(),
+                ),
             )
         }
     }

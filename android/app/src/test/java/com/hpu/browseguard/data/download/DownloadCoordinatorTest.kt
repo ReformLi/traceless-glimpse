@@ -421,6 +421,7 @@ class DownloadCoordinatorTest {
 
     private fun engineTask(recordId: String = RECORD_ID, taskId: String = "01a1") = QueuedTask(
         recordId = recordId,
+        sourceUrl = "https://example.com/watch?v=$recordId",
         executor = DownloadExecutor.ENGINE,
         request = StartRequest.ViaEngine(taskId, FormatSelector(SelectionStrategy.EXACT, "137"), null, null),
         formatSummary = "720p · mp4",
@@ -430,6 +431,7 @@ class DownloadCoordinatorTest {
 
     private fun localTask() = QueuedTask(
         recordId = RECORD_ID,
+        sourceUrl = "https://example.com/watch?v=local-$RECORD_ID",
         executor = DownloadExecutor.LOCAL_DIRECT,
         request = StartRequest.ViaLocal(
             link = SniffResult(

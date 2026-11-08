@@ -187,7 +187,8 @@ class Runner:
         dot = str(app.dep_ffmpeg_dot.cget("text_color")).lower()
         text = app.dep_ffmpeg_label.cget("text")
         hint = app.dep_ffmpeg_hint.cget("text")
-        self.check("② FFmpeg 状态圆点为红色", "e5534b" in dot, dot)
+        self.check("② FFmpeg 状态圆点为红色",
+                   any(str(c).lstrip("#").lower() in dot for c in G.T.DANGER), dot)
         self.check("② FFmpeg 状态文案为「未找到」", "未找到" in text, text)
         self.check("② 提示引导用户点「浏览…」指定路径", "浏览" in hint, hint)
         self.check("② Chromium 状态独立显示",
@@ -215,7 +216,8 @@ class Runner:
         app = self.app
         dot = str(app.dep_ffmpeg_dot.cget("text_color")).lower()
         text = app.dep_ffmpeg_label.cget("text")
-        self.check("③ FFmpeg 状态圆点转绿", "2eb872" in dot, dot)
+        self.check("③ FFmpeg 状态圆点转绿",
+                   any(str(c).lstrip("#").lower() in dot for c in G.T.SUCCESS), dot)
         self.check("③ 状态显示已就绪且带真实版本号",
                    "已就绪" in text and bool(app._dep_info.get("ffmpeg_version")),
                    f"{text} | version={app._dep_info.get('ffmpeg_version')}")

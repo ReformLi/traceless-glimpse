@@ -74,7 +74,7 @@ import tkinter as tk  # noqa: E402
 import theme as T  # noqa: E402
 from tkinter import filedialog, messagebox  # noqa: E402
 from download_console import (  # noqa: E402
-    DEMO_FORMATS, DownloadConsole, format_label, translate_error,
+    DEMO_FORMATS, PHASE_TEXT, DownloadConsole, format_label, translate_error,
 )
 from engine_client import (  # noqa: E402
     EngineClient, extract_error, run_download_flow, run_sniff_flow,
@@ -136,16 +136,22 @@ STATUS_TEXT = {
     STATE_STOPPING: "正在停止引擎…",
     STATE_ERROR: "引擎异常 / 未就绪",
 }
+def _rgba(theme_color) -> tuple[int, int, int, int]:
+    """(浅, 深) 色板元组 → 托盘位图要的 RGBA。固定取浅色档——托盘图标不随外观模式变。"""
+    hexs = (theme_color[0] if isinstance(theme_color, tuple) else theme_color).lstrip("#")
+    return (int(hexs[0:2], 16), int(hexs[2:4], 16), int(hexs[4:6], 16), 255)
+
+
+# 状态色统一走 theme.py 的绿/琥珀/红（封板·与 Android 端同源），不再自留近似色值。
 LED_COLOR = {
-    STATE_STOPPED: "#E5534B",     # 停 = 红
-    STATE_STARTING: "#E5A23C",    # 过渡 = 琥珀
-    STATE_RUNNING: "#2EB872",     # 运行 = 绿
-    STATE_STOPPING: "#E5A23C",
-    STATE_ERROR: "#E5534B",
+    STATE_STOPPED: T.DANGER,     # 停 = 红
+    STATE_STARTING: T.WARNING,   # 过渡 = 琥珀
+    STATE_RUNNING: T.SUCCESS,    # 运行 = 绿
+    STATE_STOPPING: T.WARNING,
+    STATE_ERROR: T.DANGER,
 }
-SHIELD_GREEN = (46, 184, 114, 255)
-SHIELD_AMBER = (229, 162, 60, 255)
-SHIELD_GRAY = (110, 118, 129, 255)
+SHIELD_GREEN = _rgba(T.SUCCESS)
+SHIELD_AMBER = _rgba(T.WARNING)
 TRAY_COLOR = {
     STATE_STOPPED: L.SHIELD_BLUE,
     STATE_STARTING: SHIELD_AMBER,
@@ -172,17 +178,8 @@ BTN_SECONDARY_HOVER = T.BTN_SECONDARY_HOVER
 
 # M22：手机上发起的任务，桌面端要能一眼认出「这条不是本机下的」。
 # 用「手机端 / 本机」这一对词，而不是「远程 / 本地」——用户口述的就是前者。
-PRESENCE_TASK_STATUS = {
-    "queued": "排队中",
-    "sniffing": "嗅探中",
-    "awaiting_selection": "选画质",
-    "downloading": "下载中",
-    "merging": "合并中",
-    "post_processing": "处理中",
-    "done": "已完成",
-    "failed": "失败",
-    "cancelled": "已取消",
-}
+# 任务阶段文案与下载控制台任务行共用一份（PHASE_TEXT），两端措辞永不分叉。
+PRESENCE_TASK_STATUS = PHASE_TEXT
 PRESENCE_TERMINAL = {"done", "failed", "cancelled"}
 
 
@@ -424,12 +421,18 @@ class Config:
     def __getitem__(self, key: str):
         return self.data[key]
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        """原子落盘。写盘失败（无权限 / 目录只读）弹窗告知，不让异常裸奔到 Tk 回调。"""
         self.normalize()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as exc:
+            messagebox.showerror("保存设置失败", f"设置无法写入：{exc}\n\n无权限，请换个目录。")
+            return False
+        return True
 
 
 class ControlPanel(ctk.CTk):
@@ -2059,11 +2062,10 @@ class ControlPanel(ctk.CTk):
         self._smoke_check("Chromium 状态显示已就绪/未安装",
                           "已就绪" in cr_text or "未安装" in cr_text, cr_text)
         dot = str(self.dep_ffmpeg_dot.cget("text_color")).lower()
-        self._smoke_check(
-            "状态圆点按结果着绿/红色",
-            ("2eb872" in dot) if self._dep_info["ffmpeg_found"] else ("e5534b" in dot),
-            f"{dot} | found={self._dep_info['ffmpeg_found']}",
-        )
+        want = T.SUCCESS if self._dep_info["ffmpeg_found"] else T.DANGER
+        hit = any(str(c).lstrip("#").lower() in dot for c in want)
+        self._smoke_check("状态圆点按结果着绿/红色", hit,
+                          f"{dot} | found={self._dep_info['ffmpeg_found']}")
         # 用临时占位文件验证「自定义路径优先」，绝不把本机的 D:\ffmpeg 硬编码进
         # 可分发 exe 的冒烟断言——换台没有该目录的机器会假失败。
         import tempfile
@@ -2211,7 +2213,8 @@ class ControlPanel(ctk.CTk):
                           self.engine.poll() is None and L.LOG_PATH.stat().st_size > 0,
                           f"pid={self.engine.pid} log={L.LOG_PATH.stat().st_size}B")
         led_color = str(self.led.cget("text_color")).lower()
-        self._smoke_check("运行态指示灯为绿", "2eb872" in led_color, led_color)
+        self._smoke_check("运行态指示灯为绿",
+                          any(str(c).lstrip("#").lower() in led_color for c in T.SUCCESS), led_color)
         self._smoke_check("托盘运行中且状态标题已更新",
                           self.icon is not None and self.icon.visible
                           and "运行中" in (self.icon.title or ""), str(self.icon.title if self.icon else None))

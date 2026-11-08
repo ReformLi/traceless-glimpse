@@ -277,7 +277,6 @@ class Task(StrictModel):
     # 产物主名（M24）：不是模板，不含后缀；留空 = 沿用站点标题。键名沿用旧名见 PROTOCOL §3.6。
     namingTemplate: Optional[str] = None
     postActions: list[PostAction] = Field(default_factory=list)
-    proxyId: Optional[str] = None
     progress: Optional[Progress] = None
     error: Optional[ErrorPayload] = None
     # 仅 done 且 real 模式有真实产物时非空；stub / 未完成 / 失败一律 null。
@@ -322,7 +321,6 @@ class TaskCreateRequest(StrictModel):
     # 产物主名（M24）：不是模板，不含后缀；留空 = 沿用站点标题。键名沿用旧名见 PROTOCOL §3.6。
     namingTemplate: Optional[str] = None
     postActions: list[PostAction] = Field(default_factory=list)
-    proxyId: Optional[str] = None
 
 
 class DownloadRequest(StrictModel):

@@ -16,5 +16,4 @@ data class TaskCreateRequest(
     val formatSelector: FormatSelector? = null,
     val namingTemplate: String? = null,
     val postActions: List<PostAction> = emptyList(),
-    val proxyId: String? = null,
 )

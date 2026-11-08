@@ -239,7 +239,6 @@ internal class MockEngine : AutoCloseable {
         formatSelector = selector,
         namingTemplate = null,
         postActions = emptyList(),
-        proxyId = null,
         cookiePolicy = request.cookiePolicy,
         outputDir = request.outputDir,
         status = status,

@@ -25,7 +25,7 @@
 以下不是建议，是协议本身的结构性约束：
 
 1. **Task 中没有 `cookieFile`、`browser`、`cookiePath` 字段。** 只有 `cookiePolicy` 枚举（`none` / `lazy` / `explicit`）。Agent 与客户端在协议层无法指定读取哪个文件或哪个浏览器。
-2. **`proxyId` 是引擎侧管理的代理引用，不是任意代理 URL。** 防止通过代理参数绕过 SSRF 校验。
+2. **Task 中没有 `proxyId` 字段。** 代理配置由引擎侧管理，客户端不可指定任意代理 URL，防止通过代理参数绕过 SSRF 校验。（封板裁决：该字段历史上仅回显、无实际作用，已从协议删除）
 3. **`outputDir` 由引擎侧白名单校验。** 协议只传字符串，拒绝时返回 `OUTPUT_DIR_REJECTED`。
 4. **`formatSelector` 必须是结构化对象或受控 DSL，不接受 shell 字符串。** 避免命令注入与任意参数透传。
 5. **所有 `sourceUrl`、`mediaUrl` 在引擎侧过统一出站校验器**，含重定向后二次校验。
@@ -84,7 +84,6 @@
     { "type": "merge" },
     { "type": "extract_subtitles", "langs": ["zh", "en"] }
   ],
-  "proxyId": null,                    // 引擎侧代理配置引用
   "cookiePolicy": "lazy",             // "none" | "lazy" | "explicit"
   "outputDir": "/home/user/Videos/BGV",
   "status": "downloading",
@@ -110,7 +109,6 @@
 | `formatSelector` | object \| null | 否 | 见 3.4；`download` 模式下为空则进入 `awaiting_selection` |
 | `namingTemplate` | string | 否 | 变量白名单见 3.6；长度 ≤ 200 |
 | `postActions` | array | 否 | 白名单动作，见 3.7 |
-| `proxyId` | string \| null | 否 | 必须存在于引擎侧代理列表 |
 | `cookiePolicy` | enum | 是 | 默认 `lazy` |
 | `outputDir` | string | 是 | 绝对路径；引擎侧校验 |
 | `status` | enum | 是 | 见第 4 节状态机 |
@@ -352,7 +350,6 @@
   "formatSelector": { "strategy": "max_height", "maxHeight": 1080 },
   "namingTemplate": "{platform}-{date}-{title}-{height}p",
   "postActions": [{ "type": "merge" }],
-  "proxyId": null,
   "cookiePolicy": "lazy",
   "outputDir": "/home/user/Videos/BGV"
 }

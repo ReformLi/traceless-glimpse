@@ -3,6 +3,18 @@
 记录 `docs/PROTOCOL.md` 正文之外的**增量裁决**。协议正文仍以 `docs/PROTOCOL.md` v0.2 为准，
 本文件不改动正文；条目最终是否并入正式协议版本，由下一版协议评审时确认。
 
+## 封板裁决（2026-11-08）：删除 `Task.proxyId` / `TaskCreateRequest.proxyId`
+
+来源：封板全量审计——`proxyId` 入协议以来只被 `main.py` 原样回显，没有任何真实
+代理绑定逻辑（既无「引擎侧代理列表」，也无按 ID 查表的代码路径），是无效协议字段。
+
+- **双端同删**：`engine/models.py`（Pydantic）、`shared/.../model/Task.kt` 与
+  `TaskCreateRequest.kt`（KMP）；两侧 schema 重导后 `scripts/check_schema.py`
+  6/6 全等。两侧都是严格模式（`extra="forbid"` / `ignoreUnknownKeys=false`），
+  只删单边会让另一边请求/响应当场失败，必须一次删净。
+- **安全边界不变**：「客户端不可指定任意代理 URL」改由**字段不存在**保证，
+  见 PROTOCOL §1 结构性约束第 2 条（已改写为否定式表述）。
+
 ## M22 阶段裁决（2026-11-08）
 
 ### 新增只读端点 `GET /v1/peers`：桌面端「运行状态」卡的数据源

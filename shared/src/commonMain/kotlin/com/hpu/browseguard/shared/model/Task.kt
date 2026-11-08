@@ -57,7 +57,6 @@ data class Task(
     val formatSelector: FormatSelector? = null,
     val namingTemplate: String? = null,
     val postActions: List<PostAction> = emptyList(),
-    val proxyId: String? = null,
     val cookiePolicy: CookiePolicy,
     val outputDir: String,
     val status: TaskStatus,

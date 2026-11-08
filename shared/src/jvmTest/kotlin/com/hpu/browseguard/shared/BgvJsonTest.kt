@@ -71,7 +71,6 @@ class BgvJsonTest {
         assertNull(task.formatSelector)
         assertNull(task.namingTemplate)
         assertEquals(emptyList(), task.postActions)
-        assertNull(task.proxyId)
         assertNull(task.progress)
         assertNull(task.error)
     }
@@ -93,7 +92,6 @@ class BgvJsonTest {
                 PostAction(type = PostActionType.MERGE),
                 PostAction(type = PostActionType.EXTRACT_SUBTITLES, langs = listOf("zh", "en")),
             ),
-            proxyId = null,
             cookiePolicy = CookiePolicy.LAZY,
             outputDir = "/home/user/Videos/BGV",
             status = TaskStatus.DOWNLOADING,

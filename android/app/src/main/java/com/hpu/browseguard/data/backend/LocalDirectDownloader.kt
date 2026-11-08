@@ -159,6 +159,12 @@ class LocalDirectDownloader(
 
                 val stream = resp.body.byteStream()
                 RandomAccessFile(partFile, "rw").use { file ->
+                    if (!serverResumed && resumedFrom > 0L) {
+                        // 服务端不理 Range 整段重发：旧 .part 必须截断清空。光 seek(0)
+                        // 覆写不够——新内容比旧文件短时旧尾巴会留在成品里，rename 后
+                        // 就是损坏的媒体文件（封板审计·续传尾巴）。
+                        file.setLength(0L)
+                    }
                     file.seek(downloaded)
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var lastReport = System.currentTimeMillis()

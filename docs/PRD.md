@@ -131,7 +131,7 @@ com.hpu.browseguard
 | 编号       | 需求                                              | 优先级 |
 | -------- | ----------------------------------------------- | --- |
 | FR-DL-01 | 封装 yt-dlp 作为核心解析器，支持其覆盖的站点；支持直接传入嗅探得到的媒体地址      | P0  |
-| FR-DL-02 | 展示可用格式列表（容器、分辨率、码率、编码、是否含音轨），支持精确选择与"不超过指定画质"策略 | P0  |
+| FR-DL-02 | 展示可用格式列表（容器、分辨率、码率、编码、是否含音轨），支持精确选择与"不超过指定画质"策略。**安全设计取舍**：formatId 不支持透传——不接受 yt-dlp 原始 `-f` 字符串，只走结构化 selector（PROTOCOL §6.3） | P0  |
 | FR-DL-03 | 分离音视频轨自动调用 FFmpeg 合并；支持容器转换与重封装                 | P0  |
 | FR-DL-04 | 支持断点续传、并发任务队列、失败重试（可配置次数与退避）                    | P0  |
 | FR-DL-05 | 支持字幕下载与提取（含自动生成字幕，若源站提供）                        | P1  |
@@ -144,8 +144,8 @@ com.hpu.browseguard
 | 编号       | 需求                                                         | 优先级 |
 | -------- | ---------------------------------------------------------- | --- |
 | FR-AG-01 | 支持自然语言指令解析为结构化任务（URL、画质策略、命名规则、后处理动作）                      | P0  |
-| FR-AG-02 | 指令执行前展示"将要做什么"的确认卡片，包含目标域名、预计格式、写入路径                       | P0  |
-| FR-AG-03 | 支持用户自定义工作流模板（YAML/JSON），可保存、复用、导入导出                        | P0  |
+| FR-AG-02 | 指令执行前展示"将要做什么"的确认卡片，包含目标域名、预计格式、写入路径（**未落地，转后续版本**） | P0  |
+| FR-AG-03 | 支持用户自定义工作流模板（YAML/JSON），可保存、复用、导入导出（**未落地，转后续版本**） | P0  |
 | FR-AG-04 | Agent 只能调用白名单内的工具（嗅探、解析、下载、合并、转录、重命名），不可执行任意 Shell         | P0  |
 | FR-AG-05 | Agent 无法指定 Cookie 文件路径或浏览器类型，最多传递布尔开关                      | P0  |
 | FR-AG-06 | 支持 MCP Server 形态，暴露 `sniff`、`probe`、`download`、`status` 工具 | P1  |
@@ -170,7 +170,7 @@ com.hpu.browseguard
 
 | 编号        | 需求                                     | 优先级 |
 | --------- | -------------------------------------- | --- |
-| FR-PER-01 | 文件命名模板可配置（变量：平台、日期、标题、UP 主、分辨率、任务 ID）  | P0  |
+| FR-PER-01 | 文件命名模板可配置（变量：平台、日期、标题、UP 主、分辨率、任务 ID）（**封板裁决：主动砍掉，不动**——M24 起 namingTemplate 仅作产物主名，模板变量不再补回）  | P0  |
 | FR-PER-02 | 画质策略可配置：最高 / 不超过指定分辨率 / 指定编码优先 / 体积上限  | P0  |
 | FR-PER-03 | 后处理动作链可配置：合并、转封装、提字幕、转录、生成缩略图、移动到指定目录  | P1  |
 | FR-PER-04 | 完成通知可配置（本地通知、Webhook、写入日志文件），默认仅本地通知   | P1  |
@@ -194,7 +194,7 @@ com.hpu.browseguard
 | -------- | -------------------------------------- | --- |
 | FR-ST-01 | 任务记录保存在本地数据库，包含任务参数、结果、错误码，不含媒体内容      | P0  |
 | FR-ST-02 | 缓存按 SHA-256 与任务 ID 复用，TTL 默认 48 小时，可配置 | P1  |
-| FR-ST-03 | 提供"一键清除痕迹"：删除隔离上下文、缓存、临时文件、日志，保留用户媒体文件 | P0  |
+| FR-ST-03 | 提供"一键清除痕迹"：删除隔离上下文、缓存、临时文件、日志，保留用户媒体文件（**封板裁决**：私有目录连文件一并删除；外部公共目录只删记录、保留文件） | P0  |
 | FR-ST-04 | 媒体库支持按平台、日期、标签浏览与本地搜索                  | P1  |
 
 ### 6.8 日志与审计（FR-LOG）
@@ -243,7 +243,7 @@ com.hpu.browseguard
 
 ```
 Task        { id, sourceUrl, mode(sniff|download), formatSelector, namingTemplate,
-              postActions[], proxyId?, cookiePolicy, outputDir, status, errorCode, createdAt }
+              postActions[], cookiePolicy, outputDir, status, errorCode, createdAt }
 SniffResult { taskId, mediaUrl, type(hls|dash|mp4|audio), estimatedQuality,
               drmDetected, headersHint, discoveredAt }
 CredentialEvent { taskId, domain, reason, retryCount, result, timestamp }
@@ -435,7 +435,7 @@ v0.1 的 FR-SEC 系列已经从工程角度定义了 SSRF 防护、惰性 Cookie
 | **M2 安全加固**         | 惰性 Cookie、SSRF 全链路、日志脱敏、输出沙箱、隐私自检页                   | `GET /v1/privacy/selfcheck` 可用                        | 验收标准 2、5、6 通过                      | 已过（`docs/reports/acceptance-m2.md`） |
 | **M3 Android 客户端**  | Kotlin + Compose 主路径 UI、队列、设置；KMP 模型消费协议             | `com.hpu.browseguard` 可完成“粘贴→嗅探→选择→下载”                | 主路径 ≤4 步；与引擎联调通过                   | 已过（`docs/reports/smoke-report.md` §8–§17） |
 | **M4 WebView 轻量嗅探** | `shouldInterceptRequest` 发现层 + 独立 WebView 数据目录       | 直链型 `.m3u8/.mp4` 可被发现并提交引擎                            | 发现率达标；blob/MSE 场景有明确提示，不静默失败       | 已过，且**范围被 M4-③/M8 超出**：发现之后改为在本机直接下载（§6.9），不再必须先经引擎 |
-| **M5 Agent 与 MCP**  | 自然语言指令、工作流模板、MCP 四工具                                 | `bgv-mcp` 可被 AI 客户端调用                                 | MCP schema 与 HTTP 一致；DRM 场景返回结构化错误 | 已过（`docs/USER_GUIDE_MCP.md`） |
+| **M5 Agent 与 MCP**  | 自然语言指令、工作流模板、MCP 四工具                                 | `bgv-mcp` 可被 AI 客户端调用                                 | MCP schema 与 HTTP 一致；DRM 场景返回结构化错误 | 已过（`docs/USER_GUIDE_MCP.md`）；AG-02/03 **未落地，转后续版本** |
 | **M6 Android 完整功能** | 设计系统与三页导航、首页全状态、Room 历史与冷启动对账、设置页 SAF 输出目录、Cookie 按域授权、发布资产与 R8 | 可安装的 Release 包 + 六轮分步验收报告 | 每轮 MuMu 真机取证通过，遗留缺口显式登记 | 已过（`docs/reports/acceptance-m6-3..6.md`） |
 | **M7 内置浏览器 + 本机 HLS** | 地址栏 + WebView + 嗅探抽屉；JS Hook 与 `shouldInterceptRequest` 两路汇一个控制器；HLS 清单解析与逐段直连下载 | 纯手机模式跑通真实站点（703 段 TS 与 CDN 原段字节级一致、设备与电脑 MD5 相同、全片解码通过） | 第一轮验收四缺陷（候选排序 / 抽屉挡播放器 / 广告劫持 / Cookie 日志暴击）全部修掉并复跑 | 已过（`docs/reports/smoke-report.md` §27） |
 | **M8 转封装与音频门禁**    | HLS 并发分片与段级重试；TS→MP4 纯拷贝转封装；音轨完整性门禁；降级理由全枚举与文案接线 | 系统播放器可用的 `.mp4`；不合格一律保留 `.ts` | 真机双向验证：456 段哑巴流被精准拦截，正常流仍秒转带声 MP4 | 已过（`docs/reports/smoke-report.md` §28） |

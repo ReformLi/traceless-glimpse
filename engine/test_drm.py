@@ -147,7 +147,7 @@ class TestAutoDownload:
         assert task["status"] == "queued"
         body = _get(client, task["id"])
         assert body["status"] == "downloading"
-        # 可选字段以 null 显式输出（与 §3.1 示例一致：proxyId / error 为 null）
+        # 可选字段以 null 显式输出（与 §3.1 示例一致：error 为 null）
         assert body["formatSelector"]["strategy"] == "exact"
         assert body["formatSelector"]["formatId"] == "137+140"
         # 引擎自动领取下载：计数器递增 1 次，全程未调用 POST /download

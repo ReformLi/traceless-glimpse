@@ -67,10 +67,10 @@ ROW_BG = T.SURFACE_2
 PHASE_TEXT = {
     "queued": "排队中",
     "sniffing": "嗅探中",
-    "awaiting_selection": "等待选择画质",
+    "awaiting_selection": "选画质",
     "downloading": "下载中",
     "merging": "合并中",
-    "post_processing": "后处理中",
+    "post_processing": "处理中",
     "done": "已完成",
     "failed": "失败",
     "cancelled": "已取消",
@@ -603,6 +603,11 @@ class DownloadConsole:
         self._finished = False
         self.current_task_id = None
         self._format_map = {}
+        # 任务行保留作历史，但活跃行必须落到「已取消」：停止引擎时轮询线程是
+        # 静默退出的（stop_event），不会带终态帧，否则行永远留在「下载中」。
+        for row in self.task_rows:
+            if row.phase in self.BUSY_PHASES:
+                row.update(phase="cancelled")
         self.format_menu.configure(values=["（暂无画质）"])
         self.format_menu.set("（暂无画质）")
         self.media_label.configure(text="")
@@ -616,10 +621,14 @@ class DownloadConsole:
                              "merging", "post_processing"})
 
     def has_active_work(self) -> bool:
-        """是否有进行中的嗅探/下载。关闭窗口分流（托盘/询问/退出）用它判断。"""
-        if self._sniffing or self._downloading:
-            return True
-        return any(row.phase in self.BUSY_PHASES for row in self.task_rows)
+        """是否有进行中的嗅探/下载。关闭窗口分流（托盘/询问/退出）用它判断。
+
+        只看活动标志、不看任务行 phase：任务行是历史，终态帧被丢（停止引擎、
+        代次推进）时 phase 会留在「下载中」，按行判断会永远误报
+        （封板审计·阶段粘滞）；而 _sniffing / _downloading 在 show_error /
+        show_done / _soft_reset 都会复位。
+        """
+        return self._sniffing or self._downloading
 
     def _refresh_controls(self) -> None:
         enabled = self.is_ready and not self._sniffing and not self._downloading
@@ -739,6 +748,12 @@ class DownloadConsole:
         self._sniffing = False
         self._downloading = False
         self._finished = True
+        # 失败必须落到任务行上：触发下载就 409/422、轮询中途断线这些路径不会带
+        # 进度帧，行会永远停在「排队中/下载中」（封板审计·阶段粘滞）。
+        for row in reversed(self.task_rows):
+            if row.phase in self.BUSY_PHASES:
+                row.update(phase="failed")
+                break
         text = translate_error(code, message)
         suffix = f"（{code}）" if code else ""
         self._show_message(f"✖ {text}{suffix}", RED)

@@ -1235,7 +1235,6 @@ def create_task(req: TaskCreateRequest, request: Request):
         formatSelector=req.formatSelector,
         namingTemplate=req.namingTemplate,
         postActions=req.postActions,
-        proxyId=req.proxyId,
         cookiePolicy=req.cookiePolicy,
         outputDir=req.outputDir,
         status=TaskStatus.QUEUED,

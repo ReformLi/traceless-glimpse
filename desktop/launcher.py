@@ -564,15 +564,29 @@ class EngineProcess:
         self.server_pid: int | None = None
         #: 本次启动实际使用的端口，stop() 据此做「残留端口」校验（GUI 可自定义端口）。
         self.active_port: int | None = None
+        #: :meth:`start` 写完启动标记后 engine.log 的字节长度；:meth:`discover_server_pid`
+        #: 只扫这之后的内容，杜绝拿上一轮的旧 PID 去补杀。
+        self._log_offset: int | None = None
 
     def discover_server_pid(self) -> int | None:
-        """从 engine.log 抓 ``Started server process [NNNN]``（取最后一次启动）。"""
+        """从 engine.log 抓 ``Started server process [NNNN]``，只认**本次运行**写出的。
+
+        engine.log 是跨运行累积的：取全文件最后一个 PID，会在本次启动还没打出该行
+        时拿到上一轮的旧 PID，旧 PID 被 Windows 回收复用后补杀会打到无关进程
+        （封板审计·误杀）。所以只扫 :meth:`start` 记下的日志起点之后的内容。
+        """
+        if self._log_offset is None:
+            return None
         try:
-            text = LOG_PATH.read_text(encoding="utf-8", errors="replace")
+            with open(LOG_PATH, "rb") as handle:
+                handle.seek(self._log_offset)
+                text = handle.read().decode("utf-8", "replace")
         except OSError:
             return None
         found = re.findall(r"Started server process \[(\d+)\]", text)
         if not found:
+            # 找不到就清掉旧值：留着上一轮的 PID 一样会被补杀误用。
+            self.server_pid = None
             return None
         self.server_pid = int(found[-1])
         return self.server_pid
@@ -614,6 +628,10 @@ class EngineProcess:
             f"{APP_NAME} start (host={use_host} port={use_port} mode=real) =====\n"
         )
         self.log_handle.flush()
+        # 本次运行的日志起点与 PID 清零：补杀只认本次写出的 server PID，
+        # 绝不拿上一轮的旧 PID 去打（封板审计·误杀）。
+        self._log_offset = LOG_PATH.stat().st_size
+        self.server_pid = None
 
         cmd = build_engine_command(use_host, use_port)
         # 打包版若未随包分发 engine_src/，cwd 退回数据目录，不让 Popen 因目录不存在直接失败。
@@ -679,12 +697,14 @@ class EngineProcess:
                 except Exception:
                     pass
 
-        # 兜底：若子进程脱离了进程组、树没杀干净，按 uvicorn 自报 PID 再杀一次。
+        # 兜底：若子进程脱离了进程组、树没杀干净，按 uvicorn 自报 PID 精准补杀。
+        # 只杀这一个 PID、不带 /T：此时要杀的就是占端口的那个 server 进程本身，
+        # 再卷整棵树就可能把 PID 复用后的无辜进程树带走（封板审计·误杀）。
         if port_in_use(use_port) and self.server_pid and self.server_pid != proc.pid:
-            log(f"检测到残留 server 进程 {self.server_pid}，补杀")
+            log(f"检测到残留 server 进程 {self.server_pid}，精准补杀")
             try:
                 subprocess.run(
-                    ["taskkill", "/PID", str(self.server_pid), "/T", "/F"],
+                    ["taskkill", "/PID", str(self.server_pid), "/F"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
                 )

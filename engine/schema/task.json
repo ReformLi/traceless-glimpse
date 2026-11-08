@@ -66,10 +66,6 @@
     "postActions": {
       "type": "array"
     },
-    "proxyId": {
-      "type": "string",
-      "x-nullable": true
-    },
     "progress": {
       "type": "object",
       "x-nullable": true

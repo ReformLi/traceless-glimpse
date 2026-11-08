@@ -36,6 +36,8 @@ import kotlinx.coroutines.launch
  */
 data class QueuedTask(
     val recordId: String,
+    /** 任务来源页面地址：同一时刻同一条来源只允许一条任务在下（见 [enqueue] 的防踩踏拦截）。 */
+    val sourceUrl: String,
     val executor: DownloadExecutor,
     val request: StartRequest,
     /** 只用于回填记录里的人读画质描述，如 `720p · mp4`。 */
@@ -89,11 +91,27 @@ class DownloadCoordinator(
     val consentWaits: StateFlow<List<ConsentWait>> = _consentWaits.asStateFlow()
 
     /** 入队即接管。同一个 recordId 再次入队（授权后原地重下）会先掐掉上一条流。 */
-    fun enqueue(task: QueuedTask) {
+    fun enqueue(task: QueuedTask): Boolean {
+        // 同一直链同时只许下一条（封板审计·并发踩踏）：两支并发会共用同一个
+        // `.part` 文件与同一套取消标志，先完成的 rename 走文件后另一支还往旧
+        // 句柄上写，产物直接损坏。命中就把新行落「失败」并留审计，绝不静默吞。
+        val duplicate = queued.entries.any { (otherId, other) ->
+            otherId != task.recordId &&
+                other.sourceUrl == task.sourceUrl &&
+                jobs[otherId]?.isActive == true
+        }
+        if (duplicate) {
+            scope.launch {
+                history.markFailed(task.recordId, null, "同一直链已有任务在下载中，请等它完成或先取消")
+                audit.log("download_duplicate_blocked", mapOf("id" to task.recordId))
+            }
+            return false
+        }
         jobs.remove(task.recordId)?.cancel()
         clearConsent(task.recordId)
         queued[task.recordId] = task
         jobs[task.recordId] = scope.launch { run(task) }
+        return true
     }
 
     /**

@@ -35,10 +35,6 @@
         "postActions": {
             "type": "array"
         },
-        "proxyId": {
-            "type": "string",
-            "x-nullable": true
-        },
         "cookiePolicy": {
             "type": "string",
             "enum": [

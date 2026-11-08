@@ -1207,9 +1207,10 @@ class HomeViewModel(
                 )
             }
         }
-        downloads.enqueue(
+        val accepted = downloads.enqueue(
             QueuedTask(
                 recordId = recordId,
+                sourceUrl = snapshot.sourceUrl.trim(),
                 executor = snapshot.downloadExecutor,
                 request = request,
                 // 纯音频没有选画质：摘要直接写「纯音频」，formatId 用哨兵值，
@@ -1229,7 +1230,10 @@ class HomeViewModel(
             ),
         )
         // 先入队再打卡：服务起来读的第一眼就得已经看得见这条流，否则它会以为自己无事可干。
-        keepAlive.onRequestStart()
+        // 同一直链被拦截时不开活：失败已由协调器落库，再打卡会让保活计数永远退不回去。
+        if (accepted) {
+            keepAlive.onRequestStart()
+        }
         // 主页到此为止：进度与终态归下载管理页，这个页面立刻回到输入状态等着贴下一条链接。
         autoStartSelection = false
         browserDownloadActive = false
