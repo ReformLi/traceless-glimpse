@@ -329,6 +329,11 @@
     <string name="player_brightness">亮度 %1$d%%</string>
     <string name="player_volume">音量 %1$d%%</string>
     <string name="player_speed">倍速</string>
+    <string name="player_rotate">切换横竖屏</string>
+    <string name="player_pip">画中画</string>
+    <string name="player_pip_unavailable">这次没能进入画中画</string>
+    <string name="player_lock">锁定控制条</string>
+    <string name="player_unlock">解除锁定</string>
     <string name="history_watched">已看 %1$d%%</string>
 
     <!-- M13 下载保活：通知栏那一格。措辞留在这里，数字与判据由 data/keepalive 给。 -->

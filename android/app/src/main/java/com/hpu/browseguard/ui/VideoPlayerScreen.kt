@@ -4,43 +4,25 @@ import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.media.AudioManager
 import android.net.Uri
 import android.util.Rational
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -48,23 +30,17 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -77,6 +53,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -85,6 +62,8 @@ import com.hpu.browseguard.R
 import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.data.playback.PlaybackSource
 import com.hpu.browseguard.data.playback.RefuseReason
+import com.hpu.browseguard.ui.player.PlayerControls
+import com.hpu.browseguard.ui.player.PlayerControlsState
 import com.hpu.browseguard.ui.player.PlayerGestureMath
 import java.io.File
 import kotlin.math.abs
@@ -203,43 +182,63 @@ private fun VideoPlayer(
     val audioManager = remember(context) { context.getSystemService(AudioManager::class.java) }
 
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
-    var positionMs by remember { mutableLongStateOf(state.resumePositionMs) }
-    var durationMs by remember { mutableLongStateOf(state.knownDurationMs) }
-    var scrubTo by remember { mutableStateOf<Float?>(null) }
-    var controlsShown by remember { mutableStateOf(true) }
+    // 控制条的界面态（显隐 / 倍速 / 拖动中位置 / 缓冲位置 / 方向锁定）收进这一个持有类。
+    // 播放器实例不进它——那是 layout 之外的生命周期东西，仍归本函数管。
+    //
+    // key 必须是 uri 而不是空：本类里有 playerReady、orientationOverride 这种「跟着某一个播放器
+    // 才有意义」的字段。空 key 的 remember 只跟调用点绑定，同一个 Composition 槽位换成另一个
+    // 视频时会原样留下上一份——表现就是「新视频还没就绪，PiP 按钮已经是亮的」。
+    // 外层还有 key(recordId) 兜一层，两道一起保证换视频必换状态。
+    val controls = remember(uri) { PlayerControlsState(state.resumePositionMs, state.knownDurationMs) }
     var failed by remember { mutableStateOf(false) }
-    var menuShown by remember { mutableStateOf(false) }
     var openProblem by remember { mutableStateOf<OpenFileProblem?>(null) }
-    var speed by remember { mutableFloatStateOf(1f) }
-    var speedMenuShown by remember { mutableStateOf(false) }
     var inPip by remember { mutableStateOf(activity?.isInPictureInPictureMode == true) }
     var gestureHint by remember { mutableStateOf<GestureHint?>(null) }
 
     // 手势块不能把 positionMs 当 key：它每半秒变一次，会把进行中的拖动打断。
-    val latestPositionMs by rememberUpdatedState(positionMs)
-    val latestDurationMs by rememberUpdatedState(durationMs)
+    val latestPositionMs by rememberUpdatedState(controls.positionMs)
+    val latestDurationMs by rememberUpdatedState(controls.durationMs)
     val latestFailed by rememberUpdatedState(failed)
+    // 锁定不写进手势块的 key（那会把进行中的手势打断），只让它在事件里读到最新值。
+    val latestLocked by rememberUpdatedState(controls.locked)
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
-                isPlaying = playing
+                controls.isPlaying = playing
                 if (!playing) {
                     // 暂停、播完、被系统抢走音频焦点——都在这一次落库，退出时才有的续播点。
-                    positionMs = player.contentPosition
+                    controls.positionMs = player.contentPosition
                     onFlush(player.contentPosition, player.duration)
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 failed = true
+                // 播放器坏了就不能再往小窗里塞：PiP 按钮跟着回灰。
+                controls.onPlayerError()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) controls.onPlaybackReady()
+            }
+
+            /**
+             * 自动方向规则的唯一输入。宽高还是 0（纯音频、元数据没到）时**不写**：
+             * 一次 0×0 的回调会把已经转成横屏的画面顶回竖屏。
+             *
+             * media3 给的宽高已经算进了旋转元数据，竖拍的 mp4 在这里就是高 > 宽。
+             */
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    controls.isLandscapeVideo = videoSize.width > videoSize.height
+                }
             }
         }
         player.addListener(listener)
         onDispose {
             val total = player.duration
-            onFlush(player.contentPosition, if (total > 0L) total else durationMs)
+            onFlush(player.contentPosition, if (total > 0L) total else controls.durationMs)
             player.removeListener(listener)
             playerView?.player = null
             player.release()
@@ -250,31 +249,20 @@ private fun VideoPlayer(
     }
 
     // 半秒一跳只为让进度条走起来；每 20 跳（约 10 秒）落一次库，进程被划掉也只丢最后十秒。
-    LaunchedEffect(isPlaying) {
-        if (!isPlaying) return@LaunchedEffect
+    LaunchedEffect(controls.isPlaying) {
+        if (!controls.isPlaying) return@LaunchedEffect
         var ticks = 0
-        while (isPlaying) {
+        while (controls.isPlaying) {
             delay(500)
             ticks++
-            positionMs = player.contentPosition
-            if (player.duration > 0L) durationMs = player.duration
+            controls.positionMs = player.contentPosition
+            controls.bufferedPositionMs = player.bufferedPosition
+            if (player.duration > 0L) controls.durationMs = player.duration
             if (ticks >= 20) {
                 ticks = 0
                 onFlush(player.contentPosition, player.duration)
             }
         }
-    }
-
-    LaunchedEffect(controlsShown, isPlaying, speedMenuShown) {
-        if (controlsShown && isPlaying && !speedMenuShown) {
-            delay(3_500)
-            controlsShown = false
-        }
-    }
-
-    // 控制条收起时倍速面板也收起，免得下次显示时突然多出一排按钮。
-    LaunchedEffect(controlsShown) {
-        if (!controlsShown) speedMenuShown = false
     }
 
     // 手势提示在松手后自己消失；拖动期间每次变化都会重启这个计时。
@@ -287,10 +275,7 @@ private fun VideoPlayer(
 
     // 进小窗后不再画控制层：小窗里只有视频，点开 App 再继续操作。
     LaunchedEffect(inPip) {
-        if (inPip) {
-            controlsShown = false
-            speedMenuShown = false
-        }
+        if (inPip) controls.onPipEntered()
     }
 
     // 亮度是窗口属性，只改窗口值会在退出播放器后一直留着；进来时记下原值，走时还原。
@@ -305,6 +290,29 @@ private fun VideoPlayer(
         }
     }
 
+    /**
+     * 把当前播放器塞进小窗。两条入口共用这一段：
+     * - 按 Home / 最近任务（[MainActivity.onUserLeaveHint]）：只在那时**正在播**才进，
+     *   暂停着退到后台没有值得看的画面，交给系统正常最小化；
+     * - 右上角的 PiP 按钮：暂停也允许，用户是主动要求的。
+     *
+     * 返回 false 表示这次没进去（设备不支持 / 系统不批 / 播放器已经没了），由调用方决定要不要出声：
+     * 按 Home 那条路保持静默，按按钮那条要提示。
+     *
+     * 宽高兜底交给 16:9：视频尺寸读不出来时 `Rational(0, 0)` 会直接抛。
+     */
+    fun enterPlayerPip(): Boolean {
+        val host = pipHost ?: return false
+        val current = latestPlayer ?: return false
+        val video = current.videoSize
+        val width = video.width.takeIf { it > 0 } ?: 16
+        val height = video.height.takeIf { it > 0 } ?: 9
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(width, height))
+            .build()
+        return runCatching { host.enterPictureInPictureMode(params) }.getOrDefault(false)
+    }
+
     // 播放中按 Home/最近任务才进小窗；暂停状态退到后台没有可看的画面，交给系统正常最小化。
     DisposableEffect(pipHost) {
         if (pipHost == null) {
@@ -312,17 +320,7 @@ private fun VideoPlayer(
         } else {
             pipHost.onUserLeavePlayer = {
                 val current = latestPlayer
-                if (current != null && current.isPlaying) {
-                    val video = current.videoSize
-                    val width = video.width.takeIf { it > 0 } ?: 16
-                    val height = video.height.takeIf { it > 0 } ?: 9
-                    val params = PictureInPictureParams.Builder()
-                        .setAspectRatio(Rational(width, height))
-                        .build()
-                    runCatching { pipHost.enterPictureInPictureMode(params) }.getOrDefault(false)
-                } else {
-                    false
-                }
+                if (current != null && current.isPlaying) enterPlayerPip() else false
             }
             pipHost.onPipModeChanged = { inPip = it }
             onDispose {
@@ -331,6 +329,9 @@ private fun VideoPlayer(
             }
         }
     }
+
+    // 方向：自动按视频宽高，用户手转之后只认手选，锁定后冻在当前方向。
+    PlayerOrientationEffect(activity, controls)
 
     // 切到后台：暂停就是回写进度的扳机（见 onIsPlayingChanged），不该让声音在背后继续放。
     // 小窗里 Activity 也处于后台态，此时暂停会把小窗播成静帧。
@@ -393,10 +394,16 @@ private fun VideoPlayer(
                                 if (axis == null &&
                                     (abs(dx) > viewConfiguration.touchSlop || abs(dy) > viewConfiguration.touchSlop)
                                 ) {
-                                    axis = when {
-                                        abs(dx) > abs(dy) -> GestureKind.Seek
-                                        onLeftSide -> GestureKind.Brightness
-                                        else -> GestureKind.Volume
+                                    // 锁定后三条手势轴全关：调亮度/音量也算「操作播放」，锁上就不该再动。
+                                    // 置 null 之后下面的 when 一路走空分支，循环照旧跑到手指抬起为止。
+                                    axis = if (latestLocked) {
+                                        null
+                                    } else {
+                                        when {
+                                            abs(dx) > abs(dy) -> GestureKind.Seek
+                                            onLeftSide -> GestureKind.Brightness
+                                            else -> GestureKind.Volume
+                                        }
                                     }
                                 }
                                 when (axis) {
@@ -440,11 +447,21 @@ private fun VideoPlayer(
                                     val target = seekTarget
                                     if (target != null) {
                                         player.seekTo(target)
-                                        positionMs = target
+                                        controls.positionMs = target
                                     }
                                 }
 
-                                null -> if (!latestFailed) controlsShown = !controlsShown
+                                null -> if (!latestFailed) {
+                                    // 锁定态三条轴都关，滑动也落到这里：位移不超过 touchSlop 才算「点一下」，
+                                    // 否则在锁定画面上随手一划就会把解锁按钮叫出来。
+                                    controls.onSurfaceRelease(
+                                        PlayerGestureMath.isTap(
+                                            dx = change.position.x - startX,
+                                            dy = change.position.y - down.position.y,
+                                            touchSlop = viewConfiguration.touchSlop,
+                                        ),
+                                    )
+                                }
                                 else -> Unit
                             }
                         }
@@ -471,163 +488,59 @@ private fun VideoPlayer(
             }
         }
 
-        if (controlsShown && !failed && !inPip) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .fillMaxWidth()
-                    .background(Color(0x99000000))
-                    .statusBarsPadding()
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            ) {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.player_back), tint = Color.White)
-                }
-                Text(
-                    text = state.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 6.dp),
-                )
-                Box {
-                    IconButton(onClick = { menuShown = true }) {
-                        Icon(
-                            Icons.Filled.MoreVert,
-                            contentDescription = stringResource(R.string.player_open_with),
-                            tint = Color.White,
-                        )
+        if (!failed && !inPip) {
+            PlayerControls(
+                state = controls,
+                title = state.title,
+                onClose = onClose,
+                onTogglePlay = { if (player.isPlaying) player.pause() else player.play() },
+                onSeekTo = { target ->
+                    player.seekTo(target)
+                    controls.positionMs = target
+                },
+                onSpeedSelected = { option -> player.setPlaybackSpeed(option) },
+                onOpenWith = { openProblem = openLocalFile(context, state.playable.readTarget) },
+                onToggleOrientation = { controls.toggleOrientation() },
+                onEnterPip = {
+                    // 只在这次真的没进去时才出声。返回 false 才等于失败，
+                    // 「设备不支持」只是失败的一种，别提前弹一句把话说死。
+                    if (!enterPlayerPip()) {
+                        Toast.makeText(context, R.string.player_pip_unavailable, Toast.LENGTH_SHORT).show()
                     }
-                    DropdownMenu(expanded = menuShown, onDismissRequest = { menuShown = false }) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.player_open_with)) },
-                            onClick = {
-                                menuShown = false
-                                openProblem = openLocalFile(context, state.playable.readTarget)
-                            },
-                        )
-                    }
-                }
-            }
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(Color(0x99000000))
-                    .navigationBarsPadding()
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
-            ) {
-                if (speedMenuShown) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        PlayerGestureMath.SPEED_OPTIONS.forEach { option ->
-                            val selected = option == speed
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(36.dp)
-                                    .background(
-                                        if (selected) Color.White.copy(alpha = 0.24f) else Color.Transparent,
-                                        RoundedCornerShape(9.dp),
-                                    )
-                                    .clickable {
-                                        speed = option
-                                        player.setPlaybackSpeed(option)
-                                        speedMenuShown = false
-                                    },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = PlayerGestureMath.speedLabel(option),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Slider(
-                    value = scrubTo ?: shownFraction(positionMs, durationMs),
-                    onValueChange = { scrubTo = it },
-                    onValueChangeFinished = {
-                        scrubTo?.let { fraction ->
-                            val target = (fraction * durationMs).toLong()
-                            player.seekTo(target)
-                            positionMs = target
-                        }
-                        scrubTo = null
-                    },
-                    enabled = durationMs > 0L,
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color.White,
-                        activeTrackColor = Color.White,
-                        inactiveTrackColor = Color.White.copy(alpha = 0.30f),
-                    ),
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = { if (player.isPlaying) player.pause() else player.play() },
-                        modifier = Modifier.size(44.dp),
-                    ) {
-                        if (isPlaying) {
-                            PauseBars(modifier = Modifier.size(24.dp))
-                        } else {
-                            Icon(
-                                imageVector = Icons.Filled.PlayArrow,
-                                contentDescription = null,
-                                tint = Color.White,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = playbackLine(positionMs, durationMs),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Box(
-                        modifier = Modifier
-                            .height(36.dp)
-                            .background(
-                                if (speed != 1f) Color.White.copy(alpha = 0.18f) else Color.Transparent,
-                                RoundedCornerShape(9.dp),
-                            )
-                            .clickable { speedMenuShown = !speedMenuShown }
-                            .padding(horizontal = 10.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = stringResource(R.string.player_speed) + " " + PlayerGestureMath.speedLabel(speed),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = Color.White,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
+                },
+            )
         }
 
         gestureHint?.let { hint ->
             GestureFeedback(
                 hint = hint,
-                durationMs = durationMs,
+                durationMs = controls.durationMs,
                 modifier = Modifier.align(Alignment.Center),
             )
+        }
+    }
+}
+
+/**
+ * 让 Activity 的方向跟着控制状态走。
+ *
+ * 每次重组都重新算一遍 [PlayerControlsState.effectiveOrientation]，再把这个结果当作 `LaunchedEffect`
+ * 的 key：视频尺寸到了、用户手转、锁定、解锁，都会让 key 变，效果重跑一次并写入**当下**的值。
+ * 这里刻意不把结果 `remember` 起来——记住一份旧值再在回调里读，正是「拿着上一帧的方向去写窗口」
+ * 那类 bug 的源头。
+ *
+ * 离场还原 `UNSPECIFIED`：manifest 没给 MainActivity 声明 `screenOrientation`，出厂值就是它。
+ * 不还原的话，退出播放页之后整个 App 会卡在播放器强制的那一个方向上。
+ */
+@Composable
+internal fun PlayerOrientationEffect(activity: Activity?, state: PlayerControlsState) {
+    val orientation = state.effectiveOrientation()
+    LaunchedEffect(activity, orientation) {
+        if (activity != null) activity.requestedOrientation = orientation
+    }
+    DisposableEffect(activity) {
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 }
@@ -690,24 +603,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 /**
- * 暂停符号自己画：仓库只依赖 material-icons-core，里面没有 Pause，
- * 而为了一个图标引入整套扩展图标不划算。
- */
-@Composable
-private fun PauseBars(modifier: Modifier = Modifier, tint: Color = Color.White) {
-    Canvas(modifier) {
-        val bar = size.width * 0.26f
-        val gap = size.width * 0.16f
-        val left = (size.width - bar * 2f - gap) / 2f
-        val top = size.height * 0.20f
-        val height = size.height * 0.60f
-        val corner = CornerRadius(bar / 2.5f)
-        drawRoundRect(tint, Offset(left, top), Size(bar, height), cornerRadius = corner)
-        drawRoundRect(tint, Offset(left + bar + gap, top), Size(bar, height), cornerRadius = corner)
-    }
-}
-
-/**
  * file:// 要用 [Uri.fromFile]：产物名里有空格或中文时，`Uri.parse` 不会补上这层转义。
  * SAF 的 content:// 原样交给 ContentDataSource。
  */
@@ -716,13 +611,3 @@ private fun playableUriOf(source: PlaybackSource.Playable): Uri = when (source) 
     is PlaybackSource.PhoneUri -> Uri.parse(source.readTarget)
 }
 
-/** 拖拽期间以手指的位置为准，否则每半秒的心跳会把滑块从指尖拽回去。 */
-private fun shownFraction(positionMs: Long, durationMs: Long): Float =
-    if (durationMs <= 0L) 0f else (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-
-/** `1:02:03 / 1:20:00`；时长读不出来时只写已经播到哪儿，不给一个假的总长。 */
-private fun playbackLine(positionMs: Long, durationMs: Long): String {
-    val current = durationLabel(positionMs) ?: "0:00"
-    val total = durationLabel(durationMs) ?: return current
-    return "$current / $total"
-}

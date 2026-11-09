@@ -1,6 +1,8 @@
 package com.hpu.browseguard.ui.player
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -46,6 +48,18 @@ class PlayerGestureMathTest {
         assertEquals(0, PlayerGestureMath.volumeFor(5, 1f, 10))
         assertEquals(10, PlayerGestureMath.volumeFor(5, -1f, 10))
         assertEquals(0, PlayerGestureMath.volumeFor(5, -1f, 0))
+    }
+
+    /** 锁定态没有手势轴，滑动和点击共用一条收尾分支：只有位移不超过 slop 才算「点一下」。 */
+    @Test
+    fun onlyAMovementWithinTouchSlopCountsAsATap() {
+        val slop = 24f
+        assertTrue("手指没动就是点击", PlayerGestureMath.isTap(0f, 0f, slop))
+        assertTrue("刚好压在阈值上仍算点击", PlayerGestureMath.isTap(slop, 0f, slop))
+        assertFalse("横向划过去不算点击", PlayerGestureMath.isTap(slop + 1f, 0f, slop))
+        assertFalse("纵向划过去也不算点击", PlayerGestureMath.isTap(0f, -(slop + 1f), slop))
+        assertTrue("斜着抖一下，只要直线距离没超阈值就算点击", PlayerGestureMath.isTap(slop * 0.6f, slop * 0.6f, slop))
+        assertFalse("斜着划出阈值不算点击", PlayerGestureMath.isTap(slop * 0.8f, slop * 0.8f, slop))
     }
 
     @Test

@@ -44,4 +44,13 @@ internal object PlayerGestureMath {
         }
         return "${text}x"
     }
+
+    /**
+     * 松手时算不算「点一下」：位移的欧氏距离不超过 [touchSlop] 才算。
+     *
+     * 锁定态三条手势轴全关，滑动也会落到同一条收尾分支——不判这个阈值，
+     * 用户在锁定画面上划一下就会把解锁按钮叫出来。
+     */
+    fun isTap(dx: Float, dy: Float, touchSlop: Float): Boolean =
+        dx * dx + dy * dy <= touchSlop * touchSlop
 }

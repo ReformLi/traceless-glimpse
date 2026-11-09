@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+            方向测试专用宿主，只进 debug 包；release 里不会出现。
+            configChanges 与 MainActivity 保持一致：改了方向不重建，
+            测试才能一直拿着同一个实例去读 requestedOrientation。
+        -->
+        <activity
+            android:name="com.hpu.browseguard.ui.player.PlayerOrientationTestActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+            android:exported="false" />
+    </application>
+
+</manifest>
