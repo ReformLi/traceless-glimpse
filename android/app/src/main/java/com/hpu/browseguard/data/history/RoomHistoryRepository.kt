@@ -40,13 +40,13 @@ class RoomHistoryRepository(
 
     override val records: Flow<List<DownloadRecord>> = dao.observeAll()
 
-    override suspend fun beginSniff(id: String, url: String) = rowGate.withLock {
+    override suspend fun beginSniff(id: String, url: String, title: String?) = rowGate.withLock {
         val ts = now()
         dao.upsert(
             DownloadRecord(
                 id = id,
                 url = url,
-                title = defaultHistoryTitle(url),
+                title = title?.trim()?.takeIf { it.isNotEmpty() } ?: defaultHistoryTitle(url),
                 status = RecordStatus.SNIFFING,
                 createdAt = ts,
                 updatedAt = ts,

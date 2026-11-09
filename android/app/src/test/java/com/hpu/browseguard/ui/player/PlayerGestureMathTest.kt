@@ -62,6 +62,27 @@ class PlayerGestureMathTest {
         assertFalse("斜着划出阈值不算点击", PlayerGestureMath.isTap(slop * 0.8f, slop * 0.8f, slop))
     }
 
+    /** 双击要同时满足「时间在窗口内」和「落点几乎重合」；差一条都不算，按两次单击走。 */
+    @Test
+    fun onlyAQuickCoLocatedSecondTapCountsAsADoubleTap() {
+        val slop = 24f
+        assertTrue("窗口内、同位置就是双击", PlayerGestureMath.isDoubleTap(120L, 0f, 0f, slop))
+        assertTrue("压在窗口边界上仍算双击", PlayerGestureMath.isDoubleTap(PlayerGestureMath.DOUBLE_TAP_MS, 0f, 0f, slop))
+        assertFalse(
+            "隔太久只是两次单击，第一击唤出的控制条不该被吞掉",
+            PlayerGestureMath.isDoubleTap(PlayerGestureMath.DOUBLE_TAP_MS + 1L, 0f, 0f, slop),
+        )
+        assertFalse(
+            "两击离得太远（两击间手指挪了一掌宽）不算双击",
+            PlayerGestureMath.isDoubleTap(120L, slop + 1f, 0f, slop),
+        )
+        assertFalse(
+            "纵向也同理",
+            PlayerGestureMath.isDoubleTap(120L, 0f, -(slop + 1f), slop),
+        )
+        assertTrue("小抖动不影响双击判定", PlayerGestureMath.isDoubleTap(120L, slop * 0.5f, slop * 0.5f, slop))
+    }
+
     @Test
     fun speedLabelsKeepOneDecimalForWholeSteps() {
         assertEquals(listOf("0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"), PlayerGestureMath.SPEED_OPTIONS.map(PlayerGestureMath::speedLabel))

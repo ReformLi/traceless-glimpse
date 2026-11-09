@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -735,6 +736,11 @@ private fun HistoryCard(
     val running = record.status == RecordStatus.DOWNLOADING
     // 选中态给一圈主色高亮描边：多选时一眼圈出都圈了谁。
     BgvCard(
+        // 下载页的行比通用卡片密，内边距比默认的 14dp 收紧一档。
+        contentPadding = PaddingValues(
+            horizontal = BgvDimens.cardPaddingHorizontal,
+            vertical = cardVerticalPadding,
+        ),
         border = if (selected) {
             BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
         } else {
@@ -755,8 +761,10 @@ private fun HistoryCard(
                     }
                     Spacer(Modifier.width(6.dp))
                 }
+                // 完成行标题顶上实际文件名：用户在文件管理器里找的就是这个名字；
+                // 其余状态（或解析不出名字）退回记录标题。
                 Text(
-                    text = record.title ?: defaultHistoryTitle(record.url),
+                    text = outputFileLabel(record) ?: record.title ?: defaultHistoryTitle(record.url),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -766,7 +774,7 @@ private fun HistoryCard(
                 Spacer(Modifier.width(8.dp))
                 StatusChip(record.status)
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(4.dp))
             // ② 元信息行：主机 · 时间，恒一行。
             Text(
                 text = listOfNotNull(
@@ -778,16 +786,16 @@ private fun HistoryCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(6.dp))
             // ③ 进度槽：任何状态都占同一高度，没有进度就留空，不画假 0% 也不塌陷。
             RecordProgressSlot(record)
-            Spacer(Modifier.height(8.dp))
-            // ④ 信息带：一句话 + 行内动作，高度由 controlHeight 定死，不随内容伸缩。
+            Spacer(Modifier.height(4.dp))
+            // ④ 信息带：一句话 + 行内动作，高度由 footerBandHeight 定死，不随内容伸缩。
             val footer = recordFooter(record)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(BgvDimens.controlHeight),
+                    .height(footerBandHeight),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -820,6 +828,17 @@ private fun HistoryCard(
 
 /** 进度槽的固定高度：槽里只放下载轨道，6dp。 */
 private val progressSlotHeight = 6.dp
+
+/** 卡片内的垂直内边距：下载页的行密，比 BgvCard 默认的 14dp 收紧一档。 */
+private val cardVerticalPadding = 8.dp
+
+/**
+ * 信息带（④）的固定高度。
+ *
+ * 不再借用按钮的 [BgvDimens.controlHeight]（44dp）：信息带里的话是次要说明，
+ * 行内动作换成可点的小字（[RowAction]），32dp 就装得下——下载列表因此矮一截。
+ */
+private val footerBandHeight = 32.dp
 
 /**
  * 进度槽：不论状态恒占 [progressSlotHeight] 高。
@@ -906,17 +925,20 @@ private fun recordFooter(record: DownloadRecord): CardFooter {
 /**
  * 信息带里的行内动作。
  *
- * 高度交给父行（[BgvDimens.controlHeight]）的紧约束去定，不另写一个数——
+ * 用可点的小字而不是 TextButton：按钮自带 40dp 的最小高度，会把 32dp 的
+ * 信息带撑破。高度交给父行（[footerBandHeight]）的紧约束去定，不另写一个数——
  * 两个高度只要各写一份，迟早会有一边偷偷多出 4dp，卡片也就不等高了。
  */
 @Composable
 private fun RowAction(label: String, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 12.dp),
-    ) {
-        Text(text = label, style = MaterialTheme.typography.labelLarge)
-    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+    )
 }
 
 /**

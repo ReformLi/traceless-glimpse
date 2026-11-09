@@ -53,4 +53,14 @@ internal object PlayerGestureMath {
      */
     fun isTap(dx: Float, dy: Float, touchSlop: Float): Boolean =
         dx * dx + dy * dy <= touchSlop * touchSlop
+
+    /** 双击窗口；两击间隔超过它就是两次独立的单击。 */
+    const val DOUBLE_TAP_MS = 300L
+
+    /**
+     * 这次抬起能不能和上一次点击凑成双击：间隔不超窗口、且两次落点几乎重合。
+     * 距离用平方判，与 [isTap] 同一套手感阈值。
+     */
+    fun isDoubleTap(elapsedMs: Long, dx: Float, dy: Float, touchSlop: Float): Boolean =
+        elapsedMs <= DOUBLE_TAP_MS && dx * dx + dy * dy <= touchSlop * touchSlop
 }

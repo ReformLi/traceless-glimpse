@@ -102,9 +102,6 @@ private val thumbDragRadius = 8.dp
 /** 控件淡入淡出时长：够短，不至于拖慢「点一下马上消失」的手感。 */
 private const val CONTROLS_FADE_MS = 120
 
-/** 锁定后点屏幕中央，解锁按钮停留这么久就自己收起来。 */
-private const val UNLOCK_PROMPT_MS = 2_500L
-
 /**
  * instrumented UI 测试用的节点标记。
  *
@@ -136,13 +133,18 @@ internal class PlayerControlsState(
 ) {
     var controlsShown by mutableStateOf(true)
     /**
-     * 锁定：锁上之后按钮与三条手势轴都不再响应，画面上只留一根只读进度条。
-     * 解锁入口是「点一下屏幕中央」——解锁按钮 [unlockPromptShown] 只在被点出来时出现。
+     * 锁定：锁上之后按钮与三条手势轴都不再响应。
+     * 解锁入口只有一个——常驻的锁定按钮（见 [LockButton]），点它直接解锁。
      */
     var locked by mutableStateOf(false)
 
-    /** 解锁按钮是否露出来。锁定态下点一下屏幕才出现，几秒后自己收。 */
-    var unlockPromptShown by mutableStateOf(false)
+    /**
+     * 锁定态的 HUD（锁定按钮 + 底部只读进度条）是否可见。
+     *
+     * 锁定画面上点一下屏幕就切换它：点一下露出、再点一下收起，再点再露出。
+     * 与 [controlsShown] 完全是两份状态——锁定 HUD **没有**自动收起，只有点屏幕才动。
+     */
+    var lockedHudShown by mutableStateOf(true)
     var speed by mutableFloatStateOf(1f)
     var speedMenuShown by mutableStateOf(false)
 
@@ -205,33 +207,32 @@ internal class PlayerControlsState(
         if (controlsShown) hideControls() else controlsShown = true
     }
 
-    /** 点画面空白处：锁定态只负责把解锁按钮叫出来，其余照旧切显隐。 */
+    /** 点画面空白处：锁定态只切换锁定 HUD 的显隐，其余照旧切控制条。 */
     fun onSurfaceTap() {
-        if (locked) showUnlockPrompt() else toggleControls()
+        if (locked) lockedHudShown = !lockedHudShown else toggleControls()
     }
 
     /**
      * 手势收尾：只有「点一下」才走 [onSurfaceTap]。
      *
      * 滑动超过 touchSlop 的松手要在这里被挡掉——锁定态没有手势轴，滑动同样落到这条分支，
-     * 不挡就会变成「随手一划就弹解锁按钮」。判定由 [PlayerGestureMath.isTap] 在屏内算好传进来。
+     * 不挡就会变成「随手一划就切换锁定 HUD」。判定由 [PlayerGestureMath.isTap] 在屏内算好传进来。
      */
     fun onSurfaceRelease(tapped: Boolean) {
         if (tapped) onSurfaceTap()
     }
 
-    /** 锁上：控件立刻收干净、倍速面板一并关掉；解锁按钮此时还不出现（要等人点屏幕）。 */
+    /** 锁上：控制条立刻收干净、倍速面板一并关掉；锁定 HUD 默认露出来（按钮在最前面，别让人找不到解锁口）。 */
     fun lock() {
         locked = true
         controlsShown = false
         speedMenuShown = false
-        unlockPromptShown = false
+        lockedHudShown = true
     }
 
-    /** 解锁：控件回到显示态，自动隐藏从这一刻重新计时（[autoHideDelayMs] 重新给出 3500）。 */
+    /** 解锁：控制条回到显示态，自动隐藏从这一刻重新计时（[autoHideDelayMs] 重新给出 3500）。 */
     fun unlock() {
         locked = false
-        unlockPromptShown = false
         controlsShown = true
     }
 
@@ -305,32 +306,6 @@ internal class PlayerControlsState(
         else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
-    fun showUnlockPrompt() {
-        if (locked) unlockPromptShown = true
-    }
-
-    fun dismissUnlockPrompt() {
-        unlockPromptShown = false
-    }
-
-    /** 解锁按钮还要停留多久；null = 不用排程。 */
-    fun unlockPromptDelayMs(): Long? =
-        if (locked && unlockPromptShown) UNLOCK_PROMPT_MS else null
-
-    /**
-     * 解锁按钮已经摆了 [elapsedMs] 毫秒：够久就自己收起。
-     *
-     * 判定放在这里而不是写死在 composable 的 `delay` 里，是为了让「多久算够久」这件事
-     * 能用注入的时钟直接单测——真等到两秒半再断言，测试既慢又不稳。
-     *
-     * 本函数假定调用方已等满 [unlockPromptDelayMs]：`elapsedMs >= 阈值` 只是兜底防御
-     * （防止有人拿 0 或负值调进来把提示提前收掉），不是主判定。真正的计时仍然在
-     * `LaunchedEffect` 的 `delay` 里。
-     */
-    fun onUnlockPromptElapsed(elapsedMs: Long) {
-        if (elapsedMs >= UNLOCK_PROMPT_MS) dismissUnlockPrompt()
-    }
-
     fun toggleSpeedMenu() {
         speedMenuShown = !speedMenuShown
     }
@@ -395,9 +370,10 @@ internal class PlayerControlsState(
  * 播放控制层：顶栏、底栏、自绘进度条、倍速面板、锁定态。
  *
  * 只在「没失败、不在小窗」时被调用；显隐由 [PlayerControlsState.controlsVisible] 自己管，
- * 所以这个 composable 本身要一直在组合里——自动收起与解锁提示的计时器都挂在这里。
+ * 所以这个 composable 本身要一直在组合里——控制条自动收起的计时器挂在这里。
+ * 锁定 HUD 没有计时器：它只跟随 [PlayerControlsState.lockedHudShown]，点屏幕才切换。
  *
- * 图层顺序很重要：锁定后要留的只读进度条与解锁按钮必须在两个 `AnimatedVisibility`
+ * 图层顺序很重要：锁定后要留的只读进度条与锁定按钮必须在两个 `AnimatedVisibility`
  * **外面**渲染，否则控件淡出一结束，它们会跟着内容一起离开组合。
  */
 @Composable
@@ -418,16 +394,6 @@ internal fun PlayerControls(
         if (hideDelayMs != null) {
             delay(hideDelayMs)
             state.hideControls()
-        }
-    }
-
-    // 解锁按钮被叫出来之后自己收；解锁或重新锁定都会让这个值变回 null，计时随之作废。
-    // 到点后由 [PlayerControlsState.onUnlockPromptElapsed] 判「够不够久」，阈值只有一份。
-    val promptDelayMs = state.unlockPromptDelayMs()
-    LaunchedEffect(promptDelayMs) {
-        if (promptDelayMs != null) {
-            delay(promptDelayMs)
-            state.onUnlockPromptElapsed(promptDelayMs)
         }
     }
 
@@ -463,22 +429,21 @@ internal fun PlayerControls(
         }
 
         // 锁定后要留的东西必须在这两个 AnimatedVisibility **外面**：里面的内容在淡出结束时
-        // 会离开组合，跟着一起放进去就等于「一锁定全没了」。
-        if (state.locked) {
+        // 会离开组合，跟着一起放进去就等于「一锁定全没了」。锁定画面上点一下屏幕切换
+        // [PlayerControlsState.lockedHudShown]：露出→收起→再露出，只动 HUD，不碰解锁逻辑。
+        if (state.locked && state.lockedHudShown) {
             LockedProgressBar(
                 playedFraction = state.playedFraction(),
                 bufferedFraction = state.bufferedFraction(),
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
-            if (state.unlockPromptShown) {
-                UnlockPrompt(
-                    onUnlock = { state.unlock() },
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-        } else {
+        }
+        // 锁定开关在 CenterStart 原位：未锁定是开口锁、点了锁上；锁定后原地换成闭口锁、
+        // 点了直接解锁。锁定 HUD 收起时它跟着藏——再点一下屏幕就回来，不另设解锁路径。
+        if (!state.locked || state.lockedHudShown) {
             LockButton(
-                onLock = { state.lock() },
+                locked = state.locked,
+                onToggle = { state.toggleLock() },
                 modifier = Modifier.align(Alignment.CenterStart),
             )
         }
@@ -842,46 +807,33 @@ private fun PlayerProgressBar(
     }
 }
 
-/** 锁定入口：中间靠左的圆点。锁上之后它就消失，画面只剩底部那根只读进度条。 */
+/**
+ * 锁定开关：中间靠左的圆点，锁定前后都不挪窝。
+ *
+ * 图标随状态换形状：未锁定显示开口锁（[UnlockIcon]，示意「点这里锁上」）；
+ * 锁定后显示闭口锁（[LockIcon]）并加深底色示意「现在是锁着的」，点击直接解锁。
+ * 它在 [PlayerControls] 里排在两个 `AnimatedVisibility` 之外，控件收起时依然可见。
+ */
 @Composable
-private fun LockButton(onLock: () -> Unit, modifier: Modifier = Modifier) {
+private fun LockButton(locked: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .padding(start = 12.dp)
             .size(36.dp)
-            .background(Color(0x66000000), RoundedCornerShape(18.dp))
-            .clickable { onLock() },
+            .background(
+                if (locked) Color(0xCC000000) else Color(0x66000000),
+                RoundedCornerShape(18.dp),
+            )
+            .clickable { onToggle() },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = LockIcon,
-            contentDescription = stringResource(R.string.player_lock),
+            imageVector = if (locked) LockIcon else UnlockIcon,
+            contentDescription = stringResource(
+                if (locked) R.string.player_unlock else R.string.player_lock,
+            ),
             tint = Color.White,
             modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
-/**
- * 解锁入口：锁定态下点一下屏幕才出现，[UNLOCK_PROMPT_MS] 之后自己收起。
- *
- * 它和 [LockedProgressBar] 都由 [PlayerControls] 在控件淡入淡出的 `AnimatedVisibility`
- * **之外**渲染——放进去，锁定后控件一淡出它俩就跟着离开组合了。
- */
-@Composable
-private fun UnlockPrompt(onUnlock: () -> Unit, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .size(48.dp)
-            .background(Color(0x99000000), RoundedCornerShape(24.dp))
-            .clickable { onUnlock() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = UnlockIcon,
-            contentDescription = stringResource(R.string.player_unlock),
-            tint = Color.White,
-            modifier = Modifier.size(20.dp),
         )
     }
 }

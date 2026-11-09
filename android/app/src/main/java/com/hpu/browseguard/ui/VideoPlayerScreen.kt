@@ -370,6 +370,11 @@ private fun VideoPlayer(
                 modifier = Modifier
                     .matchParentSize()
                     .pointerInput(player, activity, audioManager, failed) {
+                        // 双击检测的跨手势记忆：上一击的时间和落点。手势块本身按 (player, failed)
+                        // 重启，换视频或出错时这份记忆跟着归零，不会把旧视频的双击带过来。
+                        var lastTapUptimeMs = Long.MIN_VALUE
+                        var lastTapX = Float.NaN
+                        var lastTapY = Float.NaN
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val width = size.width.toFloat().coerceAtLeast(1f)
@@ -453,14 +458,39 @@ private fun VideoPlayer(
 
                                 null -> if (!latestFailed) {
                                     // 锁定态三条轴都关，滑动也落到这里：位移不超过 touchSlop 才算「点一下」，
-                                    // 否则在锁定画面上随手一划就会把解锁按钮叫出来。
-                                    controls.onSurfaceRelease(
-                                        PlayerGestureMath.isTap(
-                                            dx = change.position.x - startX,
-                                            dy = change.position.y - down.position.y,
-                                            touchSlop = viewConfiguration.touchSlop,
-                                        ),
+                                    // 否则在锁定画面上随手一划就会切换锁定 HUD 的显隐。
+                                    val tapped = PlayerGestureMath.isTap(
+                                        dx = change.position.x - startX,
+                                        dy = change.position.y - down.position.y,
+                                        touchSlop = viewConfiguration.touchSlop,
                                     )
+                                    if (!tapped) {
+                                        lastTapUptimeMs = Long.MIN_VALUE
+                                        controls.onSurfaceRelease(false)
+                                    } else {
+                                        val now = change.uptimeMillis
+                                        val doubleTap = !latestLocked &&
+                                            PlayerGestureMath.isDoubleTap(
+                                                elapsedMs = now - lastTapUptimeMs,
+                                                dx = change.position.x - lastTapX,
+                                                dy = change.position.y - lastTapY,
+                                                touchSlop = viewConfiguration.touchSlop,
+                                            )
+                                        if (doubleTap) {
+                                            // 双击只切播放/暂停。单击的职责只有显隐：第一击已经把控制条
+                                            // 切过一次，这里原样再切一次抵消，双击前后控制条保持原样——
+                                            // 否则「连点两下显隐」会被误判成暂停，单击就不再纯粹。
+                                            // 锁定态走不到这里（上面已排除），不会误碰播放。
+                                            lastTapUptimeMs = Long.MIN_VALUE
+                                            controls.onSurfaceRelease(true)
+                                            if (player.isPlaying) player.pause() else player.play()
+                                        } else {
+                                            lastTapUptimeMs = now
+                                            lastTapX = change.position.x
+                                            lastTapY = change.position.y
+                                            controls.onSurfaceRelease(true)
+                                        }
+                                    }
                                 }
                                 else -> Unit
                             }

@@ -22,14 +22,14 @@ class HistoryCardLayoutTest {
     fun theCardHasFourSlotsAndNoStatusDependentVerticalSpace() {
         val card = slice(source, "private fun HistoryCard(", "private val progressSlotHeight")
 
-        // 卡片内的垂直间距只有三处，且顺序固定：标题后 6、进度槽前 10、进度槽后 8。
+        // 卡片内的垂直间距只有三处，且顺序固定：标题后 4、进度槽前 6、进度槽后 4。
         val gaps = Regex("""Spacer\(Modifier\.height\((\d+)\.dp\)\)""")
             .findAll(card)
             .map { it.groupValues[1] }
             .toList()
         assertEquals(
             "卡片的垂直间距必须固定成这三处；新增一处就意味着某一行会比别的行高",
-            listOf("6", "10", "8"),
+            listOf("4", "6", "4"),
             gaps,
         )
 
@@ -86,8 +86,11 @@ class HistoryCardLayoutTest {
         val card = slice(source, "private fun HistoryCard(", "private val progressSlotHeight")
 
         assertTrue(
-            "信息带的高度取自尺寸令牌，有按钮和没按钮都一样高",
-            card.contains("height(BgvDimens.controlHeight)"),
+            "信息带的高度是独立常量（32dp），有动作和没动作都一样高",
+            card.contains("height(footerBandHeight)"),
+        )
+        assertTrue(
+            source.contains("private val footerBandHeight = 32.dp"),
         )
         assertTrue(
             "信息带里那句话只能占一行，超长省略",

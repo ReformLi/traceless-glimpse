@@ -2,6 +2,8 @@ package com.hpu.browseguard.data.backend
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -271,10 +273,15 @@ class LocalWebViewSniffer(
         }
 
         fun destroy() {
-            webView?.apply {
-                stopLoading()
-                webViewClient = WebViewClient()
-                destroy()
+            webView?.let { view ->
+                view.stopLoading()
+                view.webViewClient = WebViewClient()
+                // 加载中断时 chromium 还有积压的 loadingStateChanged 等消息排在
+                // 主线程队列里，内联 destroy() 会让它们命中已销毁实例（logcat
+                // 报 "attempted to call on a destroyed WebView"）。把销毁排到
+                // 队尾，让积压回调先跑完。这个 WebView 离屏使用、从不 attach，
+                // view.post 在未 attach 视图上永不执行，必须走主线程 Handler。
+                Handler(Looper.getMainLooper()).post { view.destroy() }
             }
             // 会话结束后把内存里的 Cookie 落盘：下载器在同一进程读得到，
             // 但应用被杀后下一次启动也要能续上同一站点的登录态。

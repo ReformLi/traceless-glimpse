@@ -139,17 +139,15 @@ class PlayerControlsStateTest {
     }
 
     @Test
-    fun theUnlockPromptOnlyShowsUpWhenTheScreenIsTapped() {
+    fun tappingTheLockedScreenOnlyTogglesTheHud() {
         val state = PlayerControlsState()
         state.lock()
-        assertFalse("刚锁上时不该直接弹解锁按钮", state.unlockPromptShown)
-        assertNull(state.unlockPromptDelayMs())
+        assertTrue("刚锁上 HUD 就要露出来：锁定按钮是最快的解锁口", state.lockedHudShown)
         state.onSurfaceTap()
-        assertTrue("锁定态点一下屏幕才叫出解锁按钮", state.unlockPromptShown)
-        assertEquals(2_500L, state.unlockPromptDelayMs())
-        state.dismissUnlockPrompt()
-        assertFalse(state.unlockPromptShown)
-        assertNull(state.unlockPromptDelayMs())
+        assertFalse("锁定态点一下屏幕收起 HUD", state.lockedHudShown)
+        state.onSurfaceTap()
+        assertTrue("再点一下再露出，来回只切显隐", state.lockedHudShown)
+        assertTrue("点屏不许解锁，也不许把控件叫回来", state.locked && !state.controlsShown)
     }
 
     @Test
@@ -159,7 +157,7 @@ class PlayerControlsStateTest {
         assertFalse(state.controlsShown)
         state.onSurfaceTap()
         assertTrue(state.controlsShown)
-        assertFalse("未锁定时不该冒出解锁按钮", state.unlockPromptShown)
+        assertTrue("未锁定时锁定按钮常驻，不参与显隐切换", !state.locked)
     }
 
     @Test
@@ -194,37 +192,20 @@ class PlayerControlsStateTest {
         assertNull(state.autoHideDelayMs())
 
         state.onSurfaceTap()
-        assertTrue("锁定态点屏只出解锁按钮，不许把控件叫回来", state.unlockPromptShown)
+        assertFalse("锁定态点屏收起 HUD，不许把控件叫回来", state.lockedHudShown)
         assertFalse(state.controlsShown)
 
         state.unlock()
         assertFalse(state.locked)
         assertTrue(state.controlsShown)
         assertTrue(state.controlsVisible)
-        assertFalse("解锁时解锁按钮要一起收掉", state.unlockPromptShown)
         assertEquals("解锁后重新开始 3.5s 计时", 3_500L, state.autoHideDelayMs())
 
         state.lock()
         assertTrue(state.locked)
         assertFalse(state.controlsShown)
         assertFalse(state.speedMenuShown)
-        assertFalse(state.unlockPromptShown)
-    }
-
-    /** 解锁按钮在两秒半之后自己收：时钟由调用方注入，不用真等。 */
-    @Test
-    fun theUnlockPromptDismissesItselfAfterTwoAndAHalfSeconds() {
-        val state = PlayerControlsState()
-        state.lock()
-        state.onSurfaceTap()
-        assertTrue(state.unlockPromptShown)
-
-        state.onUnlockPromptElapsed(2_499L)
-        assertTrue("差 1ms 就收起，说明阈值被写小了", state.unlockPromptShown)
-        state.onUnlockPromptElapsed(2_500L)
-        assertFalse("两秒半到了就该收", state.unlockPromptShown)
-        assertNull(state.unlockPromptDelayMs())
-        assertTrue("收的只是提示，锁定态本身不变", state.locked)
+        assertTrue("重新锁定后 HUD 恢复显示", state.lockedHudShown)
     }
 
     /**
@@ -373,19 +354,21 @@ class PlayerControlsStateTest {
     // ---- 滑动 vs 点击：超过 touchSlop 的松手不算点 ----
 
     @Test
-    fun aSwipeOnALockedScreenDoesNotSummonTheUnlockPrompt() {
+    fun aSwipeOnALockedScreenDoesNotToggleTheHud() {
         val state = PlayerControlsState()
         state.lock()
         state.onSurfaceRelease(tapped = false)
-        assertFalse("锁定态划一下不该弹解锁按钮", state.unlockPromptShown)
+        assertTrue("锁定态划一下不该动 HUD，它只跟随点按", state.lockedHudShown)
     }
 
     @Test
-    fun aTapOnALockedScreenSummonsTheUnlockPrompt() {
+    fun aTapOnALockedScreenTogglesTheHud() {
         val state = PlayerControlsState()
         state.lock()
         state.onSurfaceRelease(tapped = true)
-        assertTrue("锁定态点一下才弹解锁按钮", state.unlockPromptShown)
+        assertFalse("锁定态点一下收起 HUD", state.lockedHudShown)
+        state.onSurfaceRelease(tapped = true)
+        assertTrue("再点一下重新露出", state.lockedHudShown)
     }
 
     @Test

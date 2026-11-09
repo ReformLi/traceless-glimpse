@@ -2,6 +2,7 @@ package com.hpu.browseguard.ui
 
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.RecordStatus
+import com.hpu.browseguard.data.history.defaultHistoryTitle
 import com.hpu.browseguard.data.history.sourceHost
 import com.hpu.browseguard.data.output.ArtifactChange
 import java.io.File
@@ -76,6 +77,68 @@ class DownloadListLogicTest {
         assertEquals("1.0 KB", formatBytes(1_024))
         assertEquals("1.5 MB", formatBytes(1_536 * 1_024))
         assertEquals("1.00 GB", formatBytes(1_073_741_824))
+    }
+
+    /** 完成行标题顶实际文件名：本地路径、SAF 编码 URI 各取末段；非完成行与目录树 URI 退回 null。 */
+    @Test
+    fun finishedRowsShowTheArtifactFileName() {
+        assertEquals(
+            "index.mp4",
+            outputFileLabel(
+                row(
+                    "done",
+                    RecordStatus.DONE,
+                    at = 1,
+                    path = "/data/user/0/com.hpu.browseguard/files/Download/index.mp4",
+                ),
+            ),
+        )
+        assertEquals(
+            "编码过的 SAF 文档 id 要解出来再切文件名",
+            "foo.mp4",
+            outputFileLabel(
+                row(
+                    "done-saf",
+                    RecordStatus.DONE,
+                    at = 2,
+                    path = "content://com.android.externalstorage.documents/tree/primary%3AMovies/document/primary%3AMovies%2Ffoo.mp4",
+                ),
+            ),
+        )
+        assertNull(
+            "目录树 URI 没有文件名，不能把目录名顶上标题",
+            outputFileLabel(
+                row("done-tree", RecordStatus.DONE, at = 3, path = "content://com.android.providers.downloads.documents/tree/raw%3ADownloads"),
+            ),
+        )
+        assertNull("下载中的行还是 .part 暂存名，不顶标题", outputFileLabel(row("down", RecordStatus.DOWNLOADING, at = 4, path = "/data/.../index.mp4.part")))
+        assertNull(outputFileLabel(row("done-no-path", RecordStatus.DONE, at = 5)))
+        assertEquals(
+            "用户自己起的名字（下载时填的命名、重命名）优先于磁盘文件名",
+            "111",
+            outputFileLabel(
+                row(
+                    "done-custom",
+                    RecordStatus.DONE,
+                    at = 6,
+                    path = "/data/.../index.mp4",
+                    title = "111",
+                ),
+            ),
+        )
+        assertEquals(
+            "标题还是 URL 派生默认值时不算「起过名」，让磁盘文件名顶上",
+            "index.mp4",
+            outputFileLabel(
+                row(
+                    "done-default",
+                    RecordStatus.DONE,
+                    at = 7,
+                    path = "/data/.../index.mp4",
+                    title = defaultHistoryTitle("https://example.com/watch"),
+                ),
+            ),
+        )
     }
 
     @Test
@@ -161,9 +224,11 @@ class DownloadListLogicTest {
         created: Long = 0,
         size: Long? = null,
         path: String? = null,
+        title: String? = null,
     ) = DownloadRecord(
         id = id,
         url = "https://example.com/watch",
+        title = title,
         status = status,
         outputPath = path,
         createdAt = created,

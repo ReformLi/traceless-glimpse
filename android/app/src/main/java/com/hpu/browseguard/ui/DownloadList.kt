@@ -3,10 +3,12 @@ package com.hpu.browseguard.ui
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.RecordLocation
 import com.hpu.browseguard.data.history.RecordStatus
+import com.hpu.browseguard.data.history.defaultHistoryTitle
 import com.hpu.browseguard.data.history.locationOf
 import com.hpu.browseguard.data.output.ArtifactChange
 import com.hpu.browseguard.data.playback.PlaybackSource
 import com.hpu.browseguard.data.playback.playbackSourceOf
+import java.net.URLDecoder
 import java.util.Locale
 
 /** 下载管理页的状态过滤栏。 */
@@ -65,6 +67,33 @@ fun progressLabel(downloadedBytes: Long, bytesTotal: Long, speedBps: Long): Stri
         append(formatBytes(speedBps))
         append("/s")
     }
+}
+
+/**
+ * 完成行标题用的产物文件名：本地路径取最后一段，SAF 的 content URI 取文档 id 末段
+ * （与改名的 [baseNameOf] 同一套字符串规则）。
+ *
+ * 优先级：用户自己起的名字（下载时填的「视频标题命名」、重命名）> 磁盘文件名 >
+ * 记录默认标题。判断「起过名」的依据是标题不等于 [defaultHistoryTitle] 的 URL 派生值。
+ *
+ * 只认落定的完成行——下载中的 `.part` 暂存名和引擎任务的中间路径不该顶到标题上。
+ * SAF 的 URI 是编码过的（`primary%3ADownload%2Ffoo.mp4`），先切末段再解一遍才能
+ * 拿到人读的名字；解析不出带扩展名的名字（目录树 URI、无产物）返回 null，标题退回记录标题。
+ */
+fun outputFileLabel(record: DownloadRecord): String? {
+    if (record.status != RecordStatus.DONE) return null
+    record.title?.trim()
+        ?.takeIf { it.isNotEmpty() && it != defaultHistoryTitle(record.url) }
+        ?.let { return it }
+    val path = record.outputPath?.takeIf { it.isNotBlank() } ?: return null
+    val raw = path.substringAfterLast('/').substringAfterLast('\\')
+    val decoded = if ('%' in raw) {
+        runCatching { URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+    } else {
+        raw
+    }
+    val name = decoded.substringAfterLast('/').substringAfterLast(':')
+    return name.takeIf { it.isNotBlank() && '.' in it }
 }
 
 /** 0..1；不知道总量时返回 null，界面据此换成不确定进度条。 */

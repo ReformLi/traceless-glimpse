@@ -691,7 +691,9 @@ class HomeViewModel(
             )
         }
         viewModelScope.launch {
-            history.beginSniff(recordId, pageUrl)
+            // 页面标题在这里是唯一能拿到的时机：播放页顶栏、下载卡片顶的都是它，
+            // 缺了就退回 URL 派生标题（-beginSniff 内部处理）。
+            history.beginSniff(recordId, pageUrl, browserProductName)
             history.markReady(recordId, format = null)
             // 历史行先落地，后面的 Started 才有东西可回填。
             pickFormats()
@@ -1233,8 +1235,10 @@ class HomeViewModel(
                     link = link,
                     outputDir = sandboxRoot,
                     allowedRoots = listOf(sandboxRoot),
-                    // 浏览器页标题只给产物起名；离屏本地嗅探没有标题，退回 URL 末段。
-                    productName = browserProductName,
+                    // 「视频标题命名」填了就用填的（与引擎路径的 namingTemplate 同一语义）；
+                    // 没填退回浏览器页标题；都没有才让下载器按 URL 末段自己起名。
+                    productName = snapshot.outputName.trim().takeIf { it.isNotEmpty() }
+                        ?: browserProductName,
                 )
             }
         }

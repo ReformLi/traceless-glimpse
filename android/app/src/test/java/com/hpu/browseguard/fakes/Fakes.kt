@@ -380,13 +380,13 @@ class FakeHistoryRepository : HistoryRepository {
     val rows: List<DownloadRecord>
         get() = state.value
 
-    override suspend fun beginSniff(id: String, url: String) {
+    override suspend fun beginSniff(id: String, url: String, title: String?) {
         calls += "beginSniff"
         val ts = System.currentTimeMillis()
         state.value = state.value + DownloadRecord(
             id = id,
             url = url,
-            title = defaultHistoryTitle(url),
+            title = title?.trim()?.takeIf { it.isNotEmpty() } ?: defaultHistoryTitle(url),
             status = RecordStatus.SNIFFING,
             createdAt = ts,
             updatedAt = ts,
