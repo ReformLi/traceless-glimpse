@@ -114,14 +114,27 @@ class DownloadListLogicTest {
         assertNull("下载中的行还是 .part 暂存名，不顶标题", outputFileLabel(row("down", RecordStatus.DOWNLOADING, at = 4, path = "/data/.../index.mp4.part")))
         assertNull(outputFileLabel(row("done-no-path", RecordStatus.DONE, at = 5)))
         assertEquals(
-            "用户自己起的名字（下载时填的命名、重命名）优先于磁盘文件名",
-            "111",
+            "磁盘上的真名带扩展名，优先于记录标题——用户要照着这个名字去文件管理器里找",
+            "111.mp4",
             outputFileLabel(
                 row(
                     "done-custom",
                     RecordStatus.DONE,
                     at = 6,
-                    path = "/data/.../index.mp4",
+                    path = "/data/.../111.mp4",
+                    title = "111",
+                ),
+            ),
+        )
+        assertEquals(
+            "路径解析不出名字时，退回用户起过的标题",
+            "111",
+            outputFileLabel(
+                row(
+                    "done-title-only",
+                    RecordStatus.DONE,
+                    at = 6,
+                    path = "content://com.android.providers.downloads.documents/tree/raw%3ADownloads",
                     title = "111",
                 ),
             ),

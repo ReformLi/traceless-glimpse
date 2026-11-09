@@ -58,6 +58,15 @@ internal object PlayerGestureMath {
     const val DOUBLE_TAP_MS = 300L
 
     /**
+     * 双击两击落点的允许偏差，相对单击 touchSlop 的倍数。
+     *
+     * 手指双击时两次落点通常差几个 dp，按单击的 touchSlop 去卡，双击会被拆成两次单击
+     * （表现就是「双击只切换了两次控制条显隐，视频没暂停」）。放宽到三倍仍能挡住
+     * 「左一下右一下」的两次独立点击。
+     */
+    const val DOUBLE_TAP_SLOP_FACTOR = 3f
+
+    /**
      * 这次抬起能不能和上一次点击凑成双击：间隔不超窗口、且两次落点几乎重合。
      * 距离用平方判，与 [isTap] 同一套手感阈值。
      */

@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,7 +69,9 @@ import com.hpu.browseguard.ui.player.PlayerGestureMath
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 全屏播放器路由。
@@ -201,6 +204,12 @@ private fun VideoPlayer(
     val latestFailed by rememberUpdatedState(failed)
     // 锁定不写进手势块的 key（那会把进行中的手势打断），只让它在事件里读到最新值。
     val latestLocked by rememberUpdatedState(controls.locked)
+
+    // 单击要等双击窗口过去才生效：点下先排程，窗口内来了第二击就把排程取消。
+    // 只有 300ms 的等待能换来「单击必定是显隐、双击必定是播放/暂停」这一条硬保证——
+    // 立即执行再回滚的做法会让控制条先闪一下，而且第二击会落在刚弹出来的按钮上。
+    val tapScope = rememberCoroutineScope()
+    var pendingTapJob by remember { mutableStateOf<Job?>(null) }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -371,10 +380,13 @@ private fun VideoPlayer(
                     .matchParentSize()
                     .pointerInput(player, activity, audioManager, failed) {
                         // 双击检测的跨手势记忆：上一击的时间和落点。手势块本身按 (player, failed)
-                        // 重启，换视频或出错时这份记忆跟着归零，不会把旧视频的双击带过来。
+                        // 重启，换视频或出错时这份记忆跟着归零，不会把旧视频的双击带过来；
+                        // 上一支视频留下的待定单击也要一并作废，否则它会在新画面上切一次显隐。
                         var lastTapUptimeMs = Long.MIN_VALUE
                         var lastTapX = Float.NaN
                         var lastTapY = Float.NaN
+                        pendingTapJob?.cancel()
+                        pendingTapJob = null
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val width = size.width.toFloat().coerceAtLeast(1f)
@@ -464,31 +476,51 @@ private fun VideoPlayer(
                                         dy = change.position.y - down.position.y,
                                         touchSlop = viewConfiguration.touchSlop,
                                     )
-                                    if (!tapped) {
-                                        lastTapUptimeMs = Long.MIN_VALUE
-                                        controls.onSurfaceRelease(false)
-                                    } else {
-                                        val now = change.uptimeMillis
-                                        val doubleTap = !latestLocked &&
-                                            PlayerGestureMath.isDoubleTap(
-                                                elapsedMs = now - lastTapUptimeMs,
-                                                dx = change.position.x - lastTapX,
-                                                dy = change.position.y - lastTapY,
-                                                touchSlop = viewConfiguration.touchSlop,
-                                            )
-                                        if (doubleTap) {
-                                            // 双击只切播放/暂停。单击的职责只有显隐：第一击已经把控制条
-                                            // 切过一次，这里原样再切一次抵消，双击前后控制条保持原样——
-                                            // 否则「连点两下显隐」会被误判成暂停，单击就不再纯粹。
-                                            // 锁定态走不到这里（上面已排除），不会误碰播放。
+                                    val now = change.uptimeMillis
+                                    val previousTapMs = lastTapUptimeMs
+                                    val doubleTap = tapped &&
+                                        !latestLocked &&
+                                        previousTapMs != Long.MIN_VALUE &&
+                                        PlayerGestureMath.isDoubleTap(
+                                            elapsedMs = now - previousTapMs,
+                                            dx = change.position.x - lastTapX,
+                                            dy = change.position.y - lastTapY,
+                                            touchSlop = viewConfiguration.touchSlop *
+                                                PlayerGestureMath.DOUBLE_TAP_SLOP_FACTOR,
+                                        )
+                                    when {
+                                        // 拖动过，不是点击：清掉记忆，别让下一次点击和这次凑成双击。
+                                        !tapped -> lastTapUptimeMs = Long.MIN_VALUE
+
+                                        // 锁定态没有双击语义：点屏立刻切 HUD，不必等双击窗口。
+                                        latestLocked -> {
                                             lastTapUptimeMs = Long.MIN_VALUE
                                             controls.onSurfaceRelease(true)
+                                        }
+
+                                        // 第二击落在窗口内：先取消待定的单击（显隐一次都不会被触发），
+                                        // 再只切播放/暂停。这就是「双击永远是播放/暂停」的那一半保证。
+                                        doubleTap -> {
+                                            lastTapUptimeMs = Long.MIN_VALUE
+                                            pendingTapJob?.cancel()
+                                            pendingTapJob = null
                                             if (player.isPlaying) player.pause() else player.play()
-                                        } else {
+                                        }
+
+                                        // 第一击：只记下来并排程一次单击。窗口内没有第二击，它才真正
+                                        // 去切显隐——用户看到的就是「单击只切显隐」，绝不会先闪一下。
+                                        else -> {
                                             lastTapUptimeMs = now
                                             lastTapX = change.position.x
                                             lastTapY = change.position.y
-                                            controls.onSurfaceRelease(true)
+                                            pendingTapJob?.cancel()
+                                            pendingTapJob = tapScope.launch {
+                                                delay(PlayerGestureMath.DOUBLE_TAP_MS)
+                                                pendingTapJob = null
+                                                // 这 300ms 里用户可能已经点了锁定按钮：那一击不该再
+                                                // 动画面，否则刚锁上 HUD 又被这一下切成隐藏。
+                                                if (!controls.locked) controls.onSurfaceRelease(true)
+                                            }
                                         }
                                     }
                                 }
