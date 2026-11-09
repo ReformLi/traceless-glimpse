@@ -110,7 +110,12 @@ private fun watchedPair(record: DownloadRecord): Pair<Long, Long>? {
     return position.coerceAtMost(total) to total
 }
 
-/** 进度条用的比例。 */
+/**
+ * 已看比例（0..1）。
+ *
+ * 列表里不再拿它画轨道：一条定格的「已看 36%」比一根静态进度条更像结论。
+ * 需要真实比例的地方（将来的控件、分析）仍然从这里取。
+ */
 fun watchedFraction(record: DownloadRecord): Float? =
     watchedPair(record)?.let { (position, total) -> position.toFloat() / total.toFloat() }
 

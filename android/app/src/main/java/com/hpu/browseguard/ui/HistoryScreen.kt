@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -715,6 +716,15 @@ private fun DownloadStatColumn(value: String, label: String, modifier: Modifier 
     }
 }
 
+/**
+ * 一行下载记录。
+ *
+ * 卡片高度只由排版决定，不随状态漂移：标题、元信息、进度槽、信息带四段各占固定位置，
+ * 「下载中」「已完成且看过」「失败带原因」三种行的卡片一样高——
+ * 列表滚动时不会因为某一行多出一句小字就突然长个儿。
+ *
+ * 代价是这些细节被压成一行（超出省略），完整文案在操作面板的「详情」里。
+ */
 @Composable
 private fun HistoryCard(
     record: DownloadRecord,
@@ -732,13 +742,18 @@ private fun HistoryCard(
         },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
+            // ① 标题行：标题恒一行，右侧状态胶囊。
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (selected) {
-                    Checkbox(
-                        checked = true,
-                        onCheckedChange = null,
-                        modifier = Modifier.padding(end = 6.dp),
-                    )
+                    // 固定的 24dp 槽：Checkbox 自带的 48dp 触摸区会把这一行撑高。
+                    Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                        Checkbox(
+                            checked = true,
+                            onCheckedChange = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
                 }
                 Text(
                     text = record.title ?: defaultHistoryTitle(record.url),
@@ -752,6 +767,7 @@ private fun HistoryCard(
                 StatusChip(record.status)
             }
             Spacer(Modifier.height(6.dp))
+            // ② 元信息行：主机 · 时间，恒一行。
             Text(
                 text = listOfNotNull(
                     sourceHost(record.url).takeIf { it.isNotBlank() },
@@ -762,123 +778,144 @@ private fun HistoryCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-
-            if (running) {
-                Spacer(Modifier.height(10.dp))
-                val fraction = progressFraction(record.downloadedBytes, record.bytesTotal)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (fraction == null) {
-                        // 总量未知（chunked 流、引擎侧任务还没报全长）：不确定进度条比一个假的 0% 诚实。
-                        LinearProgressIndicator(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(6.dp),
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { fraction },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(6.dp)
-                                .clip(RoundedCornerShape(3.dp)),
-                        )
-                    }
-                    // 百分比单独一格：HLS 的总量是估算值，用户真正在意的是「走到哪了」。
-                    fraction?.let { value ->
-                        Text(
-                            text = "${(value * 100).roundToInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    TextButton(onClick = onCancel) {
-                        Text(stringResource(R.string.download_row_cancel))
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(10.dp))
+            // ③ 进度槽：任何状态都占同一高度，没有进度就留空，不画假 0% 也不塌陷。
+            RecordProgressSlot(record)
+            Spacer(Modifier.height(8.dp))
+            // ④ 信息带：一句话 + 行内动作，高度由 controlHeight 定死，不随内容伸缩。
+            val footer = recordFooter(record)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(BgvDimens.controlHeight),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    text = progressLabel(record.downloadedBytes, record.bytesTotal, record.speedBps),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = footer.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = footer.tone.color(),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-                noteLabel(record)?.let { note ->
-                    // 转封装那一段没有新心跳，进度条会一直停在最后一次的位置；这句是「还在干活」的证据。
-                    Spacer(Modifier.height(4.dp))
+                // 「已看」只报百分比：一个定格的数字，比一根看着像还在走的轨道诚实。
+                watchedPercent(record)?.let { percent ->
                     Text(
-                        text = note,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            } else {
-                val detail = detailLine(record)
-                if (detail.isNotBlank()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = detail,
+                        text = stringResource(R.string.history_watched, percent),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
+                    Spacer(Modifier.width(8.dp))
                 }
-                // 看过的行给出断点：这一条小进度条说的是「上次看到哪儿」，不是下载进度。
-                watchedFraction(record)?.let { fraction ->
-                    val percent = watchedPercent(record)
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        LinearProgressIndicator(
-                            progress = { fraction },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp)),
-                        )
-                        if (percent != null) {
-                            Text(
-                                text = stringResource(R.string.history_watched, percent),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                noteLabel(record)?.let { note ->
-                    // 产物完好但容器不标准（`.ts` 降级）：这一行小字是用户打不开文件时唯一的线索。
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = note,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                failureReason(record)?.let { reason ->
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = reason,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (record.status in retryableStatuses) {
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                        TextButton(onClick = onRetry) {
-                            Text(stringResource(R.string.download_row_retry))
-                        }
-                    }
+                if (running) {
+                    RowAction(stringResource(R.string.download_row_cancel), onCancel)
+                } else if (record.status in retryableStatuses) {
+                    RowAction(stringResource(R.string.download_row_retry), onRetry)
                 }
             }
         }
+    }
+}
+
+/** 进度槽的固定高度：槽里只放下载轨道，6dp。 */
+private val progressSlotHeight = 6.dp
+
+/**
+ * 进度槽：不论状态恒占 [progressSlotHeight] 高。
+ *
+ * 只有「下载中」在这一格里画轨道；其余状态留白，但高度照旧——
+ * 有进度条的行和没进度条的行才不会一高一矮。
+ *
+ * 「已看」进度不进这一格：那是一个已经落定的数字，画成轨道会让人以为还在往下走，
+ * 所以只报百分比（见卡片信息带的右端）。
+ */
+@Composable
+private fun RecordProgressSlot(record: DownloadRecord) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(progressSlotHeight),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (record.status == RecordStatus.DOWNLOADING) {
+            val fraction = progressFraction(record.downloadedBytes, record.bytesTotal)
+            if (fraction == null) {
+                // 总量未知（chunked 流、引擎侧任务还没报全长）：不确定进度条比一个假的 0% 诚实。
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp),
+                )
+            } else {
+                LinearProgressIndicator(
+                    progress = { fraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                )
+            }
+        }
+    }
+}
+
+/** 信息带里那一句话的语气：普通说明、正在干活、出了错。 */
+private enum class FooterTone { NORMAL, PROGRESS, ERROR }
+
+private data class CardFooter(val text: String, val tone: FooterTone = FooterTone.NORMAL)
+
+@Composable
+private fun FooterTone.color(): Color = when (this) {
+    FooterTone.NORMAL -> MaterialTheme.colorScheme.onSurfaceVariant
+    FooterTone.PROGRESS -> MaterialTheme.colorScheme.primary
+    FooterTone.ERROR -> MaterialTheme.colorScheme.error
+}
+
+/**
+ * 信息带那句话。
+ *
+ * 一行只放得下一句，所以按「失败原因 > 下载进度 > 产物信息」的顺序挑最重要的：
+ * 失败的行先说为什么没成，正在下的行说走到哪儿了，其余行说这是个什么文件。
+ */
+@Composable
+private fun recordFooter(record: DownloadRecord): CardFooter {
+    val running = record.status == RecordStatus.DOWNLOADING
+    val note = noteLabel(record)
+    failureReason(record)?.let { reason -> return CardFooter(reason, FooterTone.ERROR) }
+    if (running) {
+        val percent = progressFraction(record.downloadedBytes, record.bytesTotal)
+            ?.let { "${(it * 100).roundToInt()}%" }
+        return CardFooter(
+            text = listOfNotNull(
+                percent,
+                progressLabel(record.downloadedBytes, record.bytesTotal, record.speedBps),
+                note,
+            ).joinToString(" · "),
+            tone = if (note != null) FooterTone.PROGRESS else FooterTone.NORMAL,
+        )
+    }
+    return CardFooter(
+        text = listOfNotNull(
+            detailLine(record).takeIf { it.isNotBlank() },
+            note,
+        ).joinToString(" · "),
+    )
+}
+
+/**
+ * 信息带里的行内动作。
+ *
+ * 高度交给父行（[BgvDimens.controlHeight]）的紧约束去定，不另写一个数——
+ * 两个高度只要各写一份，迟早会有一边偷偷多出 4dp，卡片也就不等高了。
+ */
+@Composable
+private fun RowAction(label: String, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 12.dp),
+    ) {
+        Text(text = label, style = MaterialTheme.typography.labelLarge)
     }
 }
 
