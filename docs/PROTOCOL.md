@@ -253,7 +253,7 @@
 | 入口 | 越界行为 |
 |---|---|
 | API `hlsConcurrency` | `422 VALIDATION_ERROR`，文案固定为「hlsConcurrency 必须是 1~8 的整数」；由 `services/hls_concurrency.py` 自己的校验抛错，**不靠 `extra="forbid"` 兜底** |
-| Android 设置保存 | 拒绝、保持原值、记审计 `hls_concurrency_rejected`（`reason=out_of_range` / `not_a_number`）；设置页输入框同时做数字键盘 + 位数约束（双层） |
+| Android 设置保存 | 拒绝、保持原值、记审计 `hls_concurrency_rejected`（`reason=out_of_range` / `not_a_number`）；设置页用 1~8 **离散滑杆**（8 个整数档位、7 段分隔断点、默认 3），第一层约束由档位提供（双层） |
 | 环境变量 `BGV_HLS_CONCURRENCY` | 记审计 `hls_concurrency_invalid source=env fallback=3` + 回落 3，**不阻断启动**（没有请求方可以回话） |
 | 缺失 / 存储损坏 | 回落 3，不崩冷启动 |
 

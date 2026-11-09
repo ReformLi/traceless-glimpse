@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -45,7 +45,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +78,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
@@ -132,7 +133,7 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         onShowPageByDefaultChange = homeViewModel::setShowPageByDefault,
         onMuteWhileSniffingChange = homeViewModel::setMuteWhileSniffing,
         onKeepAliveChange = homeViewModel::setKeepAliveWhileDownloading,
-        onHlsConcurrencyChange = homeViewModel::saveHlsConcurrency,
+        onHlsConcurrencyChange = { value -> homeViewModel.saveHlsConcurrency(value.toString()) },
         onOpenNotificationSettings = {
             uiContext.startActivity(NotificationPermission.systemSettingsIntent(uiContext))
         },
@@ -191,7 +192,7 @@ fun SettingsScreen(
     onShowPageByDefaultChange: (Boolean) -> Unit,
     onMuteWhileSniffingChange: (Boolean) -> Unit,
     onKeepAliveChange: (Boolean) -> Unit,
-    onHlsConcurrencyChange: (String) -> Boolean,
+    onHlsConcurrencyChange: (Int) -> Unit,
     onOpenNotificationSettings: () -> Unit,
     onPickOutputDirectory: () -> Unit,
     onResetOutputDirectory: () -> Unit,
@@ -425,6 +426,93 @@ private fun EngineSection(
     }
 }
 
+/**
+ * M25 HLS 分段并发设置：1~8 共 8 个整数档位，刻度尺画出 7 个分隔断点。
+ *
+ * 范围与档位数全部由 [HlsConcurrency] 常量推导，不在界面里再写一份 1~8；
+ * 滑杆的离散 steps 是第一层约束，ViewModel 的拒绝/审计是第二层。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HlsConcurrencySetting(
+    value: Int,
+    onValueChangeFinished: (Int) -> Unit,
+) {
+    var draft by remember(value) { mutableStateOf(value.toFloat()) }
+    val current = draft.roundToInt().coerceIn(HlsConcurrency.MIN, HlsConcurrency.MAX)
+
+    Text(
+        text = stringResource(R.string.settings_hls_concurrency_label),
+        style = MaterialTheme.typography.titleSmall,
+    )
+    Spacer(Modifier.height(4.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(
+                R.string.settings_hls_concurrency_range,
+                HlsConcurrency.MIN,
+                HlsConcurrency.MAX,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = current.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+    Slider(
+        value = draft,
+        onValueChange = { draft = it },
+        onValueChangeFinished = { onValueChangeFinished(current) },
+        valueRange = HlsConcurrency.MIN.toFloat()..HlsConcurrency.MAX.toFloat(),
+        // steps 是「两端之间的点数」：8 个整数档位需要 6 个内部点；
+        // 下方刻度尺的 7 个分隔断点把整条滑杆正好分成 7 段。
+        steps = HlsConcurrency.MAX - HlsConcurrency.MIN - 1,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        (HlsConcurrency.MIN..HlsConcurrency.MAX).forEach { tick ->
+            if (tick > HlsConcurrency.MIN) {
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .height(8.dp)
+                        .background(
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                            CircleShape,
+                        ),
+                )
+            }
+            Text(
+                text = tick.toString(),
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (tick == current) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (tick == current) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SniffDownloadSection(
@@ -432,7 +520,7 @@ private fun SniffDownloadSection(
     notificationsVisible: Boolean,
     onSelectMode: (RunMode) -> Unit,
     onKeepAliveChange: (Boolean) -> Unit,
-    onHlsConcurrencyChange: (String) -> Boolean,
+    onHlsConcurrencyChange: (Int) -> Unit,
     onOpenNotificationSettings: () -> Unit,
 ) {
     // 隐藏深嗅是浏览器自己的会话：它跑着也允许切到电脑引擎（切完立刻销毁 WebView）。
@@ -480,31 +568,13 @@ private fun SniffDownloadSection(
             },
         )
 
-        // M25 HLS 分段并发：范围约束写两层——这里限数字键盘/位数，
-        // 真正的拒绝与落盘交给 HomeViewModel.saveHlsConcurrency（同一套校验）。
+        // M25 HLS 分段并发：离散滑杆只能停在 1~8 八个整数档位，中间 7 段分隔断点。
+        // 拖动中只改本地显示，松手才落盘——避免扫过 8 个档位写 8 次 SharedPreferences；
+        // 真正的拒绝与审计仍由 HomeViewModel.saveHlsConcurrency 统一负责。
         Spacer(Modifier.height(16.dp))
-        var draft by remember(state.hlsConcurrency) {
-            mutableStateOf(state.hlsConcurrency.toString())
-        }
-        var rangeError by remember { mutableStateOf(false) }
-        BgvInputField(
-            value = draft,
-            onValueChange = { raw ->
-                if (raw.length <= 2 && raw.all { it.isDigit() }) {
-                    draft = raw
-                    // 空串只是还没输完，不记审计；其余一律交给 ViewModel 判。
-                    rangeError = raw.isNotEmpty() && !onHlsConcurrencyChange(raw)
-                }
-            },
-            label = stringResource(R.string.settings_hls_concurrency_label),
-            supportingText = stringResource(
-                R.string.settings_hls_concurrency_range,
-                HlsConcurrency.MIN,
-                HlsConcurrency.MAX,
-            ),
-            isError = rangeError,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth(),
+        HlsConcurrencySetting(
+            value = state.hlsConcurrency,
+            onValueChangeFinished = onHlsConcurrencyChange,
         )
 
         // 保活算「怎么下载」这一段：切后台能不能继续下，是下载的性质，不是浏览体验。
@@ -920,7 +990,7 @@ private fun SettingsScreenPreview() {
             onShowPageByDefaultChange = {},
             onMuteWhileSniffingChange = {},
             onKeepAliveChange = {},
-            onHlsConcurrencyChange = { true },
+            onHlsConcurrencyChange = {},
             onOpenNotificationSettings = {},
             onPickOutputDirectory = {},
             onResetOutputDirectory = {},

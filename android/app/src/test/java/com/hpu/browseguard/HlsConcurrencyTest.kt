@@ -100,17 +100,28 @@ class HlsConcurrencyTest {
     }
 
     @Test
-    fun theSettingsScreenBindsTheInputAndConstrainsTheRangeWithoutLockingCopy() {
+    fun theSettingsScreenUsesADiscreteSliderWithEightStopsAndSevenDividers() {
         // 只锁结构，不锁中文文案：改一个字就让测试变红的是假测试。
         val screen = File("$SRC_ROOT/ui/SettingsScreen.kt").readText()
-        assertTrue("输入框要绑定到状态字段", screen.contains("state.hlsConcurrency"))
-        assertTrue("要有保存回调，且回调的 Boolean 决定行内错误", screen.contains("onHlsConcurrencyChange"))
+        assertTrue("滑杆要绑定到状态字段", screen.contains("state.hlsConcurrency"))
+        assertTrue("保存回调要一路传到 ViewModel", screen.contains("onHlsConcurrencyChange"))
+        assertTrue("松手才落盘，不能只在本地改显示", screen.contains("onValueChangeFinished"))
+        assertTrue("必须有离散滑杆", screen.contains("Slider("))
+        assertTrue(
+            "档位数量由常量区间推导，不许在界面里写死 8 或 6",
+            screen.contains("steps = HlsConcurrency.MAX - HlsConcurrency.MIN - 1") &&
+                screen.contains("HlsConcurrency.MIN.toFloat()..HlsConcurrency.MAX.toFloat()"),
+        )
+        assertTrue(
+            "刻度尺要遍历 1~8 八个档位，并在档位之间画出 7 个分隔断点",
+            screen.contains("HlsConcurrency.MIN..HlsConcurrency.MAX") &&
+                screen.contains("tick > HlsConcurrency.MIN"),
+        )
         assertTrue(
             "范围必须由常量提供，不许在界面里再写一份 1~8 的判断",
             screen.contains("HlsConcurrency.MIN") && screen.contains("HlsConcurrency.MAX"),
         )
-        assertTrue("数字键盘是 UI 第一层约束", screen.contains("KeyboardType.Number"))
-        assertTrue("要用项目统一的输入框组件", screen.contains("BgvInputField("))
+        assertFalse("文本输入框已被滑杆取代，数字键盘不该留在设置页", screen.contains("KeyboardType.Number"))
     }
 
     @Test
