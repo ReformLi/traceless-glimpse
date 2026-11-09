@@ -96,6 +96,8 @@ import kotlin.math.roundToInt
 @Composable
 fun HomeRoute(
     container: AppContainer,
+    /** 首页是不是当前选中的 Tab。被别的 Tab 盖住时，浏览器不能抢系统返回键。 */
+    active: Boolean,
     viewModel: HomeViewModel = viewModel(
         factory = HomeViewModel.factory(
             container.settings,
@@ -114,7 +116,7 @@ fun HomeRoute(
     // 会话一结束 browserSessionActive 就落 false，组合退出即触发 WebView 销毁。
     Box(modifier = Modifier.fillMaxSize()) {
         if (state.browserSessionActive) {
-            BrowserRoute(container, viewModel)
+            BrowserRoute(container, viewModel, active = active)
         }
         if (!state.isWebViewVisible) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

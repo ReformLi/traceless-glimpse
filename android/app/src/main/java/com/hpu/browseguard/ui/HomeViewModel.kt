@@ -572,8 +572,8 @@ class HomeViewModel(
     /**
      * 结束浏览器会话：状态一落，界面层立即释放（destroy）唯一的 WebView。
      *
-     * 关闭页面、切走底部 Tab、切换嗅探执行者都走这里——任何一条都不该让后台
-     * 会话继续攥着 WebView 或继续播视频。
+     * 关闭页面、切换嗅探执行者、下载管理「重试」都走这里。切底部 Tab **不再**走这里：
+     * 首页常驻组合，WebView 原样留着，回来时画面与播放进度不变。
      */
     fun closeBrowserSession() {
         clearBrowserSession()
@@ -1322,8 +1322,9 @@ class HomeViewModel(
         }
     }
 
-    /** 历史页「重新下载」：回到首页并填入原始链接，后续仍交给用户确认嗅探与画质。 */
+    /** 下载管理「重试 / 重新下载」把链接塞回首页：这是用户明确要求的强制刷新，先结束旧会话。 */
     fun adoptSourceUrl(url: String) {
+        closeBrowserSession()
         editSourceUrl(url)
     }
 

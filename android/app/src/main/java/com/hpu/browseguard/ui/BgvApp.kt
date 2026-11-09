@@ -2,6 +2,7 @@ package com.hpu.browseguard.ui
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -83,10 +85,9 @@ fun BgvApp(container: AppContainer) {
         container.reconcileHistory()
     }
 
-    // 切走底部 Tab 立刻结束浏览器会话：隐藏深嗅与可见浏览都不该在后台继续跑 WebView。
-    LaunchedEffect(destination) {
-        if (destination != AppDestination.HOME) homeViewModel.closeBrowserSession()
-    }
+    // 切走底部 Tab 不再结束浏览器会话：WebView 的页面位置、滚动和播放进度只活在实例里，
+    // 拆掉再回来就只能从输入网址重来。首页由下方内容区常驻组合，切 Tab 只把它盖住。
+    // 需要真正回收时走 exitBrowser / adoptSourceUrl 这类显式动作。
 
     // 点通知栏那一条要直接落到下载页；消费完立刻清零，否则转屏或恢复进程会把用户再踹一次。
     LaunchedEffect(container) {
@@ -176,19 +177,49 @@ fun BgvApp(container: AppContainer) {
                     .fillMaxSize()
                     .padding(innerPadding),
             ) {
-                tabStates.SaveableStateProvider(destination.name) {
-                    when (destination) {
-                        AppDestination.HOME -> HomeRoute(container, homeViewModel)
-                        AppDestination.HISTORY -> HistoryRoute(
-                            container = container,
-                            onRetry = { url ->
-                                homeViewModel.adoptSourceUrl(url)
-                                destination = AppDestination.HOME
+                // 首页常驻组合：浏览器 WebView 的页面、滚动位置和播放进度只存在 View 实例里，
+                // 一旦拆掉再回来就只能从「输入网址」重来。切到别的 Tab 时只盖住它，不拆。
+                tabStates.SaveableStateProvider(AppDestination.HOME.name) {
+                    HomeRoute(
+                        container = container,
+                        viewModel = homeViewModel,
+                        active = destination == AppDestination.HOME,
+                    )
+                }
+                if (destination != AppDestination.HOME) {
+                    // 触摸拦截层：首页被盖住后，空白处的手势不许漏到下面的 WebView。
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        awaitPointerEvent().changes.forEach { it.consume() }
+                                    }
+                                }
                             },
-                            onPlay = { recordId -> playingId = recordId },
-                        )
+                    )
+                    // 其他 Tab 只在选中时组合；不透明底保证盖住常驻的首页。
+                    tabStates.SaveableStateProvider(destination.name) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                        ) {
+                            when (destination) {
+                                AppDestination.HOME -> Unit
+                                AppDestination.HISTORY -> HistoryRoute(
+                                    container = container,
+                                    onRetry = { url ->
+                                        homeViewModel.adoptSourceUrl(url)
+                                        destination = AppDestination.HOME
+                                    },
+                                    onPlay = { recordId -> playingId = recordId },
+                                )
 
-                        AppDestination.SETTINGS -> SettingsRoute(container, homeViewModel)
+                                AppDestination.SETTINGS -> SettingsRoute(container, homeViewModel)
+                            }
+                        }
                     }
                 }
             }

@@ -51,6 +51,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -127,6 +128,8 @@ import kotlinx.coroutines.delay
 fun BrowserRoute(
     container: AppContainer,
     viewModel: HomeViewModel,
+    /** 首页是不是当前选中的 Tab；被别的 Tab 盖住时，返回键交给上层处理。 */
+    active: Boolean,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val controller = remember { container.newBrowserSniffer() }
@@ -167,6 +170,7 @@ fun BrowserRoute(
         onQueuedHintShown = viewModel::consumeQueuedHint,
         onPageVisibleChange = viewModel::setBrowserPageVisible,
         onSwitchToEngine = { viewModel.selectMode(RunMode.ENGINE) },
+        active = active,
     )
 }
 
@@ -180,6 +184,8 @@ internal fun BrowserScreen(
     onQueuedHintShown: () -> Unit,
     onPageVisibleChange: (Boolean) -> Unit,
     onSwitchToEngine: () -> Unit,
+    /** 首页是不是当前选中的 Tab。被别的 Tab 盖住时，WebView 还在跑，但不能再抢返回键。 */
+    active: Boolean,
 ) {
     val holder = remember { WebViewHolder() }
     val context = LocalContext.current
@@ -230,8 +236,9 @@ internal fun BrowserScreen(
             runCatching { CookieManager.getInstance().flush() }
         }
     }
-    // 隐藏深嗅时 WebView 还活着但被主页盖住，返回键不能由它接管。
-    BackHandler(enabled = state.isWebViewVisible) {
+    // 隐藏深嗅时 WebView 还活着但被主页盖住，返回键不能由它接管；
+    // 切到别的 Tab 时首页整体被盖住，同样要交还返回键，否则在下载页按返回会变成网页后退。
+    BackHandler(enabled = active && state.isWebViewVisible) {
         if (sniff.canGoBack) holder.view?.goBack() else onClose()
     }
 
@@ -244,7 +251,6 @@ internal fun BrowserScreen(
                     insecure = address.startsWith("http://", ignoreCase = true),
                     loading = sniff.loading,
                     canGoBack = sniff.canGoBack,
-                    pageVisible = pageVisible,
                     onAddressChange = {
                         address = it
                         addressInvalid = false
@@ -264,10 +270,6 @@ internal fun BrowserScreen(
                     onClear = {
                         address = ""
                         addressInvalid = false
-                    },
-                    onTogglePage = {
-                        onPageVisibleChange(!pageVisible)
-                        if (pageVisible) focusManager.clearFocus()
                     },
                 )
 
@@ -422,14 +424,12 @@ private fun BrowserTopBar(
     insecure: Boolean,
     loading: Boolean,
     canGoBack: Boolean,
-    pageVisible: Boolean,
     onAddressChange: (String) -> Unit,
     onOpen: () -> Unit,
     onBack: () -> Unit,
     onClose: () -> Unit,
     onRefresh: () -> Unit,
     onClear: () -> Unit,
-    onTogglePage: () -> Unit,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -447,7 +447,9 @@ private fun BrowserTopBar(
                         imageVector = if (canGoBack) {
                             Icons.AutoMirrored.Filled.ArrowBack
                         } else {
-                            Icons.Filled.Close
+                            // 退出浏览器用「房子」而不是 X：地址栏里已经有一个清空地址的 X，
+                            // 两个 X 挨在同一行，用户分不清哪个是关页面、哪个是清输入。
+                            Icons.Filled.Home
                         },
                         contentDescription = stringResource(
                             if (canGoBack) R.string.browser_back else R.string.browser_close,
@@ -466,24 +468,6 @@ private fun BrowserTopBar(
                     onClear = onClear,
                     modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.width(6.dp))
-                if (pageVisible) {
-                    IconButton(onClick = onTogglePage) {
-                        Icon(
-                            imageVector = VisibilityOffIcon,
-                            contentDescription = stringResource(R.string.browser_hide_page),
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-                } else {
-                    FilledTonalButton(
-                        onClick = onTogglePage,
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        modifier = Modifier.height(40.dp),
-                    ) {
-                        Text(stringResource(R.string.browser_show_page))
-                    }
-                }
             }
             if (addressInvalid) {
                 Text(

@@ -225,16 +225,15 @@
 
     <!-- 内置浏览器（M10）：隐身模式 + 现代顶栏 + 右下角悬浮球 -->
     <string name="browser_back">后退</string>
-    <string name="browser_close">关闭浏览器</string>
+    <string name="browser_close">返回首页</string>
     <string name="browser_reload">刷新</string>
     <string name="browser_stop">停止</string>
     <string name="browser_address_placeholder">输入网址，例如 https://…</string>
     <string name="browser_address_invalid">请输入一个 http:// 或 https:// 网址</string>
     <string name="browser_address_clear">清空地址</string>
     <string name="browser_show_page">显示网页</string>
-    <string name="browser_hide_page">隐藏网页</string>
     <string name="browser_hidden_title">网页已在后台加载</string>
-    <string name="browser_hidden_body">点上方「显示网页」查看画面；抓到的媒体会出现在右下角的下载按钮里。</string>
+    <string name="browser_hidden_body">点「显示网页」查看画面；抓到的媒体会出现在右下角的下载按钮里。</string>
     <string name="browser_start_title">在应用内打开视频页</string>
     <string name="browser_start_body">输入网址后点网页里的播放按钮。抓到 m3u8 / mp4 会出现在右下角的下载按钮里。</string>
     <string name="browser_page_error">页面加载失败：%1$s</string>

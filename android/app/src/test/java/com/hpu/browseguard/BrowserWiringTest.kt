@@ -47,7 +47,7 @@ class BrowserWiringTest {
             "隐藏时用不透明提示层盖住",
             screen.contains("if (!pageVisible)") && screen.contains("BrowserHiddenCover("),
         )
-        assertTrue("顶栏要有「显示网页」入口", screen.contains("R.string.browser_show_page"))
+        assertTrue("隐藏提示层要有「显示网页」入口", screen.contains("R.string.browser_show_page"))
     }
 
     /** M10.5：外跳、权限与表单保存都要在 WebView 初始化处关闭，不能等页面自觉。 */
@@ -138,7 +138,12 @@ class BrowserWiringTest {
 
         assertTrue("隐藏深嗅期间 WebView 仍要组合", home.contains("if (state.browserSessionActive)"))
         assertTrue("主页盖在会话之上，而非替换", home.contains("if (!state.isWebViewVisible)"))
-        assertTrue("切走 Tab 立刻结束会话", app.contains("homeViewModel.closeBrowserSession()"))
+        assertFalse(
+            "切走 Tab 不许拆掉 WebView，否则回来页面就重置了",
+            app.contains("if (destination != AppDestination.HOME) homeViewModel.closeBrowserSession()"),
+        )
+        assertTrue("首页常驻组合，切 Tab 只把它盖住", app.contains("active = destination == AppDestination.HOME"))
+        assertTrue("下载页重试仍是强制刷新（回首页并填链接）", app.contains("homeViewModel.adoptSourceUrl(url)"))
         assertTrue("会话回收覆盖可见态", vm.contains("browserSessionActive = false"))
         assertTrue("设置页有静音开关", settings.contains("settings_mute_label"))
         assertTrue("隐藏深嗅在跑时仍可切引擎", settings.contains("state.deepSniff == DeepSniffPhase.Off"))
