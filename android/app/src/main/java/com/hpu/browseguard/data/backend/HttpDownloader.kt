@@ -83,6 +83,7 @@ class HttpDownloader(
                     formatSelector = engine.formatSelector,
                     namingTemplate = engine.namingTemplate,
                     postActions = engine.postActions,
+                    hlsConcurrency = engine.hlsConcurrency,
                 ),
             )
             emit(DownloadEvent.Started(started))

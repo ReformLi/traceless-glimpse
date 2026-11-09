@@ -36,6 +36,7 @@ TracelessGlimpse/
 
 * **`app/src/main/java/com/hpu/browseguard/`**：主代码目录。
   * `data/`：数据层。包含 Room 数据库（历史记录/进度）、网络请求（OkHttp）、本地下载引擎（HLS 并发、AU 重封）、以及对账逻辑。
+    * `data/download/HlsConcurrency.kt`：**M25 HLS 分段并发唯一校验入口**（默认 3 / 1~8 / 越界拒绝 + 存储损坏回落），Android 侧常量与解析都收敛在这里。
   * `ui/`：界面层（Jetpack Compose）。包含首页、浏览器（隐身/显示）、下载管理、设置页，以及各页面的 ViewModel。
   * `di/`：依赖注入容器（`AppContainer`），负责组装各种后端引擎。
   * `protocol/`：与 `shared` 模块对接的协议层。
@@ -52,6 +53,7 @@ TracelessGlimpse/
   * `formats.py` / `downloader.py`：yt-dlp 封装、并发下载、重定向处理。
   * `merger.py`：FFmpeg 封装、转码与合并。
   * `ffmpeg_path.py`：FFmpeg 路径解析器（支持自定义路径）。
+  * `hls_concurrency.py`：**M25 全引擎唯一并发数校验入口**，含四入口策略（API 抛错 / 环境变量记审计回落 / 缺失回落）与 `请求 > 环境 > 默认` 优先级编排。
 * **`security.py`**：安全边界。包含 SSRF 防御、输出目录沙箱、日志脱敏。
 * **测试布局**：pytest 不建 `tests/` 目录，实际分布在三处——根目录 `test_*.py`（默认套件）、
   `tests_real/`（`-m real` 才跑的真实链路用例）、`testsupport/`（本地媒体服务器与 FFmpeg 生成的素材）。
@@ -62,7 +64,8 @@ TracelessGlimpse/
 
 * **`gui_app.py`**：CustomTkinter 主程序，包含系统托盘、引擎启停、依赖自检、FFmpeg 路径配置。
 * **`download_console.py`**：内置的「下载控制台」Tab 页，提供 PC 端独立的嗅探、画质选择、进度条展示。
-* **`engine_client.py`**：纯 httpx 编写的本地引擎通信客户端。
+* **`engine_client.py`**：纯 httpx 编写的本地引擎通信客户端（M25 起在 `start_download` 发送前二次校验 `hlsConcurrency`）。
+* **`hls_concurrency.py`**：M25 桌面端并发校验，UI 输入框与网络层共用同一个 `parse()`，越界禁用「开始下载」且不发 HTTP。
 * **`launcher.py`**：引擎子进程管理（负责跨进程清理、日志重定向）。
 * **`entry.py`** / **`build_exe.py`**：PyInstaller 打包入口与脚本，将项目打包为单文件 `BrowseGuardEngine.exe`。
 

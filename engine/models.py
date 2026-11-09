@@ -330,3 +330,8 @@ class DownloadRequest(StrictModel):
     # 产物主名（M24）：不是模板，不含后缀；留空 = 沿用站点标题。键名沿用旧名见 PROTOCOL §3.6。
     namingTemplate: Optional[str] = None
     postActions: Optional[list[PostAction]] = None
+    # HLS 分段并发（M25）：默认 3、范围 1~8。类型/范围统一交给
+    # services.hls_concurrency.resolve 校验——这里用 Any 承接，是为了让
+    # "abc" / 0 / 9 都走到同一个校验入口、拿到同一句 422 文案，而不是先被
+    # Pydantic 用通用「请求参数不合法」拦在门外。省略 = None = 交引擎回落。
+    hlsConcurrency: Optional[Any] = None

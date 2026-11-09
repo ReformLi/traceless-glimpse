@@ -42,6 +42,7 @@ EXE_NAME = "BrowseGuardEngine"
 GUI_HIDDEN_IMPORTS = [
     "launcher", "gui_app", "entry", "download_console",
     "engine_client",  # M16 第二步：下载控制台网络层（httpx 流程编排）
+    "hls_concurrency",  # M25：桌面端 HLS 并发校验（UI 与网络层共用）
     "customtkinter", "darkdetect", "pystray",
     "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageGrab", "PIL.ImageTk",
     "tkinter", "tkinter.filedialog", "tkinter.messagebox", "tkinter.font",

@@ -3,6 +3,7 @@ package com.hpu.browseguard.data.backend
 import android.os.StatFs
 import com.hpu.browseguard.data.AuditLogger
 import com.hpu.browseguard.data.NoopAuditLogger
+import com.hpu.browseguard.data.download.HlsConcurrency
 import com.hpu.browseguard.data.backend.hls.HlsDownloader
 import com.hpu.browseguard.data.backend.hls.HlsOutcome
 import com.hpu.browseguard.data.backend.hls.HlsPrepare
@@ -51,9 +52,10 @@ class LocalDirectDownloader(
     private val http: OkHttpClient = LOCAL_HTTP,
     private val audit: AuditLogger = NoopAuditLogger,
     private val cookies: CookieProvider = NoCookieProvider,
+    private val hlsConcurrency: Int = HlsConcurrency.DEFAULT,
 ) : DownloadBackend {
 
-    private val hls = HlsDownloader(http, cookies)
+    private val hls = HlsDownloader(http, cookies, concurrency = hlsConcurrency)
     private val remuxer = TsRemuxer()
 
     override fun prepare(request: PrepareRequest): Flow<DownloadEvent> = flow {

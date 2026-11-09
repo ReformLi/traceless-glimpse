@@ -90,6 +90,24 @@ class LocalDirectDownloaderTest {
         assertFalse(".part 落地后必须改名，不留断点", File(out, "clip.mp4.part").exists())
     }
 
+    /**
+     * 直链禁止分块并发（原因见 PROTOCOL「流量特征边界」）。
+     *
+     * 这一条是**护栏**，不是待实现的需求：现在的实现本来就是一条 HTTP GET 顺序拉完，
+     * Range 只用于续传。但「多线程 Range 提速」是个很诱人的后续优化——一旦有人那么改，
+     * 同一秒内会出现多条 `bytes=x-y` 请求，这个断言会立刻炸。别删它。
+     */
+    @Test
+    fun directDownloadUsesOneSequentialConnectionAndNoChunkedRanges() {
+        server.enqueue(reply(200, payload))
+        runBlocking { downloader.start(viaLocal(link("/media/clip.mp4"))).toList() }
+
+        assertEquals("直链只该发一次正文 GET", 1, server.requestCount)
+        val request = server.takeRequest()
+        assertNull("全新下载不该带 Range：${request.headers["Range"]}", request.headers["Range"])
+        assertEquals(payload, File(out, "clip.mp4").readText())
+    }
+
     @Test
     fun resumeSendsRangeAndAppsWithTheAlreadyDownloadedBytes() {
         val part = File(out, "clip.mp4.part")

@@ -28,6 +28,12 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from hls_concurrency import (  # noqa: E402
+    FIELD as HLS_CONCURRENCY_FIELD,
+    MESSAGE as HLS_CONCURRENCY_MESSAGE,
+    parse as parse_hls_concurrency,
+)
+
 import httpx
 
 #: 轮询间隔：需求指定每 1 秒一次。
@@ -193,16 +199,27 @@ class EngineClient:
         """
         return self._request("GET", "/v1/peers")
 
-    def start_download(self, task_id: str, selector: dict) -> dict:
+    def start_download(self, task_id: str, selector: dict,
+                       hls_concurrency: int | None = None) -> dict:
         """``POST /v1/tasks/{id}/download`` → 202。selector 包在 formatSelector 里。
 
         额外带 ``postActions=[{"type": "merge"}]``：验收要求「自动合并」。
         引擎 ``_merge_plan`` 会按源里是否**真的**存在分离音视频轨决定合并或
         记 ``post_action_noop`` 降级，单文件/单混合流不会因此失败。
+
+        M25：``hls_concurrency`` 缺省就不发这个键（引擎按环境变量/默认回落）；
+        传了但越界则在**本地**抛错，一个字节都不发——桌面没有 Android 的审计
+        通道，让引擎 422 滞后返回只会让用户看到不友好的错误。
         """
+        body = {"formatSelector": selector, "postActions": [{"type": "merge"}]}
+        if hls_concurrency is not None:
+            checked = parse_hls_concurrency(hls_concurrency)
+            if checked is None:
+                raise EngineClientError("VALIDATION_ERROR", HLS_CONCURRENCY_MESSAGE, status=422)
+            body[HLS_CONCURRENCY_FIELD] = checked
         return self._request(
             "POST", f"/v1/tasks/{task_id}/download",
-            body={"formatSelector": selector, "postActions": [{"type": "merge"}]},
+            body=body,
             allowed=(202, 200),
         )
 
@@ -279,6 +296,7 @@ def run_download_flow(
     *,
     task_id: str,
     selector: dict,
+    hls_concurrency: int | None = None,
     emit: Emit,
     stop_event,
     on_progress: Callable,
@@ -293,7 +311,7 @@ def run_download_flow(
             emit(on_status, text)
 
     try:
-        client.start_download(task_id, selector)
+        client.start_download(task_id, selector, hls_concurrency)
     except EngineClientError as exc:
         emit(on_error, exc.code, exc.message)
         return

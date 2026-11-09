@@ -19,6 +19,7 @@ import com.hpu.browseguard.data.backend.SniffRequest
 import com.hpu.browseguard.data.backend.StartRequest
 import com.hpu.browseguard.data.cookie.CookieConsentStore
 import com.hpu.browseguard.data.cookie.CookieVault
+import com.hpu.browseguard.data.download.HlsConcurrency
 import com.hpu.browseguard.data.history.ArtifactPresence
 import com.hpu.browseguard.data.history.DeleteChoice
 import com.hpu.browseguard.data.history.DownloadRecord
@@ -164,6 +165,7 @@ class FakeEngineSettings(
     override var showPageByDefault: Boolean = false,
     override var muteWhileSniffing: Boolean = true,
     override var keepAliveWhileDownloading: Boolean = true,
+    override var hlsConcurrency: Int = HlsConcurrency.DEFAULT,
     var acceptSaves: Boolean = true,
 ) : EngineSettings {
 

@@ -1,5 +1,6 @@
 package com.hpu.browseguard.data.backend
 
+import com.hpu.browseguard.data.download.HlsConcurrency
 import com.hpu.browseguard.shared.model.CookiePolicy
 import com.hpu.browseguard.shared.model.FormatInfo
 import com.hpu.browseguard.shared.model.FormatSelector
@@ -68,6 +69,8 @@ sealed interface StartRequest {
         val formatSelector: FormatSelector,
         val namingTemplate: String?,
         val postActions: List<PostAction>?,
+        /** M25：引擎侧 HLS 分段并发；默认值只取自 [HlsConcurrency.DEFAULT]。 */
+        val hlsConcurrency: Int = HlsConcurrency.DEFAULT,
     ) : StartRequest
 
     /**

@@ -5,6 +5,7 @@ import com.hpu.browseguard.data.backend.CookieProvider
 import com.hpu.browseguard.data.backend.LocalFailures
 import com.hpu.browseguard.data.backend.NoCookieProvider
 import com.hpu.browseguard.data.backend.SniffHeaderPolicy
+import com.hpu.browseguard.data.download.HlsConcurrency
 import com.hpu.browseguard.shared.model.SniffResult
 import java.io.File
 import java.io.IOException
@@ -58,7 +59,11 @@ internal sealed interface HlsOutcome {
 internal class HlsDownloader(
     private val http: OkHttpClient = DEFAULT_HTTP,
     private val cookies: CookieProvider = NoCookieProvider,
+    private val concurrency: Int = HlsConcurrency.DEFAULT,
 ) {
+
+    /** 注入值再过一次校验：外部若传了坏值，宁可回落默认也不要开出 0 个槽位卡死。 */
+    private val windowSize: Int = HlsConcurrency.fromStored(concurrency)
 
     fun prepare(link: SniffResult, isCancelled: () -> Boolean): HlsPrepare {
         if (isCancelled()) return HlsPrepare.Failed(LocalFailures.transport("下载已取消"))
@@ -179,7 +184,7 @@ internal class HlsDownloader(
                 window.forEach { it.cancel() }
                 return@coroutineScope HlsOutcome.Cancelled(written, done)
             }
-            while (window.size < SEGMENT_CONCURRENCY && next < total) {
+            while (window.size < windowSize && next < total) {
                 val segment = plan.segments[next]
                 val index = next
                 window += async(Dispatchers.IO) { readSegment(segment, index, link, keys, keyMutex, retries) }
@@ -324,13 +329,6 @@ internal class HlsDownloader(
     }
 
     private companion object {
-        /**
-         * 同时在飞的切片数。4 是「能吃满按连接限速的 CDN」和「不被当成爬虫」之间的折中：
-         * 再高就接近 okhttp 单主机默认上限 5，排队行为开始变得不可预期。
-         * CDN 若按 IP 总带宽限速，这里加并发也不会有收益——真机实测再调。
-         */
-        const val SEGMENT_CONCURRENCY = 4
-
         /** 含首次在内的尝试次数：1 次正常 + 2 次退避重试。 */
         const val SEGMENT_ATTEMPTS = 3
         val BACKOFF_MS = longArrayOf(500L, 2000L)

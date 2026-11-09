@@ -14,4 +14,11 @@ data class DownloadRequest(
      */
     val namingTemplate: String? = null,
     val postActions: List<PostAction>? = null,
+    /**
+     * HLS 分段并发（M25）：默认 3、范围 1~8，越界由引擎回 422。
+     *
+     * `null` = 省略该键，让引擎按「环境变量 > 默认」回落；`encodeDefaults=false`
+     * 保证「不传」与「传 null」在协议上是同一件事。直链不消费这个字段。
+     */
+    val hlsConcurrency: Int? = null,
 )

@@ -140,29 +140,54 @@ class HlsConcurrentDownloadTest {
         assertEquals("落盘顺序必须严格按清单", (1..count).toList(), progress)
     }
 
-    @Test
-    fun neverMoreThanFourSegmentsAreInFlight() = runBlocking {
-        val count = 12
-        val inFlight = AtomicInteger()
-        val peak = AtomicInteger()
-        server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse {
-                val live = inFlight.incrementAndGet()
-                peak.updateAndGet { maxOf(it, live) }
-                return try {
-                    Thread.sleep(50)
-                    MockResponse.Builder().body("x".repeat(16)).build()
-                } finally {
-                    inFlight.decrementAndGet()
+    /** 跑一遍下载，返回「同时在飞的段数」峰值。并发是否真的起来、有没有超限都靠它。 */
+    private fun peakInFlight(count: Int, downloader: HlsDownloader, name: String): Int =
+        runBlocking {
+            val inFlight = AtomicInteger()
+            val peak = AtomicInteger()
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val live = inFlight.incrementAndGet()
+                    peak.updateAndGet { maxOf(it, live) }
+                    return try {
+                        Thread.sleep(50)
+                        MockResponse.Builder().body("x".repeat(16)).build()
+                    } finally {
+                        inFlight.decrementAndGet()
+                    }
                 }
             }
+
+            val outcome = downloader.download(plan(count), link(), partFile(name), { false }) { _, _, _ -> }
+
+            assertTrue("应当成功，实际 $outcome", outcome is HlsOutcome.Done)
+            peak.get()
         }
 
-        val outcome = HlsDownloader().download(plan(count), link(), partFile("window"), { false }) { _, _, _ -> }
+    @Test
+    fun neverMoreSegmentsThanTheDefaultAreInFlight() {
+        val peak = peakInFlight(12, HlsDownloader(), "window-default")
 
-        assertTrue(outcome is HlsOutcome.Done)
-        assertTrue("并发没真的跑起来：峰值只有 ${peak.get()} 段", peak.get() >= 2)
-        assertTrue("同时在飞不能超过 4 段，实测 ${peak.get()}", peak.get() <= 4)
+        assertTrue("并发没真的跑起来：峰值只有 $peak 段", peak >= 2)
+        assertTrue("默认并发 3：在飞段数不允许超过 3，实测 $peak", peak <= 3)
+    }
+
+    /** M25：并发数从写死的 4 改成可配置，配置多少就最多飞多少。 */
+    @Test
+    fun theConfiguredValueCapsSegmentsInFlight() {
+        val peak = peakInFlight(12, HlsDownloader(concurrency = 2), "window-two")
+
+        assertTrue("配置 2 时在飞段数不能超过 2，实测 $peak", peak <= 2)
+        assertTrue("并发没真的跑起来：峰值只有 $peak 段", peak >= 2)
+    }
+
+    /** 反向证明：值真的被消费了，而不是「反正都被别的东西卡在 2」。 */
+    @Test
+    fun raisingTheConfiguredValueActuallyRaisesParallelism() {
+        val peak = peakInFlight(16, HlsDownloader(concurrency = 6), "window-six")
+
+        assertTrue("配置 6 时峰值必须高于 2，否则并发数没生效：实测 $peak", peak > 2)
+        assertTrue("在飞段数不能超过配置值 6，实测 $peak", peak <= 6)
     }
 
     @Test

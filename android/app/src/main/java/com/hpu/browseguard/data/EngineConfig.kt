@@ -4,6 +4,7 @@ import android.content.Context
 import com.hpu.browseguard.data.backend.DownloadExecutor
 import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.backend.SniffExecutor
+import com.hpu.browseguard.data.download.HlsConcurrency
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /** 引擎地址校验与持久化。 */
@@ -89,6 +90,9 @@ interface EngineSettings {
 
     /** 下载期间挂前台服务保活；默认开启——用户下载就是为了切后台，不能让他先去设置里找开关。 */
     var keepAliveWhileDownloading: Boolean
+
+    /** HLS 分段并发（M25）：默认 3、范围 1~8；读取时损坏值一律回落默认。 */
+    var hlsConcurrency: Int
 }
 
 /**
@@ -153,6 +157,16 @@ class EngineConfig(context: Context) : EngineSettings {
             prefs.edit().putBoolean(KEY_KEEP_ALIVE, value).apply()
         }
 
+    /**
+     * 旧版本没写过这个键 → `getInt` 给 DEFAULT；存储被改坏（0/9/-1）→
+     * [HlsConcurrency.fromStored] 回落 DEFAULT。两种都不崩冷启动、不传非法值。
+     */
+    override var hlsConcurrency: Int
+        get() = HlsConcurrency.fromStored(prefs.getInt(KEY_HLS_CONCURRENCY, HlsConcurrency.DEFAULT))
+        set(value) {
+            prefs.edit().putInt(KEY_HLS_CONCURRENCY, value).apply()
+        }
+
     private companion object {
         const val KEY_BASE_URL = "base_url"
         const val KEY_RUN_MODE = "run_mode"
@@ -163,5 +177,6 @@ class EngineConfig(context: Context) : EngineSettings {
         const val KEY_SHOW_PAGE_BY_DEFAULT = "show_page_by_default"
         const val KEY_MUTE_WHILE_SNIFFING = "mute_while_sniffing"
         const val KEY_KEEP_ALIVE = "keep_alive_while_downloading"
+        const val KEY_HLS_CONCURRENCY = "hls_concurrency"
     }
 }

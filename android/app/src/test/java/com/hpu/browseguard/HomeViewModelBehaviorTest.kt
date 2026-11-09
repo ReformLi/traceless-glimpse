@@ -217,6 +217,78 @@ class HomeViewModelBehaviorTest {
         assertNull("留空 = 用视频原标题", started.namingTemplate)
     }
 
+    /** M25：HLS 并发要随引擎下载请求一起发走，桌面端与手机端不许各按各的跑。 */
+    @Test
+    fun engineDownloadCarriesTheConfiguredHlsConcurrency() = runTest(dispatcher) {
+        val fakes = Fakes(this, settings = FakeEngineSettings(hlsConcurrency = 6))
+        val vm = fakes.connectedViewModel()
+        fakes.reachSniffSuccess(vm, listOf(sniffResult()))
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("01a1", listOf(formatInfo("137"))),
+        )
+
+        vm.startDownload()
+
+        val started =
+            fakes.provider.downloadBackend.startRequests.single() as StartRequest.ViaEngine
+        assertEquals("HLS 并发必须随请求发给引擎", 6, started.hlsConcurrency)
+    }
+
+    @Test
+    fun defaultHlsConcurrencyIsThreeAndIsAlwaysSent() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+        fakes.reachSniffSuccess(vm, listOf(sniffResult()))
+        vm.pickFormats()
+        fakes.provider.downloadBackend.emitPrepare(
+            DownloadEvent.Selecting("01a1", listOf(formatInfo("137"))),
+        )
+
+        vm.startDownload()
+
+        val started =
+            fakes.provider.downloadBackend.startRequests.single() as StartRequest.ViaEngine
+        assertEquals("默认并发 3，且必须显式发出（不靠引擎猜）", 3, started.hlsConcurrency)
+    }
+
+    /** 越界拒绝、保持原值、留审计——三件事缺一条，用户就会以为「改了但没生效」。 */
+    @Test
+    fun savingAnOutOfRangeHlsConcurrencyIsRefusedAndLeavesATrail() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+        assertEquals(3, vm.state.value.hlsConcurrency)
+
+        assertFalse("越界必须拒绝保存", vm.saveHlsConcurrency("9"))
+
+        assertEquals("拒绝后保持原值", 3, vm.state.value.hlsConcurrency)
+        val audit = fakes.audit.of("hls_concurrency_rejected").single()
+        assertEquals("out_of_range", audit.fields["reason"])
+    }
+
+    @Test
+    fun savingANonNumericHlsConcurrencyIsAlsoRefused() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+
+        assertFalse(vm.saveHlsConcurrency("abc"))
+
+        assertEquals(3, vm.state.value.hlsConcurrency)
+        val audit = fakes.audit.of("hls_concurrency_rejected").single()
+        assertEquals("not_a_number", audit.fields["reason"])
+    }
+
+    @Test
+    fun savingAValidHlsConcurrencyPersistsIt() = runTest(dispatcher) {
+        val fakes = Fakes(this)
+        val vm = fakes.connectedViewModel()
+
+        assertTrue("合法值要保存成功", vm.saveHlsConcurrency("7"))
+
+        assertEquals(7, vm.state.value.hlsConcurrency)
+        assertEquals("必须落盘，冷启动后还得是 7", 7, fakes.settings.hlsConcurrency)
+    }
+
     @Test
     fun audioOnlyIsLockedInLocalMode() = runTest(dispatcher) {
         val fakes = Fakes(this, settings = FakeEngineSettings(mode = RunMode.LOCAL))

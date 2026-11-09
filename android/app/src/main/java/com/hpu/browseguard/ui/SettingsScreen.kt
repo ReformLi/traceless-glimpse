@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -44,6 +45,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -54,6 +56,7 @@ import com.hpu.browseguard.data.EngineUrl
 import com.hpu.browseguard.data.backend.RunMode
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.RecordStatus
+import com.hpu.browseguard.data.download.HlsConcurrency
 import com.hpu.browseguard.data.keepalive.NotificationPermission
 import com.hpu.browseguard.data.output.OutputAdoptResult
 import com.hpu.browseguard.data.output.OutputLocation
@@ -129,6 +132,7 @@ fun SettingsRoute(container: AppContainer, homeViewModel: HomeViewModel) {
         onShowPageByDefaultChange = homeViewModel::setShowPageByDefault,
         onMuteWhileSniffingChange = homeViewModel::setMuteWhileSniffing,
         onKeepAliveChange = homeViewModel::setKeepAliveWhileDownloading,
+        onHlsConcurrencyChange = homeViewModel::saveHlsConcurrency,
         onOpenNotificationSettings = {
             uiContext.startActivity(NotificationPermission.systemSettingsIntent(uiContext))
         },
@@ -187,6 +191,7 @@ fun SettingsScreen(
     onShowPageByDefaultChange: (Boolean) -> Unit,
     onMuteWhileSniffingChange: (Boolean) -> Unit,
     onKeepAliveChange: (Boolean) -> Unit,
+    onHlsConcurrencyChange: (String) -> Boolean,
     onOpenNotificationSettings: () -> Unit,
     onPickOutputDirectory: () -> Unit,
     onResetOutputDirectory: () -> Unit,
@@ -218,6 +223,7 @@ fun SettingsScreen(
             notificationsVisible = notificationsVisible,
             onSelectMode = onSelectMode,
             onKeepAliveChange = onKeepAliveChange,
+            onHlsConcurrencyChange = onHlsConcurrencyChange,
             onOpenNotificationSettings = onOpenNotificationSettings,
         )
 
@@ -426,6 +432,7 @@ private fun SniffDownloadSection(
     notificationsVisible: Boolean,
     onSelectMode: (RunMode) -> Unit,
     onKeepAliveChange: (Boolean) -> Unit,
+    onHlsConcurrencyChange: (String) -> Boolean,
     onOpenNotificationSettings: () -> Unit,
 ) {
     // 隐藏深嗅是浏览器自己的会话：它跑着也允许切到电脑引擎（切完立刻销毁 WebView）。
@@ -471,6 +478,33 @@ private fun SniffDownloadSection(
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
+        )
+
+        // M25 HLS 分段并发：范围约束写两层——这里限数字键盘/位数，
+        // 真正的拒绝与落盘交给 HomeViewModel.saveHlsConcurrency（同一套校验）。
+        Spacer(Modifier.height(16.dp))
+        var draft by remember(state.hlsConcurrency) {
+            mutableStateOf(state.hlsConcurrency.toString())
+        }
+        var rangeError by remember { mutableStateOf(false) }
+        BgvInputField(
+            value = draft,
+            onValueChange = { raw ->
+                if (raw.length <= 2 && raw.all { it.isDigit() }) {
+                    draft = raw
+                    // 空串只是还没输完，不记审计；其余一律交给 ViewModel 判。
+                    rangeError = raw.isNotEmpty() && !onHlsConcurrencyChange(raw)
+                }
+            },
+            label = stringResource(R.string.settings_hls_concurrency_label),
+            supportingText = stringResource(
+                R.string.settings_hls_concurrency_range,
+                HlsConcurrency.MIN,
+                HlsConcurrency.MAX,
+            ),
+            isError = rangeError,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth(),
         )
 
         // 保活算「怎么下载」这一段：切后台能不能继续下，是下载的性质，不是浏览体验。
@@ -886,6 +920,7 @@ private fun SettingsScreenPreview() {
             onShowPageByDefaultChange = {},
             onMuteWhileSniffingChange = {},
             onKeepAliveChange = {},
+            onHlsConcurrencyChange = { true },
             onOpenNotificationSettings = {},
             onPickOutputDirectory = {},
             onResetOutputDirectory = {},

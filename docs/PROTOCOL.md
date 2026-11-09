@@ -229,6 +229,69 @@
 
 未知 `type` → `400 INVALID_POST_ACTION`。
 
+### 3.8 HLS 分段并发（M25 新增）
+
+**字段名 `hlsConcurrency`，默认 3，闭区间 1~8。** 只出现在 `POST /v1/tasks/{id}/download`
+的**请求体**里；不进 `Task` 响应、不进数据库表、不进 schema 导出。理由：引擎与客户端
+都是严格模型（`extra="forbid"` / `ignoreUnknownKeys=false`），往响应里加一个键会连带
+触发 schema 重导与 SQLite 迁移，而这个值是**单次下载的运行参数**，不是任务资产。
+
+| 项 | 规定 |
+|---|---|
+| 请求字段 | `hlsConcurrency`（camelCase，与 `namingTemplate` / `formatSelector` 同风格） |
+| 省略 / `null` | **引擎运行时等价**：两者都由 `resolve(None)` 走「环境变量 > 默认 3」，不会 422。客户端应省略该键（`encodeDefaults=false` 保证未设置时不发键），不要显式传 `null`；差异仅在序列化契约层，详见下方边界说明 |
+| 默认值 | **3** |
+| 合法范围 | **1~8**（闭区间，含端点） |
+| 越界值 | `0` / `9` / `-1` / 非整数一律拒绝，不夹取 |
+| 环境变量 | `BGV_HLS_CONCURRENCY`（部署侧默认值，与既有 `BGV_*` 同口径） |
+| 直链 | 不受影响，**永远单连接顺序拉取** |
+
+`hlsConcurrency` 在 API schema 中为宽松类型，运行时由服务端校验为 1~8 整数。省略字段与显式传 `null` 在引擎运行时等价（均回落环境变量/默认 3）；差异仅在序列化契约层：客户端 `encodeDefaults=false` 时不发键，严格模型下 `null` 与省略的校验路径不同。客户端应省略而非传 `null`。
+
+**四入口的越界策略（必须分入口写清，不能混为一谈）**
+
+| 入口 | 越界行为 |
+|---|---|
+| API `hlsConcurrency` | `422 VALIDATION_ERROR`，文案固定为「hlsConcurrency 必须是 1~8 的整数」；由 `services/hls_concurrency.py` 自己的校验抛错，**不靠 `extra="forbid"` 兜底** |
+| Android 设置保存 | 拒绝、保持原值、记审计 `hls_concurrency_rejected`（`reason=out_of_range` / `not_a_number`）；设置页输入框同时做数字键盘 + 位数约束（双层） |
+| 环境变量 `BGV_HLS_CONCURRENCY` | 记审计 `hls_concurrency_invalid source=env fallback=3` + 回落 3，**不阻断启动**（没有请求方可以回话） |
+| 缺失 / 存储损坏 | 回落 3，不崩冷启动 |
+
+**优先级：`请求字段 > 环境变量 > 默认 3`。** 由 `resolve()` 一处编排，调用点不许再写
+`if 1 <= x <= 8`，也不许再写字面量默认值——默认值只在 `DEFAULT_CONCURRENCY` 出现一次。
+
+**两端映射**
+
+| 端 | 载体 | 常量位置 |
+|---|---|---|
+| 引擎 | `DownloadRequest.hlsConcurrency` → `TaskRecord.hls_concurrency`（内存）→ `download_media(..., hls_concurrency=)` → yt-dlp `concurrent_fragment_downloads` | `engine/services/hls_concurrency.py` |
+| Android | 设置持久化 `bgv_engine/hls_concurrency` → `HomeUiState.hlsConcurrency` → `StartRequest.ViaEngine` → `DownloadRequest`（引擎模式）；`HlsDownloader(concurrency=)`（本机模式） | `data/download/HlsConcurrency.kt` |
+| 桌面 | ② 卡数字输入 → `EngineClient.start_download(..., hls_concurrency=)` → 同上请求字段 | `desktop/hls_concurrency.py` |
+
+三端的 `DEFAULT=3` / `MIN=1` / `MAX=8` 由测试逐字比对，差一个数就会出现「手机存得下、引擎拒收」。
+
+**分离轨语义**：音频流与视频流**每条各 N**（默认 3 + 3，总并发 6），不是把 N 平摊。
+这与「单流并发落在正常播放器区间」一致，已由 `test_download_tracks_gives_each_stream_the_configured_value` 锁死。
+
+**重启回落边界**：该字段只活在 `TaskRecord` 运行态内存里，**不入库**。引擎重启后恢复的
+正在下载任务没有这个值，`_download_real` 原样传 `None`，由下载器按「环境变量 > 默认 3」
+续跑——不会沿用重启前用户设的 6，也不会 422。
+
+> **行为变化（用户可感知）**：M25 前引擎没有设置 `concurrent_fragment_downloads`，
+> yt-dlp 默认 **1**（分片串行）；M25 起显式设为 **3**，HLS 下载会变快。这是配置项的
+> 默认值变化，不是 bug。Android 本机 HLS 则由写死的 4 改为可配置、默认 3。
+
+#### 流量特征边界（直链单连接）
+
+- 直链（非 HLS、非分片）**禁止多线程 Range 并发**：引擎 `download_direct` 用单条
+  `httpx.Client.stream("GET")` 顺序写 `.part`；Android `LocalDirectDownloader` 用单条
+  `newCall().execute()` + `body.byteStream()`；两端的 `Range: bytes=N-` 只用于**断点续传**，
+  不是分块并发。两端都有测试断言「正文 GET 恰好 1 次 / 无并发 Range 调用」。
+- `concurrent_fragment_downloads` **只对 yt-dlp 的 HLS/DASH 分片下载器生效**，对直链
+  完全无效；不要据此给直链加分块 Range「提速」。
+- **并发数仅使行为落在正常播放器区间，不改变通信可见性**：目标地址、请求头、连接数上限、
+  明文 HTTP 的事实一概不变。本项不提供任何「防检测 / 防追踪」能力，也不新增相关文案。
+
 ---
 
 ## 4. 任务状态机
@@ -389,13 +452,15 @@
 {
   "formatSelector": { "strategy": "exact", "formatId": "137+140" },
   "namingTemplate": "{title}-{height}p",   // 可选覆盖
-  "postActions": [{ "type": "merge" }]     // 可选覆盖
+  "postActions": [{ "type": "merge" }],    // 可选覆盖
+  "hlsConcurrency": 3                     // 可选，默认 3 / 范围 1~8（见 §3.8）
 }
 ```
 
 响应 `202`：返回更新后的 `Task`（`status=downloading`）。
 
-错误：`FORMAT_UNAVAILABLE`、`DRM_PROTECTED`、`TASK_STATE_CONFLICT`、`OUTPUT_DIR_REJECTED`。
+错误：`FORMAT_UNAVAILABLE`、`DRM_PROTECTED`、`TASK_STATE_CONFLICT`、`OUTPUT_DIR_REJECTED`、
+`VALIDATION_ERROR`（`hlsConcurrency` 越界或非整数时，先于状态冲突返回）。
 
 ### 6.5 `GET /v1/privacy/selfcheck`
 
@@ -554,6 +619,7 @@ curl -s -X POST http://127.0.0.1:8730/v1/tasks \
 - [ ] `done` 任务的 `outputPath` 指向真实产物；stub / 失败 / **未产出文件的**取消任务为 `null`。
       合并或抽轨完成后才取消、产物已落盘的，封板修复后 `outputPath` 指向该产物（必须留在台账里，
       否则成为查不到也删不掉的死文件）。
+- [ ] `hlsConcurrency` 省略 → 引擎按「环境变量 > 默认 3」回落且请求体不含该键；`0` / `9` / `-1` / `"abc"` → `422 VALIDATION_ERROR` 且文案为「hlsConcurrency 必须是 1~8 的整数」；`1` 与 `8` 边界值生效；分离轨两条流各按配置值并发；直链全程单连接、无并发 Range。
 - [ ] MCP 五个工具（含 `cancel`）入参 schema 与 HTTP 一致。
 
 ---

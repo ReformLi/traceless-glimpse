@@ -43,6 +43,13 @@ from __future__ import annotations
 from typing import Callable
 
 import customtkinter as ctk
+import tkinter as tk
+
+from hls_concurrency import (  # noqa: E402
+    DEFAULT as HLS_DEFAULT,
+    MESSAGE as HLS_MESSAGE,
+    parse as parse_hls_concurrency,
+)
 
 import theme as T
 
@@ -387,12 +394,12 @@ class DownloadConsole:
 
     def __init__(self, parent, *, font: Callable, ui_call: Callable,
                  on_sniff: Callable[[str], None],
-                 on_download: Callable[[str, dict], None]) -> None:
+                 on_download: Callable[[str, dict, int], None]) -> None:
         self.font = font
         self.ui_call = ui_call
         self.on_sniff = on_sniff
-        # on_download(task_id, format_meta)：meta 只有 height/hasVideo/hasAudio，
-        # 协议 selector 的换算由网络层负责（详见模块 docstring 的协议坑）。
+        # on_download(task_id, format_meta, hls_concurrency)：meta 只有
+        # height/hasVideo/hasAudio，协议 selector 由网络层换算；并发值已过校验。
         self.on_download = on_download
 
         self.is_ready = False
@@ -493,7 +500,7 @@ class DownloadConsole:
         self.media_label.pack(fill="x", padx=16, pady=(3, 0))
 
         row = ctk.CTkFrame(self.result_card, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=(8, 14))
+        row.pack(fill="x", padx=16, pady=(8, 4))
         row.grid_columnconfigure(0, weight=1)
         self.format_menu = ctk.CTkOptionMenu(
             row, height=36, values=["（暂无画质）"], font=self.font(11),
@@ -502,12 +509,34 @@ class DownloadConsole:
             text_color_disabled=BTN_DISABLED_TEXT,
         )
         self.format_menu.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+
+        # M25：HLS 分段并发（1~8）。数字键盘之外还由 parse_hls_concurrency 判范围，
+        # 越界时行内红字 + 禁用「开始下载」，绝不把非法值发出去。
+        self.hls_concurrency_var = tk.StringVar(value=str(HLS_DEFAULT))
+        self._hls_concurrency_valid = True
+        concurrency_box = ctk.CTkFrame(row, fg_color="transparent")
+        ctk.CTkLabel(concurrency_box, text="HLS 并发", font=self.font(10),
+                     text_color=T.TEXT_MUTED).pack(side="left", padx=(0, 6))
+        self.hls_concurrency_entry = ctk.CTkEntry(
+            concurrency_box, width=48, height=36, font=self.font(11),
+            justify="center", corner_radius=T.RADIUS, fg_color=T.SURFACE_2,
+            border_color=CARD_BORDER, textvariable=self.hls_concurrency_var,
+        )
+        self.hls_concurrency_entry.pack(side="left")
+        concurrency_box.grid(row=0, column=1, padx=(0, 10))
         dl_wrap, self.download_button = T.lift_button(
             row, text="开始下载", width=110, height=36, font=self.font(12),
             base=BLUE, hover=BLUE_HOVER, text_color=T.ACCENT_TEXT,
             text_color_disabled=BTN_DISABLED_TEXT, command=self._on_download_click,
             enabled=lambda: str(self.download_button.cget("state")) != "disabled")
-        dl_wrap.grid(row=0, column=1)
+        dl_wrap.grid(row=0, column=2)
+        # 恒定占位：出错只改文字，不插/删控件，避免界面跳动。
+        self.concurrency_hint = ctk.CTkLabel(
+            self.result_card, text="", font=self.font(10),
+            text_color=RED, anchor="w",
+        )
+        self.concurrency_hint.pack(fill="x", padx=16, pady=(0, 14))
+        self.hls_concurrency_var.trace_add("write", self._on_hls_concurrency_change)
 
     def _build_tasks_card(self) -> None:
         self.tasks_card = ctk.CTkFrame(self.body, corner_radius=T.RADIUS, fg_color=CARD_BG,
@@ -556,6 +585,21 @@ class DownloadConsole:
         self.clear_message()
         self.on_sniff(url)
 
+    def hls_concurrency(self) -> int | None:
+        """当前输入框的合法值；越界返回 None（调用方必须拒绝，不能夹取）。"""
+        return parse_hls_concurrency(self.hls_concurrency_var.get())
+
+    def _on_hls_concurrency_change(self, *_args) -> None:
+        """输入即时校验：UI 第一层约束，越界只留红字并锁按钮，不发请求。"""
+        valid = self.hls_concurrency() is not None
+        self._hls_concurrency_valid = valid
+        self.concurrency_hint.configure(text="" if valid else HLS_MESSAGE)
+        self._refresh_controls()
+
+    def reject_hls_concurrency(self) -> None:
+        """给网络层回调用的本地拒绝入口（不发 HTTP、不推任务到终态）。"""
+        self._on_hls_concurrency_change()
+
     def _on_download_click(self) -> None:
         if (not self.is_ready or not self._has_formats
                 or self._downloading or self._finished):
@@ -564,9 +608,14 @@ class DownloadConsole:
         if not meta or not self.current_task_id:
             self.show_error("INVALID_FORMAT_SELECTOR", "")
             return
+        concurrency = self.hls_concurrency()
+        if concurrency is None:
+            # 越界时按钮已禁用；这里再挡一次，防绕过 UI 的调用方。
+            self.reject_hls_concurrency()
+            return
         self.clear_message()
         # 传元数据而非 formatId：real 模式 /download 收到 formatId 会 422。
-        self.on_download(self.current_task_id, meta)
+        self.on_download(self.current_task_id, meta, concurrency)
 
     # -- 引擎联动 -------------------------------------------------------------
     def set_engine_ready(self, ready: bool, port: int = 8730) -> None:
@@ -637,7 +686,8 @@ class DownloadConsole:
                          "嗅探中…" if self._sniffing else "开始嗅探")
         # 完成/失败后同一 task 已是引擎终态，再点下载只会撞 409 TASK_STATE_CONFLICT；
         # 直接锁定并提示重新嗅探，比让用户点了再看红字更诚实。
-        menu_enabled = enabled and self._has_formats and not self._finished
+        menu_enabled = (enabled and self._has_formats and not self._finished
+                       and self._hls_concurrency_valid)
         try:
             self.format_menu.configure(
                 state="normal" if menu_enabled else "disabled",

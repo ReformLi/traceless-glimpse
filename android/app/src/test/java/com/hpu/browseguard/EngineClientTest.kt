@@ -214,6 +214,7 @@ class EngineClientTest {
                 ),
                 namingTemplate = "{title}-{height}p",
                 postActions = listOf(PostAction(type = PostActionType.MERGE)),
+                hlsConcurrency = 6,
             ),
         )
 
@@ -226,10 +227,41 @@ class EngineClientTest {
         assertTrue(body.contains("\"strategy\":\"max_height\""))
         assertTrue(body.contains("\"type\":\"merge\""))
         assertTrue(body.contains("\"namingTemplate\":\"{title}-{height}p\""))
+        assertTrue("HLS 并发要上行给引擎（字段名 hlsConcurrency）", body.contains("\"hlsConcurrency\":6"))
         assertFalse(
             "下载请求不得携带凭据或请求头字段",
             listOf("cookieFile", "cookiePath", "browser", "userAgent", "\"headers\"").any { body.contains(it) },
         )
+    }
+
+    /**
+     * 未配置就不发这个键：引擎侧 `extra="forbid"` + 客户端 `encodeDefaults=false`，
+     * 「传 null」和「省略」在协议上是两件事——省略才会让引擎回落到它自己的默认值 3。
+     */
+    @Test
+    fun startDownloadOmitsHlsConcurrencyWhenNotConfigured() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(202)
+                .addHeader(EngineClient.PROTOCOL_HEADER, EngineClient.PROTOCOL_VERSION)
+                .body(
+                    """
+                    {"id":"01a1","sourceUrl":"https://example.com/v","mode":"download","cookiePolicy":"lazy",
+                     "outputDir":"/tmp/bgv","status":"downloading",
+                     "createdAt":"2026-11-01T00:00:00Z","updatedAt":"2026-11-01T00:00:01Z"}
+                    """.trimIndent(),
+                )
+                .build(),
+        )
+
+        client.startDownload(
+            baseUrl,
+            "01a1",
+            DownloadRequest(formatSelector = FormatSelector(strategy = SelectionStrategy.BEST)),
+        )
+
+        val body = server.takeRequest().body?.utf8().orEmpty()
+        assertFalse("没配置时不许发这个键：$body", body.contains("hlsConcurrency"))
     }
 
     @Test

@@ -32,6 +32,7 @@ from security import (
 )
 from services import cookies as cookies_service
 from services import ffmpeg_path as ffmpeg_paths
+from services import hls_concurrency as hls_concurrency_settings
 from services import proxy as proxy_settings
 from services.formats import validate_download_urls
 from services.redirect import resolve_redirects
@@ -570,6 +571,7 @@ def download_media(
     on_progress: Callable[[int, int | None], None] | None = None,
     filename_tag: str | None = None,
     output_name: str | None = None,
+    hls_concurrency: int | None = None,
 ) -> Path:
     """下载到 ``output_dir``，返回产物路径（已通过完整性校验）。
 
@@ -597,6 +599,9 @@ def download_media(
     """
     validator(media_url)
     out_dir = prepare_output_dir(output_dir)
+    # M25：并发数只在这里解析一次（请求 > 环境变量 > 默认），_options 直接写进
+    # yt-dlp；直链 download_direct 不走这里，也拿不到这个参数（强制单连接）。
+    fragment_concurrency = hls_concurrency_settings.resolve(hls_concurrency)
 
     # 分片总数兜底：只在可能是清单时探一次，普通带后缀的直链不多打这一枪。
     # 探不到（master 清单 / 站点不通 / 不是清单）就保持 None，行为与本改动前一致。
@@ -647,6 +652,9 @@ def download_media(
             "outtmpl": str(out_dir / template),
             "format": format_expression,
             "socket_timeout": 30,
+            # 只对 yt-dlp 的 HLS/DASH 分片下载器生效；对直链（download_direct
+            # 的单连接顺序拉取）完全无效，别据此给直链加多线程 Range 并发。
+            "concurrent_fragment_downloads": fragment_concurrency,
         }
         if should_abort is not None or on_progress is not None:
             options["progress_hooks"] = [_progress_hook]
@@ -775,6 +783,7 @@ def download_tracks(
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[int, int | None], None] | None = None,
     output_name: str | None = None,
+    hls_concurrency: int | None = None,
 ) -> tuple[Path, Path]:
     """分两次下载「仅视频轨 + 仅音频轨」，返回 ``(video, audio)``，**不合并**。
 
@@ -812,6 +821,7 @@ def download_tracks(
         on_progress=on_progress,
         filename_tag=TRACK_TAG_AUDIO,
         output_name=output_name,
+        hls_concurrency=hls_concurrency,
     )
     state["offset"] = audio.stat().st_size
     try:
@@ -827,6 +837,7 @@ def download_tracks(
             on_progress=_on_video_bytes if on_progress is not None else None,
             filename_tag=TRACK_TAG_VIDEO,
             output_name=output_name,
+            hls_concurrency=hls_concurrency,
         )
     except Exception:
         partial_video = audio.with_name(

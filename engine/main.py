@@ -77,6 +77,7 @@ from services import downloader as downloader_service
 from services import environment as environment_service
 from services import failures as failures_service
 from services import formats as formats_service
+from services import hls_concurrency as hls_concurrency_settings
 from services import merger as merger_service
 from services.cookies import sweep_stale_cookie_files
 from services.task_worker import TaskWorker
@@ -207,6 +208,8 @@ class TaskRecord:
         self.sniffed = sniff is not None
         self.formats: list[FormatInfo] | None = None  # real 模式 yt-dlp 格式表
         self.last_selector_key: str | None = None
+        # M25：HLS 分段并发；None = 本次请求未设置（重启恢复的任务由下载器回落）。
+        self.hls_concurrency: int | None = None
         # 协作式断流：cancel 端点 set，下载循环每写一块之前查一次
         self.cancel_requested = threading.Event()
 
@@ -624,6 +627,7 @@ def _download_real(record: TaskRecord) -> None:
                 should_abort=should_abort,
                 on_progress=on_progress,
                 output_name=output_name,
+                hls_concurrency=record.hls_concurrency,
             )
         elif record.sniff.type in {MediaStreamType.MP4, MediaStreamType.AUDIO}:
             if formats_service.is_audio_only(task.formatSelector):
@@ -666,6 +670,7 @@ def _download_real(record: TaskRecord) -> None:
                 should_abort=should_abort,
                 on_progress=on_progress,
                 output_name=output_name,
+                hls_concurrency=record.hls_concurrency,
             )
     except downloader_service.DownloadCancelled as exc:
         # 断流不改状态：cancel 端点已置 cancelled，这里只留可 grep 的字节证据
@@ -1453,7 +1458,20 @@ def start_download(task_id: str, req: DownloadRequest):
     4. _do_download（唯一真实下载入口）。
     """
     logger.info("download_attempt task_id=%s", task_id)
+    # M25：入参错误先于状态冲突返回——填错了就说填错了，别把话说成「状态不对」。
+    # 校验只在 services.hls_concurrency 一处，这里负责把异常翻成 422 与统一文案。
+    try:
+        concurrency = hls_concurrency_settings.resolve(req.hlsConcurrency)
+    except hls_concurrency_settings.HlsConcurrencyError:
+        return _error_response(
+            422,
+            error_payload(
+                ErrorCode.VALIDATION_ERROR,
+                message=hls_concurrency_settings.MESSAGE,
+            ),
+        )
     record = _get_record_or_404(task_id)
+    record.hls_concurrency = concurrency
     task = record.task
     if task.status in TERMINAL_STATES:
         raise TaskStateConflictError()

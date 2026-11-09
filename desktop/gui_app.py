@@ -1054,7 +1054,7 @@ class ControlPanel(ctk.CTk):
                 on_status=self._set_detail,
             )
 
-    def _on_download(self, task_id: str, meta: dict) -> None:
+    def _on_download(self, task_id: str, meta: dict, hls_concurrency: int) -> None:
         """主线程：把画质元数据换算成协议 selector，建任务行后起后台线程。
 
         ``meta`` 只有 ``height / hasVideo / hasAudio``（+诊断用 formatId）。
@@ -1073,15 +1073,18 @@ class ControlPanel(ctk.CTk):
         self._set_detail(f"已提交下载：{label} → {json.dumps(selector, ensure_ascii=False)}"
                          "（未发送 formatId）")
         self._spawn_network("bgv-net-download", self._download_worker,
-                            gen, stop, task_id, selector, row, port)
+                            gen, stop, task_id, selector, row, port,
+                            hls_concurrency)
 
     def _download_worker(self, gen: int, stop: threading.Event, task_id: str,
-                         selector: dict, row, port: int) -> None:
+                         selector: dict, row, port: int,
+                         hls_concurrency: int) -> None:
         """后台线程：触发下载 → 每秒轮询进度 → done / failed 收尾。"""
         emit = lambda fn, *a, **kw: self._emit(gen, stop, fn, *a, **kw)  # noqa: E731
         with EngineClient(f"http://127.0.0.1:{port}") as client:
             run_download_flow(
-                client, task_id=task_id, selector=selector, emit=emit, stop_event=stop,
+                client, task_id=task_id, selector=selector,
+                hls_concurrency=hls_concurrency, emit=emit, stop_event=stop,
                 on_progress=row.update,
                 on_done=self.console.show_done,
                 on_error=self.console.show_error,

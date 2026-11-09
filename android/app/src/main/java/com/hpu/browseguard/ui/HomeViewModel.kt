@@ -28,6 +28,7 @@ import com.hpu.browseguard.data.cookie.DenyAllCookieConsent
 import com.hpu.browseguard.data.cookie.cookieHostOf
 import com.hpu.browseguard.data.download.ConsentWait
 import com.hpu.browseguard.data.download.DownloadCoordinator
+import com.hpu.browseguard.data.download.HlsConcurrency
 import com.hpu.browseguard.data.download.QueuedTask
 import com.hpu.browseguard.data.history.DownloadRecord
 import com.hpu.browseguard.data.history.HistoryRepository
@@ -165,6 +166,8 @@ data class HomeUiState(
     val mode: RunMode = RunMode.LOCAL,
     /** 下载还在跑时挂前台服务保活；默认开，切后台/灭屏也不许被系统冻住。 */
     val keepAliveWhileDownloading: Boolean = true,
+    /** HLS 分段并发（M25）：引擎模式随下载请求上行，本机模式注入 HLS 下载器。 */
+    val hlsConcurrency: Int = HlsConcurrency.DEFAULT,
     /** 浏览器里默认直接露出网页；只在 App 冷启动时决定初值。 */
     val showPageByDefault: Boolean = false,
     /**
@@ -372,6 +375,7 @@ class HomeViewModel(
             engineUrlDraft = settings.baseUrl,
             mode = settings.mode,
             keepAliveWhileDownloading = settings.keepAliveWhileDownloading,
+            hlsConcurrency = settings.hlsConcurrency,
             showPageByDefault = settings.showPageByDefault,
             // 冷启动才消费「默认直接显示网页」；本机模式之外没有浏览器可显示。
             isWebViewVisible = settings.mode == RunMode.LOCAL &&
@@ -625,6 +629,24 @@ class HomeViewModel(
         settings.keepAliveWhileDownloading = value
         _state.update { it.copy(keepAliveWhileDownloading = value) }
         if (value && downloads.activeCount() > 0) keepAlive.onRequestStart()
+    }
+
+    /**
+     * 保存 HLS 分段并发：越界/非数字一律拒绝、保持原值并留审计。
+     * 返回 false 由界面显示行内错误；夹取会静默改掉用户意图，这里不做。
+     */
+    fun saveHlsConcurrency(raw: String): Boolean {
+        val value = HlsConcurrency.parse(raw)
+        if (value == null) {
+            audit.log(
+                "hls_concurrency_rejected",
+                mapOf("reason" to (HlsConcurrency.rejectReason(raw) ?: "invalid")),
+            )
+            return false
+        }
+        settings.hlsConcurrency = value
+        _state.update { it.copy(hlsConcurrency = value) }
+        return true
     }
 
     /**
@@ -1177,6 +1199,8 @@ class HomeViewModel(
                 } else {
                     null
                 },
+                // M25：两端用同一份设置，桌面/手机不会各按各的并发跑。
+                hlsConcurrency = snapshot.hlsConcurrency,
             )
 
             DownloadExecutor.LOCAL_DIRECT -> {

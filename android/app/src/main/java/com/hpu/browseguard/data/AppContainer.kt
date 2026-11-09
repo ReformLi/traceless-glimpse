@@ -91,6 +91,7 @@ class AppContainer(context: Context) : BackendProvider {
         DownloadExecutor.LOCAL_DIRECT -> LocalDirectDownloader(
             audit = audit,
             cookies = ConsentCookieProvider(cookieVault, cookieConsents, audit),
+            hlsConcurrency = settings.hlsConcurrency,
         )
     }
 

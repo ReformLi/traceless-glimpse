@@ -345,4 +345,8 @@
     <string name="settings_keep_alive_hint">下载没跑完时挂一个前台服务，切后台、锁屏都不被系统冻住；队列一空它自己就退。</string>
     <string name="settings_keep_alive_notify_off">通知权限没给：下载照旧保活，但通知栏看不到进度。</string>
     <string name="settings_keep_alive_open_settings">去设置</string>
+
+    <!-- M25 HLS 分段并发：范围取自 HlsConcurrency 常量，文案里不写死数字。 -->
+    <string name="settings_hls_concurrency_label">HLS 分段并发</string>
+    <string name="settings_hls_concurrency_range">范围 %1$d~%2$d；只作用于 HLS 分片，直链始终单连接顺序下载</string>
 </resources>

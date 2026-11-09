@@ -271,3 +271,27 @@ download_rejected task_id=<id> stage=<entry|state|drm|selector> code=<§5 既有
 
 Cookie 相关同样没有增量：`headersHint` 白名单仍只有 `referer` / `user-agent`，协议层依旧没有承载 Cookie 的字段。
 后续若要把 `remux` 语义（比如「容器转换必须保持音轨完整」）写进 §3.7 或 §10，那才需要开新版本并按 §「字段增删需三端确认」走。
+
+## M25（2026-11-09）：新增 `hlsConcurrency`，引擎 HLS 默认并发由串行 1 改为 3
+
+**用户可感知的行为变化**：M25 之前引擎 `downloader._options()` 从未设置 yt-dlp 的
+`concurrent_fragment_downloads`，走的是 yt-dlp 默认值 **1**（HLS 分片串行）；M25 起显式设为
+**默认 3**，HLS 下载会变快。**这是配置项的默认值变化，不是 bug**。Android 本机 HLS 则由
+写死的 4 槽位改为可配置、默认 3。
+
+- **协议增量**：`POST /v1/tasks/{id}/download` 请求体新增可选字段 `hlsConcurrency`
+  （默认 3、闭区间 1~8、越界 `422 VALIDATION_ERROR`）。**只进请求侧**：不进 `Task` 响应、
+  不进 `shared/schema/task.json`、不做 SQLite v4 迁移。理由见 PROTOCOL §3.8——它是单次下载的
+  运行参数，放响应侧会同时引爆 schema 重导、字段集合断言与 DB 迁移，收益不抵爆炸半径。
+- **优先级写死**：`请求字段 > BGV_HLS_CONCURRENCY > 默认 3`，由 `resolve()` 一处编排。
+- **四入口越界策略**：API 拒绝（自己的校验，不靠 `extra="forbid"` 兜底）；Android 拒绝 +
+  保持原值 + 审计；环境变量记审计 + 回落 3、不阻断启动；缺失/存储损坏回落 3。
+- **重启回落**：值只活在 `TaskRecord` 内存运行态，**不入库**；引擎重启后正在下载的任务按默认 3 续跑。
+- **分离轨**：音频流与视频流每条各 N（默认 3+3），不把 N 平摊；测试锁死 `[3, 3]`。
+- **直链无行为变化**：两端原本就是单连接顺序拉取 + `Range` 仅用于续传，本轮**只补护栏断言**
+  与 PROTOCOL「流量特征边界」一行，防止后人「优化」成分块并发 Range。
+- **明确不做**：不限速、不改嗅探/去重/命名/合并逻辑、不新增任何暗示「防检测」的文案；
+  并发数仅使行为落在正常播放器区间，不改变通信可见性。
+- **桌面**：② 卡画质下拉旁加 1~8 数字输入，越界禁用「开始下载」+ 行内红字；
+  `EngineClient.start_download` 发送前再校验一次，越界本地拒绝、一个字节都不发。
+  `postActions=[{"type":"merge"}]` 写死属已知边界，本轮未动。
