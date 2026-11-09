@@ -353,5 +353,5 @@
 
     <!-- M25 HLS 分段并发：范围取自 HlsConcurrency 常量，文案里不写死数字。 -->
     <string name="settings_hls_concurrency_label">HLS 分段并发</string>
-    <string name="settings_hls_concurrency_range">范围 %1$d~%2$d；只作用于 HLS 分片，直链始终单连接顺序下载</string>
+    <string name="settings_hls_concurrency_hint">只作用于 HLS 分片，直链始终单连接顺序下载</string>
 </resources>

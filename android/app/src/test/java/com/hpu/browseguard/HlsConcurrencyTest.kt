@@ -100,7 +100,7 @@ class HlsConcurrencyTest {
     }
 
     @Test
-    fun theSettingsScreenUsesADiscreteSliderWithEightStopsAndSevenDividers() {
+    fun theSettingsScreenKeepsOnlyTheDiscreteSlider() {
         // 只锁结构，不锁中文文案：改一个字就让测试变红的是假测试。
         val screen = File("$SRC_ROOT/ui/SettingsScreen.kt").readText()
         assertTrue("滑杆要绑定到状态字段", screen.contains("state.hlsConcurrency"))
@@ -112,10 +112,26 @@ class HlsConcurrencyTest {
             screen.contains("steps = HlsConcurrency.MAX - HlsConcurrency.MIN - 1") &&
                 screen.contains("HlsConcurrency.MIN.toFloat()..HlsConcurrency.MAX.toFloat()"),
         )
+        assertFalse(
+            "滑杆下面那条 1~8 刻度尺已按用户要求去掉，不许再遍历档位画数字",
+            screen.contains("HlsConcurrency.MIN..HlsConcurrency.MAX"),
+        )
         assertTrue(
-            "刻度尺要遍历 1~8 八个档位，并在档位之间画出 7 个分隔断点",
-            screen.contains("HlsConcurrency.MIN..HlsConcurrency.MAX") &&
-                screen.contains("tick > HlsConcurrency.MIN"),
+            "轨道与拇指自绘：默认滑杆太笨重",
+            screen.contains("track = {") && screen.contains("thumb = {"),
+        )
+        assertTrue(
+            "自绘轨道要读当前比例才画得出已填充段",
+            screen.contains("coercedValueAsFraction"),
+        )
+        assertTrue(
+            "轨道上要画出档位断点，否则离散滑杆看不出「只能停在整点」",
+            screen.contains("for (tick in HlsConcurrency.MIN + 1 until HlsConcurrency.MAX)") &&
+                screen.contains("drawCircle"),
+        )
+        assertFalse(
+            "轨道画布已被滑杆按拇指宽度内缩过，再内缩一次就会短一截（真机实测过）",
+            screen.contains("val inset"),
         )
         assertTrue(
             "范围必须由常量提供，不许在界面里再写一份 1~8 的判断",

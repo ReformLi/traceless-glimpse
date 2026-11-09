@@ -3,6 +3,7 @@ package com.hpu.browseguard.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -30,6 +32,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -41,11 +44,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -427,10 +432,24 @@ private fun EngineSection(
 }
 
 /**
- * M25 HLS 分段并发设置：1~8 共 8 个整数档位，刻度尺画出 7 个分隔断点。
+ * M25 HLS 分段并发设置：1~8 共 8 个整数档位。
+ *
+ * 界面只留一条滑杆——左侧标题、右侧当前档位，下面一句话说明作用范围。
+ * 原来滑杆下方那条「1 2 3 4 5 6 7 8」刻度尺去掉了：它按等宽文本排布，
+ * 与拇指的实际行程（两端各让出半个拇指）对不齐，越到两端越歪；
+ * 档位信息改由轨道上的断点 + 右侧数字给足，那一行只添乱。
+ *
+ * 断点直接画在轨道上（内部每档一个圆点，已填充段用白点、未填充段用中性点）：
+ * 滑杆本来就是离散的（`steps` 让拇指只能停在整点），没有这些点就看不出来。
+ *
+ * 轨道与拇指自绘：Material3 1.4 的默认滑杆是 16dp 厚轨道 + 44dp 竖条拇指，
+ * 放进设置卡片里过于笨重。这里换成 6dp 圆头轨道 + 18dp 圆点；轨道画满画布即可——
+ * 滑杆内部已经把轨道子项按「总宽 - 一个拇指宽」量好，并摆在半个拇指处。
  *
  * 范围与档位数全部由 [HlsConcurrency] 常量推导，不在界面里再写一份 1~8；
  * 滑杆的离散 steps 是第一层约束，ViewModel 的拒绝/审计是第二层。
+ *
+ * 自绘轨道要读 `SliderState.coercedValueAsFraction`，它是 M3 的实验 API。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -440,78 +459,106 @@ private fun HlsConcurrencySetting(
 ) {
     var draft by remember(value) { mutableStateOf(value.toFloat()) }
     val current = draft.roundToInt().coerceIn(HlsConcurrency.MIN, HlsConcurrency.MAX)
+    val accent = MaterialTheme.colorScheme.primary
+    val trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.22f)
+    // 断点颜色要在 Canvas 之外取：DrawScope 不是 @Composable，读不到 MaterialTheme。
+    val tickOnFilled = Color.White
+    val tickOnEmpty = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
 
-    Text(
-        text = stringResource(R.string.settings_hls_concurrency_label),
-        style = MaterialTheme.typography.titleSmall,
-    )
-    Spacer(Modifier.height(4.dp))
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = stringResource(
-                R.string.settings_hls_concurrency_range,
-                HlsConcurrency.MIN,
-                HlsConcurrency.MAX,
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = stringResource(R.string.settings_hls_concurrency_label),
+            style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.width(8.dp))
         Text(
             text = current.toString(),
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary,
+            color = accent,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(accent.copy(alpha = 0.12f))
+                .padding(horizontal = 10.dp, vertical = 2.dp),
         )
     }
+    Text(
+        text = stringResource(R.string.settings_hls_concurrency_hint),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
     Slider(
         value = draft,
         onValueChange = { draft = it },
         onValueChangeFinished = { onValueChangeFinished(current) },
         valueRange = HlsConcurrency.MIN.toFloat()..HlsConcurrency.MAX.toFloat(),
-        // steps 是「两端之间的点数」：8 个整数档位需要 6 个内部点；
-        // 下方刻度尺的 7 个分隔断点把整条滑杆正好分成 7 段。
+        // steps 是「两端之间的点数」：8 个整数档位需要 6 个内部点。
         steps = HlsConcurrency.MAX - HlsConcurrency.MIN - 1,
-        modifier = Modifier.fillMaxWidth(),
-    )
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        (HlsConcurrency.MIN..HlsConcurrency.MAX).forEach { tick ->
-            if (tick > HlsConcurrency.MIN) {
+        colors = SliderDefaults.colors(
+            thumbColor = accent,
+            activeTrackColor = accent,
+            inactiveTrackColor = trackColor,
+        ),
+        // 拇指是固定 24dp 的方块、18dp 圆点居中：尺寸一旦定死，它的行程也就定了
+        // （两端各让出半个拇指）。轨道按同一条口径画，两者才咬得上。
+        thumb = {
+            Box(Modifier.size(HlsThumbReach), contentAlignment = Alignment.Center) {
                 Box(
                     Modifier
-                        .width(1.dp)
-                        .height(8.dp)
-                        .background(
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-                            CircleShape,
-                        ),
+                        .size(18.dp)
+                        .background(accent, CircleShape),
                 )
             }
-            Text(
-                text = tick.toString(),
-                modifier = Modifier.weight(1f),
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = if (tick == current) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (tick == current) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-    }
+        },
+        // 画布本身就是「滑杆总宽 - 一个拇指宽」，并被摆在半个拇指处：
+        // 直接画满画布，两端正好落在拇指中心的最左/最右，不能再自己内缩一次。
+        track = { sliderState ->
+            Canvas(
+                Modifier
+                    .fillMaxWidth()
+                    .height(HlsThumbReach),
+            ) {
+                val centerY = size.height / 2f
+                val end = size.width
+                if (end > 0f) {
+                    val stroke = 6.dp.toPx()
+                    drawLine(trackColor, Offset(0f, centerY), Offset(end, centerY), stroke, StrokeCap.Round)
+                    val head = end * sliderState.coercedValueAsFraction
+                    if (head > 0f) {
+                        drawLine(accent, Offset(0f, centerY), Offset(head, centerY), stroke, StrokeCap.Round)
+                    }
+                    // 档位断点：内部每一档画一个点，和 steps 一一对应。
+                    // 两端不画——拇指停在 1 / 8 时正好压在轨道圆头上，多画反而糊成一团。
+                    val span = (HlsConcurrency.MAX - HlsConcurrency.MIN).toFloat()
+                    val dotRadius = 1.5.dp.toPx()
+                    for (tick in HlsConcurrency.MIN + 1 until HlsConcurrency.MAX) {
+                        val x = end * ((tick - HlsConcurrency.MIN) / span)
+                        drawCircle(
+                            color = if (x <= head) tickOnFilled else tickOnEmpty,
+                            radius = dotRadius,
+                            center = Offset(x, centerY),
+                        )
+                    }
+                }
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp),
+    )
 }
+
+/**
+ * 滑杆拇指的方形触摸区，也是滑杆给轨道让位的口径。
+ *
+ * 滑杆内部按它的一半把轨道子项内缩并平移；自绘轨道因此直接画满自己的画布即可，
+ * 不要照着这个数再缩一次。
+ */
+private val HlsThumbReach = 24.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
