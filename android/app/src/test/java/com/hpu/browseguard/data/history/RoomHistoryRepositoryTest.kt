@@ -43,6 +43,100 @@ class RoomHistoryRepositoryTest {
     }
 
     @Test
+    fun beginSniffReusesTheUnfinishedRowOfTheSamePage() = runTest {
+        val dao = FakeDao()
+        val audit = FakeAuditLogger()
+        // 上一趟：点过下载但没真正开始，行停在失败，还带着进度与错误痕迹。
+        dao.rows["old"] = record("old", RecordStatus.FAILED, outputPath = null, taskId = "t9").copy(
+            format = "720p · mp4",
+            downloadedBytes = 512,
+            bytesTotal = 9_999,
+            speedBps = 100,
+            errorCode = "NET_TIMEOUT",
+            errorMessage = "站点拒绝了连接",
+            note = "remuxing",
+        )
+        val repo = RoomHistoryRepository(dao, null, now = { 100L }, audit = audit)
+
+        val id = repo.beginSniff("new", "https://example.com/watch", "新标题")
+
+        assertEquals("同一页面必须复用旧行，不能插一条一模一样的", "old", id)
+        assertEquals("列表里仍然只有这一行", 1, dao.rows.size)
+        val row = dao.rows.getValue("old")
+        assertEquals(RecordStatus.SNIFFING, row.status)
+        assertEquals("新标题", row.title)
+        assertEquals("刷新成这一趟的时间，列表里才会顶到最上面", 100L, row.createdAt)
+        assertNull("上一趟的任务号必须清掉", row.taskId)
+        assertNull("上一趟的产物线索必须清掉", row.format)
+        assertNull(row.errorCode)
+        assertNull(row.errorMessage)
+        assertNull(row.note)
+        assertEquals(0L, row.downloadedBytes)
+        assertEquals(0L, row.bytesTotal)
+        assertEquals(0L, row.speedBps)
+        assertTrue("复用要留审计行，真机日志能直接确认", audit.has("download_reuse"))
+    }
+
+    @Test
+    fun beginSniffStartsANewRowWhenThePageWasAlreadyDownloaded() = runTest {
+        val dao = FakeDao()
+        dao.rows["done"] = record("done", RecordStatus.DONE, "/storage/emulated/0/Movies/clip.mp4")
+        val repo = RoomHistoryRepository(dao, null, now = { 100L })
+
+        val id = repo.beginSniff("fresh", "https://example.com/watch")
+
+        assertEquals("下过的允许再下一份，不能复用那条已完成的行", "fresh", id)
+        assertEquals(2, dao.rows.size)
+        assertEquals(
+            "已完成的行一个字段都不许动",
+            RecordStatus.DONE,
+            dao.rows.getValue("done").status,
+        )
+    }
+
+    @Test
+    fun beginSniffNeverReusesARowThatIsStillDownloading() = runTest {
+        val dao = FakeDao()
+        dao.rows["run"] = record("run", RecordStatus.DOWNLOADING, "/tmp/clip.mp4.part", taskId = "t1")
+        val repo = RoomHistoryRepository(dao, null, now = { 100L })
+
+        val id = repo.beginSniff("fresh", "https://example.com/watch")
+
+        assertEquals("正在下载的那行不能被第二次点下载顶掉", "fresh", id)
+        assertEquals(RecordStatus.DOWNLOADING, dao.rows.getValue("run").status)
+        assertEquals("t1", dao.rows.getValue("run").taskId)
+    }
+
+    @Test
+    fun beginSniffOfAnotherPageAlwaysStartsANewRow() = runTest {
+        val dao = FakeDao()
+        dao.rows["other"] = record("other", RecordStatus.READY, outputPath = null)
+        val repo = RoomHistoryRepository(dao, null, now = { 100L })
+
+        val id = repo.beginSniff("fresh", "https://example.com/another")
+
+        assertEquals("不同页面各占一行", "fresh", id)
+        assertEquals(2, dao.rows.size)
+    }
+
+    @Test
+    fun beginSniffNeverReusesARowThatStillPointsAtAFile() = runTest {
+        val dao = FakeDao()
+        // 取消时保留了产物的行：复用会把 outputPath 清空，那个文件就成了没人认领的孤儿。
+        dao.rows["kept"] = record("kept", RecordStatus.CANCELLED, "/storage/emulated/0/Movies/kept.mp4")
+        val repo = RoomHistoryRepository(dao, null, now = { 100L })
+
+        val id = repo.beginSniff("fresh", "https://example.com/watch")
+
+        assertEquals("带产物的行不参与复用，宁可多一行也不能丢文件出处", "fresh", id)
+        assertEquals(2, dao.rows.size)
+        assertEquals(
+            "/storage/emulated/0/Movies/kept.mp4",
+            dao.rows.getValue("kept").outputPath,
+        )
+    }
+
+    @Test
     fun deleteNeverTouchesFilesOutsideSandboxAndStillRemovesTheRow() = runTest {
         val sandbox = folder.newFolder("Download")
         val outside = folder.newFile("outside.mp4").apply { writeText("keep me") }
@@ -581,6 +675,11 @@ class RoomHistoryRepositoryTest {
             rows.values.sortedByDescending { it.createdAt }
 
         override suspend fun findById(id: String): DownloadRecord? = rows[id]
+
+        override suspend fun findReusable(url: String, statuses: List<RecordStatus>): DownloadRecord? =
+            rows.values
+                .filter { it.url == url && it.status in statuses && it.outputPath == null }
+                .maxByOrNull { it.createdAt }
 
         override suspend fun upsert(record: DownloadRecord) {
             beforeUpsert(record)

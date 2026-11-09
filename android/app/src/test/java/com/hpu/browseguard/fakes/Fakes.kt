@@ -380,7 +380,7 @@ class FakeHistoryRepository : HistoryRepository {
     val rows: List<DownloadRecord>
         get() = state.value
 
-    override suspend fun beginSniff(id: String, url: String, title: String?) {
+    override suspend fun beginSniff(id: String, url: String, title: String?): String {
         calls += "beginSniff"
         val ts = System.currentTimeMillis()
         state.value = state.value + DownloadRecord(
@@ -391,6 +391,9 @@ class FakeHistoryRepository : HistoryRepository {
             createdAt = ts,
             updatedAt = ts,
         )
+        // 按地址复用旧行是 RoomHistoryRepository 的职责，单测在那边覆盖；
+        // 这里保持「来一个 id 发一行」，免得测试自己的铺数据被悄悄合并。
+        return id
     }
 
     override suspend fun attachTask(id: String, taskId: String) {

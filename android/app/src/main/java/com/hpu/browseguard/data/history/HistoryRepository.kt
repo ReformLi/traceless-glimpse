@@ -38,12 +38,17 @@ interface HistoryRepository {
     val records: Flow<List<DownloadRecord>>
 
     /**
-     * 落一条嗅探记录。
+     * 落一条嗅探记录，返回**实际使用的行 id**。
      *
      * [title] 是页面的可读标题（浏览器路径由 WebView `onReceivedTitle` 给出）；
      * 没有就退回 URL 派生标题——播放页顶栏、下载卡片顶的都是它，别再让用户对着链接猜。
+     *
+     * 同一页面在未完成状态（嗅探中/待下载/失败/已取消）下只保留一行：命中旧行时
+     * **复用它的 id 并把这趟要用的字段清零重置**，不再插一条一模一样的。
+     * 已完成（DONE）与正在下载（DOWNLOADING）不参与复用——下过的允许再下一份，
+     * 正在下的由调用方拦截提示。调用方必须用返回值，不要再用自己生成的 id 回写。
      */
-    suspend fun beginSniff(id: String, url: String, title: String? = null)
+    suspend fun beginSniff(id: String, url: String, title: String? = null): String
 
     /** 记下引擎侧 taskId（嗅探或下载任务），供冷启动对账回查。 */
     suspend fun attachTask(id: String, taskId: String)

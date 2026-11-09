@@ -12,6 +12,23 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
+ * 同一页面可以复用哪几种状态的行。
+ *
+ * 不含 [RecordStatus.DONE]：下过的视频允许再下一份（文件可能被删、也可能想要别的清晰度）。
+ * 不含 [RecordStatus.DOWNLOADING]：正在下的那一条由调用方拦截提示，绝不能再插一行。
+ * 不含 [RecordStatus.INTERRUPTED]：冷启动对账留下的行通常还攥着半截产物，交给用户自己清理。
+ *
+ * 另外只知道产物路径的行也不会被复用（过滤在 DAO 的查询里）——复用会清空 `outputPath`，
+ * 那条路径上的文件就成了没人认领的孤儿。
+ */
+private val REUSABLE_STATUSES = listOf(
+    RecordStatus.SNIFFING,
+    RecordStatus.READY,
+    RecordStatus.FAILED,
+    RecordStatus.CANCELLED,
+)
+
+/**
  * Room 落地的历史仓库。
  *
  * 时间戳只在这里生成，测试可注入固定时钟；路径清理严格限制在 [sandboxRoot] 下，
@@ -40,18 +57,50 @@ class RoomHistoryRepository(
 
     override val records: Flow<List<DownloadRecord>> = dao.observeAll()
 
-    override suspend fun beginSniff(id: String, url: String, title: String?) = rowGate.withLock {
+    override suspend fun beginSniff(id: String, url: String, title: String?): String = rowGate.withLock {
         val ts = now()
+        val resolvedTitle = title?.trim()?.takeIf { it.isNotEmpty() } ?: defaultHistoryTitle(url)
+        val reusable = dao.findReusable(url, REUSABLE_STATUSES)
+        if (reusable != null) {
+            // 同一页面只留一行：沿用旧 id，把上次那趟留下的进度、错误、产物线索全部清掉，
+            // 时间戳刷新成这一趟的（列表按 createdAt 倒序，用户点完就能看见它在最上面）。
+            dao.upsert(
+                reusable.copy(
+                    title = resolvedTitle,
+                    status = RecordStatus.SNIFFING,
+                    createdAt = ts,
+                    updatedAt = ts,
+                    taskId = null,
+                    format = null,
+                    outputPath = null,
+                    errorCode = null,
+                    errorMessage = null,
+                    note = null,
+                    sizeBytes = null,
+                    downloadedBytes = 0,
+                    bytesTotal = 0,
+                    speedBps = 0,
+                    lastPlayedPositionMs = 0,
+                    mediaDurationMs = 0,
+                ),
+            )
+            audit.log(
+                "download_reuse",
+                mapOf("id" to reusable.id, "from" to reusable.status.name.lowercase()),
+            )
+            return@withLock reusable.id
+        }
         dao.upsert(
             DownloadRecord(
                 id = id,
                 url = url,
-                title = title?.trim()?.takeIf { it.isNotEmpty() } ?: defaultHistoryTitle(url),
+                title = resolvedTitle,
                 status = RecordStatus.SNIFFING,
                 createdAt = ts,
                 updatedAt = ts,
             ),
         )
+        id
     }
 
     override suspend fun attachTask(id: String, taskId: String) {

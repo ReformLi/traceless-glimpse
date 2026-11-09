@@ -16,6 +16,21 @@ interface DownloadRecordDao {
     @Query("SELECT * FROM download_records WHERE id = :id")
     suspend fun findById(id: String): DownloadRecord?
 
+    /**
+     * 同一页面在「未完成」状态下只该留一行：再次点下载先按页面地址查这一行复用。
+     *
+     * 调用方传进来的 [statuses] 不含 DONE 与 DOWNLOADING，正好对应两条规则：
+     * 下过的允许再下一份；正在下的由调用方拦截提示，不再插一条一样的。
+     *
+     * 只知道产物路径的行（取消时保留了文件的那些）也不参与复用——复用时会把
+     * `outputPath` 清空，那条路径上的文件就成了没人认领的孤儿。
+     */
+    @Query(
+        "SELECT * FROM download_records WHERE url = :url AND status IN (:statuses) " +
+            "AND outputPath IS NULL ORDER BY createdAt DESC LIMIT 1"
+    )
+    suspend fun findReusable(url: String, statuses: List<RecordStatus>): DownloadRecord?
+
     @Upsert
     suspend fun upsert(record: DownloadRecord)
 

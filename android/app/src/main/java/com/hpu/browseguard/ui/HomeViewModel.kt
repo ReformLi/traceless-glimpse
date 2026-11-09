@@ -693,8 +693,10 @@ class HomeViewModel(
         viewModelScope.launch {
             // 页面标题在这里是唯一能拿到的时机：播放页顶栏、下载卡片顶的都是它，
             // 缺了就退回 URL 派生标题（-beginSniff 内部处理）。
-            history.beginSniff(recordId, pageUrl, browserProductName)
-            history.markReady(recordId, format = null)
+            // 同一页面上次留下的「待下载/失败」行会被复用，id 以返回值为准。
+            val rowId = history.beginSniff(recordId, pageUrl, browserProductName)
+            historyId = rowId
+            history.markReady(rowId, format = null)
             // 历史行先落地，后面的 Started 才有东西可回填。
             pickFormats()
         }
@@ -772,7 +774,8 @@ class HomeViewModel(
         )
 
         sniffJob = viewModelScope.launch {
-            history.beginSniff(recordId, sourceUrl)
+            // 同一页面上次留下的「待下载/失败」行会被复用，id 以返回值为准。
+            historyId = history.beginSniff(recordId, sourceUrl)
             if (snapshot.mode == RunMode.LOCAL) {
                 sniffRanOnEngine = false
                 finishLocalSniff(collectLocalSniff(request), sourceUrl)
@@ -869,6 +872,20 @@ class HomeViewModel(
     private fun record(block: suspend HistoryRepository.(id: String) -> Unit) {
         val id = historyId ?: return
         viewModelScope.launch { history.block(id) }
+    }
+
+    /**
+     * 这一次「点下载」注定开不起来（拿不到画质表 / 引擎没配输出目录）：
+     * 把刚落地的行作废，别在下载管理里留一条永远停在「待下载」的空行。
+     *
+     * 走 [HistoryRepository.abandon] 而不是直接删：没产物的行它直接删掉；
+     * 万一这条行已经有产物线索，它只会退成「已取消」，不会替用户抹掉文件出处。
+     */
+    private fun discardUnstarted(reason: String) {
+        val id = historyId ?: return
+        historyId = null
+        audit.log("download_discarded", mapOf("reason" to reason))
+        viewModelScope.launch { history.abandon(id) }
     }
 
     private fun attachHistoryTask(taskId: String) {
@@ -990,7 +1007,14 @@ class HomeViewModel(
     fun pickFormats() {
         var snapshot = _state.value
         val sourceUrl = snapshot.sourceUrl.trim()
-        if (sourceUrl.isEmpty() || !snapshot.canPickFormats) return
+        // 没有可用的嗅探结果就没有画质表，这次点「下载」注定不会开始：
+        // 把刚落的「待下载」行收掉，别在下载管理里留一条永远不动的空行。
+        if (sourceUrl.isEmpty() || snapshot.sniff !is SniffPhase.Success) {
+            discardUnstarted("no_formats")
+            return
+        }
+        // 画质表已经在手/正在准备：重复点按不该再发起一次，更不能动这条行。
+        if (!snapshot.canPickFormats) return
 
         // 模式是电脑引擎、但引擎这会儿没就绪（嗅探刚成功它掉了、或白名单空了）：
         // 整条回落到本机，别让按钮卡死在灰色里。手机本机对直链与 HLS 都是完整支持；
@@ -1019,7 +1043,11 @@ class HomeViewModel(
         val connected = snapshot.connection as? Connection.Connected
         val outputDir = when (snapshot.downloadExecutor) {
             DownloadExecutor.ENGINE ->
-                connected?.selfcheck?.outputDirAllowlist?.firstOrNull() ?: return
+                connected?.selfcheck?.outputDirAllowlist?.firstOrNull() ?: run {
+                    // 自检里没有可用输出目录：这次下载同样开不起来，行也别留着。
+                    discardUnstarted("no_output_dir")
+                    return
+                }
 
             // 本机直链的画质表由嗅探结果合成，不读这个目录；真写盘时用 ViaLocal 的沙箱根。
             DownloadExecutor.LOCAL_DIRECT -> snapshot.localSandboxRoot.orEmpty()
