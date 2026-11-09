@@ -3,6 +3,7 @@ package com.hpu.browseguard.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -49,19 +50,14 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -173,6 +169,10 @@ fun HistoryScreen(
     val selection = state.selection
     val selecting = selection.isNotEmpty()
     val selectedRecords = shown.filter { it.id in selection }
+
+    // 多选时系统返回键只退出多选，别把用户直接撵出下载页；
+    // 只有没进多选时才交还给根容器（退回首页）。
+    BackHandler(enabled = selecting) { actions.onClearSelection() }
 
     // 系统文件夹选择器：URI 的持久授权由 ViewModel 在搬运前抓牢，界面不碰文件系统。
     val folderPicker = rememberLauncherForActivityResult(
@@ -305,13 +305,16 @@ fun HistoryScreen(
                         )
                     }
                     items(group.records, key = { it.id }) { record ->
-                        SwipeDeleteRow(
-                            onClick = {
-                                // 多选态下点击就是勾选/取消；单选态才展开操作面板。
-                                if (selecting) actions.onToggleSelect(record.id) else selected = record
-                            },
-                            onLongClick = { actions.onToggleSelect(record.id) },
-                            onRequestDelete = { pendingDelete = record },
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = {
+                                        // 多选态下点击就是勾选/取消；单选态才展开操作面板。
+                                        if (selecting) actions.onToggleSelect(record.id) else selected = record
+                                    },
+                                    onLongClick = { actions.onToggleSelect(record.id) },
+                                ),
                         ) {
                             HistoryCard(
                                 record = record,
@@ -340,7 +343,9 @@ fun HistoryScreen(
     selected?.let { record ->
         ModalBottomSheet(
             onDismissRequest = { selected = null },
-            sheetState = rememberModalBottomSheetState(),
+            // 直接全展开：完成的行比未完成/失败的行多两个选项，
+            // 默认半展开会只露一半，用户还得手动往上拖才能看全。
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
             RecordActions(
@@ -617,57 +622,6 @@ private fun DeleteChoiceDialog(
             }
         },
     )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SwipeDeleteRow(
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    onRequestDelete: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    val currentOnRequestDelete by rememberUpdatedState(onRequestDelete)
-    val dismissState = rememberSwipeToDismissBoxState(
-        positionalThreshold = { distance -> distance * 0.35f },
-    )
-    // 只「请求」删除：真正的删除要过二次确认，所以收到滑走回调后立刻把行弹回原位。
-    // 回调保持稳定：弹框引起重组时不能让 LaunchedEffect 重启、把请求删两次。
-    val onDismiss: (SwipeToDismissBoxValue) -> Unit = remember(dismissState) {
-        { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) currentOnRequestDelete()
-            scope.launch { dismissState.reset() }
-        }
-    }
-    SwipeToDismissBox(
-        state = dismissState,
-        enableDismissFromStartToEnd = false,
-        onDismiss = onDismiss,
-        backgroundContent = {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.errorContainer, MaterialTheme.shapes.medium)
-                    .padding(horizontal = 20.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Delete,
-                    contentDescription = stringResource(R.string.history_delete),
-                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                )
-            }
-        },
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        ) {
-            content()
-        }
-    }
 }
 
 /** 状态过滤栏：四档互斥，切换只改这一页看哪些记录，不动库里的任何状态。 */

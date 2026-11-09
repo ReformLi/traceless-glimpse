@@ -1,5 +1,6 @@
 package com.hpu.browseguard.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -27,6 +28,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -36,6 +38,9 @@ import com.hpu.browseguard.data.AppContainer
 import com.hpu.browseguard.ui.components.ConfirmDialog
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+
+/** 连按两次返回才退出应用的窗口：和主流 App 的 2 秒手感一致。 */
+private const val EXIT_BACK_WINDOW_MS = 2_000L
 
 enum class AppDestination(
     val labelRes: Int,
@@ -101,6 +106,21 @@ fun BgvApp(container: AppContainer) {
 
     BackHandler(enabled = destination != AppDestination.HOME) {
         destination = AppDestination.HOME
+    }
+
+    // 首页按返回：和系统 App 一样两次返回才真退出——第一次先 Toast 提示。
+    // 浏览器可见时由 BrowserScreen 自己的 BackHandler 接管，这里让路。
+    val context = LocalContext.current
+    var lastBackAt by remember { mutableStateOf(0L) }
+    val exitHint = stringResource(R.string.app_exit_hint)
+    BackHandler(enabled = destination == AppDestination.HOME && !browserActive) {
+        val now = System.currentTimeMillis()
+        if (now - lastBackAt <= EXIT_BACK_WINDOW_MS) {
+            context.findActivity()?.finish()
+        } else {
+            lastBackAt = now
+            Toast.makeText(context, exitHint, Toast.LENGTH_SHORT).show()
+        }
     }
 
     // 授权门是队列回过头来问用户的，跟在哪个 Tab 无关：弹窗挂根容器，

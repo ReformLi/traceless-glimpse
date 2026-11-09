@@ -591,8 +591,9 @@ private fun VideoPlayer(
  * 这里刻意不把结果 `remember` 起来——记住一份旧值再在回调里读，正是「拿着上一帧的方向去写窗口」
  * 那类 bug 的源头。
  *
- * 离场还原 `UNSPECIFIED`：manifest 没给 MainActivity 声明 `screenOrientation`，出厂值就是它。
- * 不还原的话，退出播放页之后整个 App 会卡在播放器强制的那一个方向上。
+ * 离场还原 `PORTRAIT`：MainActivity 在 manifest 里钉的就是竖屏，这里显式写同一个值。
+ * 不能用 `UNSPECIFIED`——那等于「交还给 sensor」，在默认横放的模拟器上退出播放页后
+ * 整个 App 会一直停在横屏。
  */
 @Composable
 internal fun PlayerOrientationEffect(activity: Activity?, state: PlayerControlsState) {
@@ -602,7 +603,7 @@ internal fun PlayerOrientationEffect(activity: Activity?, state: PlayerControlsS
     }
     DisposableEffect(activity) {
         onDispose {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
     }
 }
@@ -658,7 +659,7 @@ private fun GestureFeedback(hint: GestureHint, durationMs: Long, modifier: Modif
 }
 
 /** Compose 里拿到的 Context 可能包了一层，逐层拆到 Activity。 */
-private tailrec fun Context.findActivity(): Activity? = when (this) {
+internal tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null

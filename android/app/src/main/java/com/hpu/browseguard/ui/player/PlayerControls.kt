@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -101,6 +102,14 @@ private val thumbDragRadius = 8.dp
 
 /** 控件淡入淡出时长：够短，不至于拖慢「点一下马上消失」的手感。 */
 private const val CONTROLS_FADE_MS = 120
+
+/**
+ * 锁定按钮的额外右移量（物理像素）。
+ *
+ * 刘海屏横屏时左侧挖孔会啃掉 `CenterStart` 那一列，光靠 [displayCutoutPadding] 在部分机型上
+ * 只留出挖孔本身的宽度、贴着边缘不好按；再右移这一点点，按钮才落在安全区内。
+ */
+private const val LOCK_BUTTON_SHIFT_PX = 20
 
 /**
  * instrumented UI 测试用的节点标记。
@@ -298,12 +307,16 @@ internal class PlayerControlsState(
      *
      * 手选竖屏（`PORTRAIT`）+ 锁定时返回 `LOCKED` 而非 `PORTRAIT`：`PORTRAIT` 会重新打开
      * sensor，`LOCKED` 才是正确的冻结语义。测试严格断言 `LOCKED`。
+     *
+     * 竖版视频 / 尺寸未知时返回 `PORTRAIT` 而不是 `UNSPECIFIED`：后者是「交给 sensor 自由判断」，
+     * 在默认横放的模拟器（MuMu 这类）或用户手里横着拿的时候，竖版视频会被顶成横屏。
+     * 全应用既然钉了竖屏，播放页的默认档也必须是同一个值。
      */
     fun effectiveOrientation(): Int = when {
         locked -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
         orientationOverride != null -> orientationOverride!!
         isLandscapeVideo -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        else -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     }
 
     fun toggleSpeedMenu() {
@@ -818,6 +831,9 @@ private fun PlayerProgressBar(
 private fun LockButton(locked: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
+            // 先让开刘海：横屏时挖孔在左右两侧，inset 会自动把按钮推进安全区。
+            .displayCutoutPadding()
+            .offset { IntOffset(LOCK_BUTTON_SHIFT_PX, 0) }
             .padding(start = 12.dp)
             .size(36.dp)
             .background(

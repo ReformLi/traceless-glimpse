@@ -21,7 +21,8 @@ import org.junit.runner.RunWith
  * - 自动：横版视频 → `SENSOR_LANDSCAPE`；
  * - 手选：切过之后自动回调不许把它顶掉；
  * - 锁定：冻在 `LOCKED`（禁用 sensor 的唯一常量），解锁回到自动；
- * - 离场：还原 `UNSPECIFIED`，否则退出播放页后整个 App 卡在被强制的方向上。
+ * - 离场：还原 `PORTRAIT`（manifest 里钉的竖屏），不能写 `UNSPECIFIED`——那等于交还 sensor，
+ *   默认横放的模拟器上退出播放页后整个 App 会一直停在横屏。
  */
 @RunWith(AndroidJUnit4::class)
 class PlayerOrientationDeviceTest {
@@ -41,8 +42,8 @@ class PlayerOrientationDeviceTest {
         val state = PlayerControlsState()
         mount(state)
         assertEquals(
-            "还没读到视频尺寸时保持出厂值",
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+            "还没读到视频尺寸时就是竖屏（全应用钉竖屏）",
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
             requested(),
         )
 
@@ -91,7 +92,7 @@ class PlayerOrientationDeviceTest {
 
         compose.runOnIdle { state.unlock() }
         compose.waitForIdle()
-        assertEquals("解锁后回到自动规则", ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, requested())
+        assertEquals("解锁后回到竖屏基线", ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, requested())
     }
 
     @Test
@@ -106,12 +107,12 @@ class PlayerOrientationDeviceTest {
         compose.waitForIdle()
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, requested())
 
-        // 整棵内容拆掉 = 离开播放页：DisposableEffect 的 onDispose 必须把方向交还系统。
+        // 整棵内容拆掉 = 离开播放页：DisposableEffect 的 onDispose 必须把方向还原成竖屏。
         compose.runOnIdle { mounted = false }
         compose.waitForIdle()
         assertEquals(
-            "退出播放页要还原，否则整个 App 卡在横屏",
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+            "退出播放页要还原竖屏，否则整个 App 会停在横屏",
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
             requested(),
         )
     }

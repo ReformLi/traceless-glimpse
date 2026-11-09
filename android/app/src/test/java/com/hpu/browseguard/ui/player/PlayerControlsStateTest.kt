@@ -410,11 +410,15 @@ class PlayerControlsStateTest {
     }
 
     @Test
-    fun aPortraitVideoStartsUnpinned() {
+    fun aPortraitVideoStaysPortrait() {
         val state = PlayerControlsState()
         state.isLandscapeVideo = false
         assertNull("没手动转过就不该有 override", state.orientationOverride)
-        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, state.effectiveOrientation())
+        assertEquals(
+            "竖版视频默认钉竖屏，不能交还给 sensor（模拟器默认横放会被顶成横屏）",
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+            state.effectiveOrientation(),
+        )
 
         state.isLandscapeVideo = true
         assertEquals(
@@ -474,7 +478,7 @@ class PlayerControlsStateTest {
         )
 
         state.unlock()
-        assertEquals("解锁后回到自动规则", ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, state.effectiveOrientation())
+        assertEquals("解锁后回到竖屏基线", ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, state.effectiveOrientation())
     }
 
     /**
