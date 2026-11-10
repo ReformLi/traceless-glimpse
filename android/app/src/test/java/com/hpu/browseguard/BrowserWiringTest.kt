@@ -135,6 +135,7 @@ class BrowserWiringTest {
         val app = File("$SRC_ROOT/ui/BgvApp.kt").readText()
         val vm = File("$SRC_ROOT/ui/HomeViewModel.kt").readText()
         val settings = File("$SRC_ROOT/ui/SettingsScreen.kt").readText()
+        val screen = File("$SRC_ROOT/ui/BrowserScreen.kt").readText()
 
         assertTrue("隐藏深嗅期间 WebView 仍要组合", home.contains("if (state.browserSessionActive)"))
         assertTrue("主页盖在会话之上，而非替换", home.contains("if (!state.isWebViewVisible)"))
@@ -144,6 +145,11 @@ class BrowserWiringTest {
         )
         assertTrue("首页常驻组合，切 Tab 只把它盖住", app.contains("active = destination == AppDestination.HOME"))
         assertTrue("下载页重试仍是强制刷新（回首页并填链接）", app.contains("homeViewModel.adoptSourceUrl(url)"))
+        assertTrue(
+            "重试必须销毁旧 WebView，保住单例",
+            vm.replace("\r\n", "\n").contains("closeBrowserSession()\n        editSourceUrl(url)"),
+        )
+        assertTrue("切 Tab 只暂停媒体，不拆页面", screen.contains("if (!active) holder.view?.evaluateJavascript(PAUSE_MEDIA_SCRIPT, null)"))
         assertTrue("会话回收覆盖可见态", vm.contains("browserSessionActive = false"))
         assertTrue("设置页有静音开关", settings.contains("settings_mute_label"))
         assertTrue("隐藏深嗅在跑时仍可切引擎", settings.contains("state.deepSniff == DeepSniffPhase.Off"))

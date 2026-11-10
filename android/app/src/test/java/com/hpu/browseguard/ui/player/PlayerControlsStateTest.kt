@@ -157,7 +157,31 @@ class PlayerControlsStateTest {
         assertFalse(state.controlsShown)
         state.onSurfaceTap()
         assertTrue(state.controlsShown)
-        assertTrue("未锁定时锁定按钮常驻，不参与显隐切换", !state.locked)
+        assertTrue("未锁定时点屏只切控制条，不碰锁定态", !state.locked)
+    }
+
+    /** 未锁定时锁定按钮属于控制条的一部分：控制条收起它就收起，不许永远飘在画面左侧。 */
+    @Test
+    fun theLockButtonHidesTogetherWithTheControlsWhenUnlocked() {
+        val state = PlayerControlsState()
+        state.isPlaying = true
+        assertTrue("控制条在，锁定按钮就在", state.lockButtonVisible())
+        state.hideControls()
+        assertFalse("控制条自动收起后，锁定按钮必须一起消失", state.lockButtonVisible())
+        state.toggleControls()
+        assertTrue("点屏唤回控制条，锁定按钮一起回来", state.lockButtonVisible())
+    }
+
+    /** 锁定后没有自动收起，显隐只跟锁定 HUD 走——点一下藏、再点一下露。 */
+    @Test
+    fun theUnlockButtonFollowsTheLockedHud() {
+        val state = PlayerControlsState()
+        state.lock()
+        assertTrue("刚锁上 HUD 露出，解锁按钮在", state.lockButtonVisible())
+        state.onSurfaceTap()
+        assertFalse("HUD 收起，解锁按钮一起收起", state.lockButtonVisible())
+        state.onSurfaceTap()
+        assertTrue("再点一下 HUD 回来，解锁按钮也回来", state.lockButtonVisible())
     }
 
     @Test

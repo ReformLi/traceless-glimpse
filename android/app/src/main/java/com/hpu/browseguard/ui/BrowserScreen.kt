@@ -188,6 +188,11 @@ internal fun BrowserScreen(
     active: Boolean,
 ) {
     val holder = remember { WebViewHolder() }
+    // 切到别的 Tab：页面留着不拆（回来画面要一模一样），但媒体必须停下来——
+    // 用户在看下载列表，网页里的视频不该继续出声、继续解码。
+    LaunchedEffect(active) {
+        if (!active) holder.view?.evaluateJavascript(PAUSE_MEDIA_SCRIPT, null)
+    }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -1224,6 +1229,22 @@ private const val WEBVIEW_LOG_TAG = "BgvWebView"
 
 /** 隐藏深嗅页面加载完后，再给页面这么久的静默期；仍无命中才提示显示页面。 */
 private const val DEEP_SNIFF_GRACE_MS = 4_000L
+
+/**
+ * 切走底部 Tab 时的媒体暂停脚本。
+ *
+ * WebView 没有「暂停网页播放」的 API；`onPause()` 会连 JS 定时器一起冻住，隐藏深嗅就跟着停了。
+ * 所以只让页面自己停：把现有的 `video/audio` 逐个 `pause()`，页面状态与播放位置都保留，
+ * 回来接着点播放即可。
+ */
+private const val PAUSE_MEDIA_SCRIPT = """
+    (function () {
+      var list = document.querySelectorAll('video,audio');
+      for (var i = 0; i < list.length; i++) {
+        try { list[i].pause(); } catch (e) {}
+      }
+    })();
+"""
 
 /**
  * 嗅探静音脚本：在 document-start 注入，先于页面脚本 Hook 掉 `play`。

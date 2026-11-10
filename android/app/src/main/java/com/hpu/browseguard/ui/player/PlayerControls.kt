@@ -143,7 +143,7 @@ internal class PlayerControlsState(
     var controlsShown by mutableStateOf(true)
     /**
      * 锁定：锁上之后按钮与三条手势轴都不再响应。
-     * 解锁入口只有一个——常驻的锁定按钮（见 [LockButton]），点它直接解锁。
+     * 解锁入口只有一个——锁定 HUD 里的锁定按钮（见 [LockButton]），点它直接解锁。
      */
     var locked by mutableStateOf(false)
 
@@ -191,6 +191,14 @@ internal class PlayerControlsState(
 
     /** 控件是否该出现在画面上：既要「显示中」，又不能是锁定态。 */
     val controlsVisible: Boolean get() = controlsShown && !locked
+
+    /**
+     * 锁定按钮此刻该不该在画面上。
+     *
+     * 未锁定：跟控制条一起显隐——自动收起 3.5s 后一起消失，点屏幕一起回来，
+     * 不许它永远飘在画面左侧。锁定后：跟锁定 HUD 走，点屏幕切换显隐。
+     */
+    fun lockButtonVisible(): Boolean = if (locked) lockedHudShown else controlsShown
 
     /**
      * 该等多久收控制条；null = 这次不收。
@@ -452,12 +460,16 @@ internal fun PlayerControls(
             )
         }
         // 锁定开关在 CenterStart 原位：未锁定是开口锁、点了锁上；锁定后原地换成闭口锁、
-        // 点了直接解锁。锁定 HUD 收起时它跟着藏——再点一下屏幕就回来，不另设解锁路径。
-        if (!state.locked || state.lockedHudShown) {
+        // 点了直接解锁。未锁定时跟控制条一起淡入淡出，锁定后跟随 HUD——两种状态都不常驻。
+        AnimatedVisibility(
+            visible = state.lockButtonVisible(),
+            enter = fadeIn(tween(CONTROLS_FADE_MS)),
+            exit = fadeOut(tween(CONTROLS_FADE_MS)),
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) {
             LockButton(
                 locked = state.locked,
                 onToggle = { state.toggleLock() },
-                modifier = Modifier.align(Alignment.CenterStart),
             )
         }
     }
@@ -825,7 +837,8 @@ private fun PlayerProgressBar(
  *
  * 图标随状态换形状：未锁定显示开口锁（[UnlockIcon]，示意「点这里锁上」）；
  * 锁定后显示闭口锁（[LockIcon]）并加深底色示意「现在是锁着的」，点击直接解锁。
- * 它在 [PlayerControls] 里排在两个 `AnimatedVisibility` 之外，控件收起时依然可见。
+ * 它在 [PlayerControls] 里排在两个 `AnimatedVisibility` 之外（锁定 HUD 收起后仍要在组合里），
+ * 自身的显隐由 [PlayerControlsState.lockButtonVisible] 单独控制。
  */
 @Composable
 private fun LockButton(locked: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {

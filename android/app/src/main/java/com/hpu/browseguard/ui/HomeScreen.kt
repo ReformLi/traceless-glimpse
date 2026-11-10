@@ -906,28 +906,26 @@ private fun FormatCard(
                 onCheckedChange = onToggleMerge,
                 enabled = mergeEnabled,
             )
-            Text(
-                text = stringResource(R.string.format_merge_label),
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (mergeEnabled) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-        if (!mergeEnabled) {
-            Text(
-                text = stringResource(
-                    if (state.mergeAvailable) {
-                        R.string.format_merge_audio_only_hint
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.format_merge_label),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (mergeEnabled) {
+                        MaterialTheme.colorScheme.onSurface
                     } else {
-                        R.string.format_merge_local_hint
+                        MaterialTheme.colorScheme.onSurfaceVariant
                     },
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+                )
+                // 只有本机模式才解释「为什么点不了」——和纯音频那一行同款小字。
+                // 电脑引擎下不显示任何提示（合并可用时无需解释，纯音频勾选时也不必多说）。
+                if (!state.mergeAvailable) {
+                    Text(
+                        text = stringResource(R.string.format_merge_local_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(10.dp))
