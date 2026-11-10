@@ -116,7 +116,7 @@ DEFAULTS: dict = {
     "output_dir": DEFAULT_OUTPUT_DIR,
     "auto_start": False,
     "appearance": "dark",
-    "close_action": "tray",
+    "close_action": "ask",
     # M16.5：空串 = 未自定义，走系统 PATH；否则是 ffmpeg.exe 的绝对路径。
     "ffmpeg_path": "",
     # M21：出站代理（嗅探/清单抓取/下载三段共用）。空串 = 直连，行为与本功能前一致。
@@ -825,8 +825,8 @@ class ControlPanel(ctk.CTk):
         )
         self.output_hint.pack(side="right")
 
-        # 点 X 的行为交给用户选：默认托盘是为手机联机 / 后台下载兜底，
-        # 纯本机用户可以选「直接退出」回到直觉的桌面习惯。
+        # 点 X 的行为交给用户选：默认「每次询问」，不替用户决定是否留在托盘，
+        # 首次关闭时弹一次窗说清楚三选项，之后按用户记住的选择走。
         row4 = ctk.CTkFrame(settings, fg_color="transparent")
         row4.pack(fill="x", padx=18, pady=(0, 12))
         ctk.CTkLabel(row4, text="退出或关闭窗口时", font=_font(11),
@@ -1898,15 +1898,15 @@ class ControlPanel(ctk.CTk):
         self._smoke_check("连接地址已计算", self.addr_label.cget("text").startswith("http://"),
                           self.addr_label.cget("text"))
         self._smoke_check("默认不自动启动引擎", self.engine_state == STATE_STOPPED and self.engine.proc is None)
-        # 关闭行为三选项 + 默认托盘；Config.normalize 对非法值回退默认。
+        # 关闭行为三选项 + 默认「每次询问」；Config.normalize 对非法值回退默认。
         self._smoke_check("关闭行为设置项三选项齐备",
                           list(CLOSE_ACTION_LABELS.values()) == list(self.close_menu.cget("values"))
-                          and self.close_menu.get() == "隐藏到托盘"
-                          and self.cfg["close_action"] == "tray",
+                          and self.close_menu.get() == "每次询问"
+                          and self.cfg["close_action"] == "ask",
                           f"menu={list(self.close_menu.cget('values'))} cfg={self.cfg['close_action']}")
         self._smoke_check("Config 对非法 close_action 回退默认",
-                          Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"] == "tray"
-                          and Config(Path(CONFIG_PATH), {}).data["close_action"] == "tray",
+                          Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"] == "ask"
+                          and Config(Path(CONFIG_PATH), {}).data["close_action"] == "ask",
                           str(Config(Path(CONFIG_PATH), {"close_action": "bogus"}).data["close_action"]))
         # M21：网络代理——归一化/拒绝规则 + 注入引擎 env 的口径。
         self._smoke_check("代理地址归一化（裸 host:port 补 http://，缺端口拒绝）",
